@@ -9,6 +9,53 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
+## Maintenance cycle — Wave 5: 55 tickets closed, 2026-10-08 to 2026-10-12
+
+A batch of eleven lanes, each worked test-first in its own worktree, each reviewed by a second agent that reverted
+fixes and watched their tests fail; every MUST-FIX a review found was fixed and re-checked before the batch was gated.
+The full trail is in the ticket log under each ID.
+
+**What changed for the user**
+- **Long recordings (F533, the user's choice).** Whisper transcribes a recording over 45 minutes in pieces of at most
+  45 minutes, cut at quiet moments, then joins the times; no process builds the spectrogram of the whole file, so a
+  three-hour meeting no longer needs ~15 GB. A review found the app itself holding ~115 MB per audio-hour while cutting;
+  fixed (F910).
+- **Saving the library (F526, partly; F864).** At 1,000 meetings an edit costs about 0.45 s instead of 2 s, and the first
+  edit after launch about 0.5 s instead of 6.4 s; the bytes on disk are unchanged. Moving saves off the main thread was
+  not done (F907). A brand-new library's first save can no longer overwrite another copy's.
+- **The dictation model's first download (F826, F828–F830, F859, F860).** A bad network reply keeps the partial download
+  instead of discarding it; the files are pinned and hash-checked; two downloads cannot run at once; the app shows a
+  percentage. A verified model file is never deleted because the server reports a different size (review MUST-FIX).
+- **Link imports (F453, F911, F479, F791).** Stop during a link import leaves nothing behind. An import interrupted
+  mid-conversion is finished at the next launch instead of being listed as unreadable with advice to delete the only
+  complete copy. A read-only library no longer raises an alert on every meeting opened. Error reports hide more of a
+  file path.
+- **Transcript tools (F858, F819, F820, F817 partly, F743, F755, F839, F850).** A lower-case replacement rule also fixes the
+  word at the start of a sentence (the user is asked whether to go further, F913). Correct Toward Vocabulary keeps
+  punctuation where it was and stops proposing changes to correct multi-word terms; Chinese sound-alikes are proposed
+  unticked. Subtitle export shows "<", ">" and "&" correctly. Ask searches meetings without timestamps and answers the
+  question its passages were found for.
+- **Dictation trigger key (F683, F684, F686, F687, F691).** Choosing a key stops when the app goes to the background, and
+  pressing your current F-key re-chooses it; a failed dictation's reason stays in the menu-bar menu.
+- **Imports, the watched folder and Shrink (F705, F706, F707, F709, F711, F716, F801, F804).** Finder aliases and locked
+  files import correctly; Shrink refuses any recording with several tracks or more than two channels rather than
+  deleting all but the first (the user is asked about mixing, F942).
+- **Quitting while a recording saves, and two copies of the app (F808, F809, F810, F812, F734, F744, F888; F863, F865,
+  F881, F884, F885, F887, F844, F909).**
+
+**How it was checked.** The suite went from 2785 (Wave 4) to 3055 tests, including the dictation-speed session's F890/F891
+commits pushed with this batch. The first full gate failed one test that waited a fixed second across a 1.1 s pill (F956,
+fixed; the rest of that pattern is F957); the second passed on `38ccae6`. CI then failed to compile one test on the runner's
+Swift 6.1 (an `ArraySlice + PrefixSequence` the local 6.3 accepted), fixed in `1f946a2`; CI run 38194480077 is green on it.
+55 tickets closed: 52 fixed, F526 and F817 partly (follow-ups F907, F916), F736 won't-fix. 65 new tickets were filed along the
+way (F893–F957), most low.
+
+**What is not claimed.**
+- Nothing on screen was clicked through; the sitting is in `NEEDS_HUMAN.md` (F904), with four questions (F913, F942, F932,
+  F899).
+- The memory saving on a real 45-minute piece is unmeasured (F902).
+- Not yet installed: WhisperMeet was open when the batch was ready.
+
 ## Feature — meeting storage, and Shrink, 2026-10-02 (F795, F796)
 
 The user asked to see how much space each meeting takes and to make meetings as small as possible. A finished

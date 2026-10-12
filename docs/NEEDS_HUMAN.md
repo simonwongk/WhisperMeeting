@@ -41,21 +41,22 @@ The letters below still stand for what needs your hands (F294, F201, F230, F428,
 
 ## Where to start
 
-Ten entries, over the cap of five. (2026-10-09: F891 answered — you said no to every app I named, and the next slow dictation showed the GPU idle; the cause was idle weights paging out, fixed by a press-down wake-up. Settled below.) (2026-10-08: Wave 4's sitting added as #12.) (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
+Eleven entries, over the cap of five. (2026-10-12: Wave 5's questions and sitting added as #1, because its questions take two minutes; the rest renumbered.) (2026-10-09: F891 answered — you said no to every app I named, and the next slow dictation showed the GPU idle; the cause was idle weights paging out, fixed by a press-down wake-up. Settled below.) (2026-10-08: Wave 4's sitting added as #12.) (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
 |---|---|---|---|
+| 1 | **F904 · F913 · F942 · F932 · F899** | ~2 min, then ~1 h | Wave 5: four one-line questions (A–D) that decide follow-up work, then an optional sitting on the Wave 5 build. The questions are the quickest useful thing in this file. |
 | 2 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
 | 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
-| 5 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. Step 6 (one dictation during a call) is F361's; step 7 (hold and toggle on a new build) is F731's. |
-| 6 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
-| 7 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
-| 8 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste — once more, with F516 installed. The log now says what macOS handed over. |
-| 9 | **F392** | ~5 min, or "no" | One download you start (490 MB). Unblocks measuring Ask's search by meaning, which ships on constants nobody has measured. |
-| 10 | **F805** | ~5 min | Shrink a throwaway import on the new build and check that it still plays. Shrink is the one new action that deletes audio, and no test can click it. |
-| 11 | **F807 · F845 · F685** | ~45 min | Wave 3's screen checks in one sitting and one silent dictation (its four questions were answered 2026-10-07). Nothing urgent; the batch is tested headlessly and reviewed. |
-| 12 | **F889 · F857** | ~40 min | Wave 4's screen checks: recovery and safety copies, two app copies, transcripts, dictation. Step 1 (the Claude key, 1 min) is worth doing first. |
+| 4 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. Step 6 (one dictation during a call) is F361's; step 7 (hold and toggle on a new build) is F731's. |
+| 5 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
+| 6 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
+| 7 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste — once more, with F516 installed. The log now says what macOS handed over. |
+| 8 | **F392** | ~5 min, or "no" | One download you start (490 MB). Unblocks measuring Ask's search by meaning, which ships on constants nobody has measured. |
+| 9 | **F805** | ~5 min | Shrink a throwaway import on the new build and check that it still plays. Shrink is the one new action that deletes audio, and no test can click it. |
+| 10 | **F807 · F845 · F685** | ~45 min | Wave 3's screen checks in one sitting and one silent dictation (its four questions were answered 2026-10-07). Nothing urgent; the batch is tested headlessly and reviewed. |
+| 11 | **F889 · F857** | ~40 min | Wave 4's screen checks: recovery and safety copies, two app copies, transcripts, dictation. Step 1 (the Claude key, 1 min) is worth doing first. |
 
 ---
 
@@ -368,6 +369,81 @@ only if you own a multi-input audio interface.
    batch an interleaved multi-channel microphone recorded nothing at all (F875). With one live input on an N-input interface the
    level is about 1/N — please note the level, not just whether it is audible. If you have no such device, say so and I close
    F857 as not planned.
+
+---
+
+## F904 · F913 · F942 · F932 · F899 — Wave 5: four questions, and one sitting at the screen
+
+**Status:** `blocked` (F904, F913, F942, F932, F899). The 2026-10-08 → 10-11 batch closed 55 tickets (52 fixed, 2 partly — each with its follow-up filed — and 1 not to be done) across link imports and
+recovery, long recordings, the first dictation-model download, transcript tools, the dictation trigger key, imports and the
+watched folder, Shrink's safety checks, quitting while a recording saves, and two copies of the app on one library. Each was
+tested headlessly and reviewed by a second agent. What only you can decide or see is collected here. The sitting uses a
+**scratch library**, never your real one, except where a step says otherwise. When you are ready, tell me "set up the Wave 5
+sitting" and I will prepare a scratch copy of the app that opens with one command.
+
+**What I need from you:** a one-line answer to each of the four questions (A–D), and later, when convenient, one sitting of
+about an hour on the installed Wave 5 build. Every step is optional, and nothing here is urgent.
+
+**Four questions** (my recommendation first; nothing changes until you answer).
+
+- **A. Replacement rules and capital letters (F913).** A rule you type in lower case, such as "jon → Jonathan", now also
+  fixes "Jon" at the **start of a sentence**, but not mid-sentence and not "JON". I chose sentence starts because Quick
+  Dictation pastes with no review: matching capitals everywhere turned the person "Bill" into "Invoice" with a
+  "bill → invoice" rule. A sentence start still can't tell a name from a word, so "Jason said the jason file…" with
+  "jason → JSON" becomes "JSON said the JSON file…". **Keep sentence starts (recommended), go further (mid-sentence or
+  ALL CAPS too), or go back (never touch a capitalised word)?**
+- **B. Imports with more than one sound track, or more than two channels (F942, F953).** Some files hold several tracks, for
+  example a call saved with your voice on one track and the other person's on another; some hold more than two channels in
+  one track (a multi-input interface, or 5.1 audio). Two things follow. Transcription hears only the first track,
+  today, without saying so. Shrink would have kept only the first track (or channel) and deleted the rest; it now refuses such a
+  meeting and says how many tracks would be lost — and, to be safe, it also refuses any recording with more than two channels,
+  even 5.1 audio it could mix correctly (F953). **(1) keep refusing for now, and later mix all tracks into one for
+  both transcription and Shrink (recommended); (2) warn and shrink anyway, keeping track 1 (deletes audio; not
+  recommended); or (3) build the mixing now?**
+- **C. The recording warning when only one microphone's audio can't be saved (F932).** This happens in practice with a
+  multi-input microphone. The warning names the problem but still says to stop the recording, even though the other
+  track may still be recording fine. **(1) keep "stop the recording"; (2) name the track and drop "stop", e.g.
+  "Microphone audio is not being saved — the rest is still recording" (recommended); or (3) name the track and suggest
+  choosing another microphone?**
+- **D. An Intel Mac (F899).** Do you have an Intel Mac you could dictate on once? If not, say so and I close it as not
+  planned.
+
+**The sitting** (about an hour; split it as you like).
+
+1. **Link imports and a restart (F453, F911): ~20 min, needs a long YouTube video.** Stop during "Checking the link…":
+   nothing is left behind. Force-quit during a three-hour import's extraction and relaunch: the import is reported as
+   "still being written" and appears later at full length. Restart the Mac during an hour-long import's extraction: after
+   logging in, the meeting appears at its full length, and its Shrink button is unavailable with a reason naming the
+   download.
+2. **Quitting while a recording saves (F812): ~3 min.** Record ten minutes, press Stop & Transcribe, and press ⌘Q while it
+   says "Finishing…". The app quits once the save ends, and at the next launch the meeting is ready to transcribe, not
+   "interrupted".
+3. **Dictation trigger key (F691, F683, F684, F687, F924, F925): ~10 min, on your real app.** Choosing a key stops when you
+   click away. Choosing your own F-key again keeps it. After a failed dictation, the menu-bar menu shows "Last dictation
+   failed: …" under Quick Dictation; I chose that place, so say if you'd rather see it elsewhere.
+   - **F924:** note how wide the menu gets with that line, which decides its cap or shape.
+   - **F925:** while choosing a key, press ⌘-Tab, then ⌃-→. Does the trigger become ⌘ or ⌃?
+4. **Transcript tools (F858, F819, F820, F817, F743, F839, F850): ~10 min.** A "bill → invoice" rule changes "Bill" only
+   at a sentence start. Correct Toward Vocabulary handles ".NET" and "Acme Inc." without doubling the full stop. Chinese
+   sound-alike rows arrive unticked, each with its sentence, and Select All leaves them alone. An exported .srt shows
+   "a < b" literally in VLC and IINA. Ask on a Qwen meeting without timestamps gives short passages.
+5. **Imports and the watched folder (F705, F804, F711, F801): ~8 min.**
+   - A Finder alias dropped into the watched folder imports the real recording.
+   - A Finder-locked file imports and deletes cleanly, and your file stays locked.
+   - With no window open, an unreadable file in the watched folder brings a notification; with a window open, an alert
+     and no notification.
+   - Optional, if you have a movie with two audio tracks: Shrink says it has 2 tracks.
+6. **Two copies of the app, and the library's sentences (F863, F865, F844, F881, F887): ~15 min, scratch.** A segment re-run
+   under the conflict banner says to answer the banner first. Keep This List respects the other copy's newer save. A
+   missing index is called missing, not damaged. An emptied index over finished recordings offers Recover Library…
+7. **First dictation-model download (F859, F826): ~10 min plus a 1.6 GB download, scratch.** The banner, model row and menu
+   show the percentage rising, and a parallel setup script waits instead of fighting it.
+8. **Optional, if you have them:** a recording over 45 minutes transcribed with Whisper (F533: one rising percentage,
+   continuous timestamps past 45:00). Memory in Activity Monitor after stopping an hour-long recording should not jump by
+   the size of both tracks (F910). Typing notes on a large library should not stall (F526). On a read-only scratch
+   library, opening an old meeting brings no alert (F479).
+
+The exact steps for each are in that ticket's entry in `docs/TICKET_LOG.md`.
 
 ---
 
