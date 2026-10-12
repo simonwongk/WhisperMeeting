@@ -163,8 +163,9 @@ extension AppModel {
     /// macOS 27, and the review of F911 measured 41.3 s of 60.0 s. So a WAV ffmpeg finished on SIGTERM,
     /// shorter than the download but longer than the estimate, was indexed as the whole import, while
     /// Shrink, reading the same file exactly, refused to delete it. One reader for both means they
-    /// cannot disagree about one file. AVAudioFile counts the packets of a file with no length header,
-    /// so it is read off the main actor. Only a file AVAudioFile cannot open falls back to `estimate`
+    /// cannot disagree about one file. For a file with no length header AVAudioFile's length matched a
+    /// full decode (60.029 s both, in that review), so it may read the whole file, and it is asked off
+    /// the main actor. Only a file AVAudioFile cannot open falls back to `estimate`
     /// (or to `loadDuration` when the caller has none); Shrink refuses such a file as unmeasured, so
     /// the fallback cannot lead it to delete anything.
     private func linkImportDownloadSeconds(_ download: URL, estimate: TimeInterval?) async -> TimeInterval {
