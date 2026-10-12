@@ -16,6 +16,8 @@ import Testing
 //   change — elsewhere in the segment, or anywhere at all when the untrimmed text is nowhere in it.
 // - F820: a term equal to any window of the segment, not only to one word, is present already.
 // - F820 no-op: a row `apply` would leave unchanged is not proposed.
+// - F940: a term of four or more words is compared with windows up to its own number of words, and
+//   is present where it equals one of them; every other term with windows of up to three, as before.
 
 private struct Amendments {
     var f819 = true
@@ -23,6 +25,7 @@ private struct Amendments {
     var f819InPlace = true
     var f820 = true
     var f820NoOp = true
+    var f940 = true
 }
 
 private enum PreF536GlossaryCorrector {
@@ -47,7 +50,9 @@ private enum PreF536GlossaryCorrector {
 
                 var best: (similarity: Double, phrase: String)?
                 var presentAsAWindow = false // amended
-                for size in 1...maxWindow where size <= words.count {
+                let termWords = term.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).count // amended
+                let largest = amended.f940 ? max(maxWindow, termWords) : maxWindow // amended
+                for size in 1...largest where size <= words.count { // amended (was 1...maxWindow)
                     for start in 0...(words.count - size) {
                         let windowNormalized = normalizedWords[start..<(start + size)].joined()
                         if windowNormalized == termNormalized { presentAsAWindow = true } // amended
@@ -214,13 +219,19 @@ func englishSuggestionsMatchThePreF536Oracle() {
     var random = SeededRandom(state: 0xF536)
     let generated = syntheticVocabulary(&random)
     // Terms with outer punctuation of their own, and lines where a window's mark is the term's and
-    // where it is not (the review of round 2, R6) — added after generating, so the seeded corpus
-    // above is the one F536 pinned.
-    let vocabulary = generated + ["Acme Inc.", ".NET", "(beta)"]
-    let segments = syntheticTranscript(generated, &random) + [
+    // where it is not (the review of round 2, R6); then terms of four and five words, mishearings of
+    // them, one spelled right and one across a tab (F940) — added after generating, so the seeded
+    // corpus above is the one F536 pinned.
+    let vocabulary = generated + ["Acme Inc.", ".NET", "(beta)", "Bank of New York", "Bank of New York Mellon"]
+    let fixedLines: [String] = [
         "we signed with Acme Ink, the vendor.", "Acme Ink., the vendor, signed.", "the (NOT) runtime is old.",
         "the .NOT runtime is old.", "the betta, release ships.",
-    ].enumerated().map { TranscriptSegment(speaker: nil, start: Double(60 + $0.offset), end: Double(61 + $0.offset), text: $0.element) }
+        "the Bank of New Yolk said yes.", "the Bonk of New York said yes.", "we bank with Bank of New York Melon.",
+        "the Bank of New York said yes.", "the Bank\tof New York review.",
+    ]
+    let segments = syntheticTranscript(generated, &random) + fixedLines.enumerated().map {
+        TranscriptSegment(speaker: nil, start: Double(60 + $0.offset), end: Double(61 + $0.offset), text: $0.element)
+    }
 
     let expected = PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments)
     let actual = GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments)
@@ -248,6 +259,10 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withoutNoOp.f820NoOp = false
     #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutNoOp) != expected,
             "no proposal in the corpus changes nothing, so F820's no-op amendment is untested here")
+    var withoutF940 = Amendments()
+    withoutF940.f940 = false
+    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF940) != expected,
+            "no term in the corpus has four or more words and a mishearing, so F940's amendment is untested here")
     let identical = actual == expected
     #expect(identical, "first difference: \(zip(actual, expected).first { $0 != $1 }.map { "\($0) vs \($1)" } ?? "counts \(actual.count) vs \(expected.count)")")
 }

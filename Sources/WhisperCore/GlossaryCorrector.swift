@@ -30,8 +30,9 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// `GlossaryCorrectorGoldenTests`, amended only where a later ticket changed the answer on purpose:
 /// a proposal no longer takes the punctuation stuck to its outer words with it (F819, "Kestrol," is
 /// proposed as "Kestrol"), a term equal to a window of several words is already present (F820,
-/// "Priya Raman said" proposes nothing for "Priya Raman"), and a row `apply` would leave unchanged
-/// is not proposed at all (F820's review). A term containing Chinese is compared
+/// "Priya Raman said" proposes nothing for "Priya Raman"), a row `apply` would leave unchanged
+/// is not proposed at all (F820's review), and a term of four or more words is compared with
+/// windows up to its own length (F940). A term containing Chinese is compared
 /// with windows of exactly its own length, slid character by character along each run of letters
 /// and digits: Chinese
 /// has no spaces, so the old whitespace split made a whole sentence one "word" — a short segment was
@@ -58,7 +59,9 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// isCancelled:progress:)`). Measured at -O in a scratch package outside the repository, on a
 /// 700-segment synthetic meeting against 5,000 terms: 78.9 s before, 1.2 s after, with the same
 /// 167,128 English proposals. What the repository pins is smaller: `GlossaryCorrectorGoldenTests`
-/// compares 80 terms × 60 segments against the old code (as amended, above).
+/// compares 80 terms × 60 segments against the old code (as amended, above). F940's longer windows,
+/// measured the same way on this Mac (best of three, 700 segments, 5,000 terms): 3.48 s before and
+/// 3.57 s after with no term over three words; 3.33 s and 4.36 s with 353 terms of four to six.
 public enum GlossaryCorrector {
     static let similarityThreshold = 0.5
     static let maxWindow = 3
@@ -110,7 +113,7 @@ public enum GlossaryCorrector {
         let tokens = latinTokens(of: text)
         // F65's own guard: a segment with no words proposes nothing.
         guard !tokens.isEmpty else { return [] }
-        let latin = LatinWindows(tokens: tokens, table: prepared.table)
+        let latin = LatinWindows(tokens: tokens, table: prepared.table, largest: prepared.largestLatinWindow)
         let chinese = prepared.hasCJKTerms ? CJKRuns(text: text, table: prepared.table) : nil
         let segmented = SegmentedText(text, segmenter: evidence.segmenter)
         // Only a known term present in this segment can enclose one of its windows, so the F594
@@ -155,16 +158,23 @@ public enum GlossaryCorrector {
     /// `applicablePhrase`.
     ///
     /// And nothing is proposed that `apply` would leave unchanged (F820, the Wave 5 review's T10):
-    /// windows go up to three words, so the best window of a correct term of four or more words lies
-    /// inside it ("Bank of New" in "Bank of New York") — and `apply` never changes text inside the
-    /// term — and words joined across a tab or a double space are proposed with one space, which
-    /// `apply` never finds. Both were rows that did nothing when ticked.
+    /// words joined across a tab or a double space are proposed with one space, which `apply` never
+    /// finds, and a row whose text lies inside the correct term changes nothing — `apply` never
+    /// changes text inside the term.
+    ///
+    /// **A term of four or more words is compared with windows up to its own length (F940)**; every
+    /// other term with windows of up to three words, as F65 compared every term. With three, the best
+    /// window for a mishearing of a longer term was part of it, and applying its row wrote the whole
+    /// term beside the rest: "the Bank of New Yolk said yes" became "the Bank of New York Yolk said
+    /// yes", and "Bank of New York Melon" "Bank of Bank of New York Mellon".
     private static func bestLatinWindow(
         for term: PreparedTerm, in windows: LatinWindows, text: String, scratch: inout LCSScratch
     ) -> String? {
-        if windows.normalizedWindows.contains(term.normalized) { return nil }
+        let largest = max(maxWindow, term.wordCount)
+        if let smallest = windows.smallestWindowSpelling[term.normalized], smallest <= largest { return nil }
         var best: (similarity: Double, window: LatinWindows.Window)?
-        for window in windows.all where !window.containsCJK && !window.ids.isEmpty && window.ids != term.ids {
+        for window in windows.all[..<windows.end(ofSize: largest)]
+        where !window.containsCJK && !window.ids.isEmpty && window.ids != term.ids {
             let longer = max(window.ids.count, term.ids.count)
             // The LCS is at most the shorter length, so this ratio bounds the score: skip a window
             // that cannot reach the threshold, or cannot beat the best already found (F536).
@@ -304,35 +314,48 @@ public enum GlossaryCorrector {
             let containsCJK: Bool
         }
 
-        /// Every window's normalized text, one to three tokens — a term equal to any of them is
-        /// already in the segment (F820).
-        let normalizedWindows: Set<String>
-        /// In F65's order: every one-token window, then every two-token window, then three.
+        /// Every window's normalized text, with the fewest tokens it is spelled across — a term equal
+        /// to one no longer than the term may be compared with is already in the segment (F820, F940).
+        let smallestWindowSpelling: [String: Int]
+        /// In F65's order: every one-token window, then every two-token window, then three, and on
+        /// up to `largest` (F940).
         let all: [Window]
+        /// `ends[size]` is where the windows of `size` tokens end in `all`.
+        private let ends: [Int]
 
-        init(tokens: [Token], table: CharacterTable) {
+        init(tokens: [Token], table: CharacterTable, largest: Int) {
             let normalized = tokens.map { GlossaryCorrector.normalize($0.text) }
-            var normalizedWindows: Set<String> = []
+            var smallestWindowSpelling: [String: Int] = [:]
             var windows: [Window] = []
-            for size in 1...GlossaryCorrector.maxWindow where size <= tokens.count {
-                for start in 0...(tokens.count - size) {
-                    let slice = start..<(start + size)
-                    var phrase = tokens[start].text
-                    for index in (start + 1)..<(start + size) {
-                        phrase += (tokens[index].joinsPrevious ? "" : " ") + tokens[index].text
+            var ends = [0]
+            for size in 1...largest {
+                if size <= tokens.count {
+                    for start in 0...(tokens.count - size) {
+                        let slice = start..<(start + size)
+                        var phrase = tokens[start].text
+                        for index in (start + 1)..<(start + size) {
+                            phrase += (tokens[index].joinsPrevious ? "" : " ") + tokens[index].text
+                        }
+                        // Joined as strings first, as F65 did, so the character count is the same.
+                        let joined = normalized[slice].joined()
+                        if smallestWindowSpelling[joined] == nil { smallestWindowSpelling[joined] = size }
+                        windows.append(Window(
+                            ids: table.ids(joined),
+                            phrase: phrase,
+                            containsCJK: tokens[slice].contains(where: \.isCJK)
+                        ))
                     }
-                    // Joined as strings first, as F65 did, so the character count is the same.
-                    let joined = normalized[slice].joined()
-                    normalizedWindows.insert(joined)
-                    windows.append(Window(
-                        ids: table.ids(joined),
-                        phrase: phrase,
-                        containsCJK: tokens[slice].contains(where: \.isCJK)
-                    ))
                 }
+                ends.append(windows.count)
             }
             all = windows
-            self.normalizedWindows = normalizedWindows
+            self.ends = ends
+            self.smallestWindowSpelling = smallestWindowSpelling
+        }
+
+        /// Where the windows of up to `size` tokens end in `all`.
+        func end(ofSize size: Int) -> Int {
+            ends[min(size, ends.count - 1)]
         }
     }
 
@@ -391,6 +414,8 @@ public enum GlossaryCorrector {
         let isCJK: Bool
         /// `normalized`'s characters, position for position with `ids`, for the homophone check.
         let characters: [Character]
+        /// The term's words, split as a segment's are: a window of up to this many is compared (F940).
+        let wordCount: Int
     }
 
     private final class PreparedVocabulary: @unchecked Sendable {
@@ -400,6 +425,8 @@ public enum GlossaryCorrector {
         /// The evidence's known terms that could enclose a Chinese window (F594) — only a term with
         /// Chinese in it can.
         let knownCJKTerms: [String]
+        /// The most words any Latin window is built with: three, or the longest Latin term (F940).
+        let largestLatinWindow: Int
 
         init(_ vocabulary: [String], knownTerms: [String]) {
             knownCJKTerms = knownTerms.filter { ReplacementBoundary.hasCJK($0) }
@@ -409,10 +436,12 @@ public enum GlossaryCorrector {
             terms = zip(vocabulary, normalized).map { term, normalized in
                 PreparedTerm(
                     term: term, normalized: normalized, ids: table.ids(normalized),
-                    isCJK: ReplacementBoundary.hasCJK(term), characters: Array(normalized)
+                    isCJK: ReplacementBoundary.hasCJK(term), characters: Array(normalized),
+                    wordCount: term.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).count
                 )
             }
             hasCJKTerms = terms.contains(where: \.isCJK)
+            largestLatinWindow = terms.filter { !$0.isCJK }.map(\.wordCount).reduce(GlossaryCorrector.maxWindow, max)
         }
     }
 
