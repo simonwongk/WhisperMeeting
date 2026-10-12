@@ -50,8 +50,8 @@ The panel checks once per second and reports:
 
 | Condition | Behavior | Status |
 |---|---|---|
-| A previously active channel delivers no samples for more than 3 seconds | Warn that capture stopped. | needs attention |
-| No microphone samples arrive during the initial 4-second grace period | Warn that microphone capture stopped. | needs attention |
+| A previously active channel delivers no samples for more than 3 seconds | Warn that capture stopped, unless the channel's buffers are still arriving and failing to be saved, which the write-failure row below reports instead (F931). | needs attention |
+| No microphone samples arrive during the initial 4-second grace period | Warn that microphone capture stopped, with the same exception for a microphone whose buffers are failing to be saved (F931). | needs attention |
 | No system-audio samples have ever arrived after 15 seconds | Ask the user to play meeting audio to verify the channel. Silence alone is not described as a capture failure. | worth a check |
 | A channel reaches 98% of full scale, or any captured input channel reaches full scale before the mono mix (F419) | Keep a clipping warning visible for 3 seconds. | worth a check |
 | Available storage falls below the space Stop needs to write `meeting.wav` for the audio so far (about 96 KB per recorded second) plus 10 minutes of the raw tracks' growth (about 230 MB) as time to react, and never below the 500 MB the start check requires (`RecordingHealthMonitor`, F530, F597) | Warn the user to stop soon to protect the recording. | needs attention |

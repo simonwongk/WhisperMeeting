@@ -475,11 +475,16 @@ public final class RecordingHealthMonitor {
     ) -> RecordingHealthSnapshot {
         var warnings: [RecordingHealthWarning] = []
         if time - startedAt >= initialGracePeriod {
-            if isStale(microphone, at: time) {
+            // F931: not for a track whose writes are failing. Its buffers are arriving and are not
+            // being saved, and a failed append never reaches `receive`, so it reads as stale too.
+            // Tied with `.captureWritesFailing` at the top rank and listed first, "Microphone
+            // capture stopped" then led every surface and the panel sent the user to check a
+            // connection that works, while the sentence that mattered came second.
+            if isStale(microphone, at: time), microphoneWriteFailures < writeFailureThreshold {
                 warnings.append(.microphoneCaptureStopped)
             }
             if systemAudio.lastReceivedAt != nil,
-               isStale(systemAudio, at: time) {
+               isStale(systemAudio, at: time), systemAudioWriteFailures < writeFailureThreshold {
                 warnings.append(.systemAudioCaptureStopped)
             }
         }
