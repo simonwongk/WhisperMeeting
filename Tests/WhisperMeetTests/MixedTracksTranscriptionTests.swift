@@ -166,6 +166,21 @@ func engineHearsAMovieWhosePictureOutlastsItsSound() async throws {
     }
 }
 
+// Review of F942: the mixer padded a track up to whatever its presentation time said, and the every-track
+// decode counted windows up to it, so a corrupt timestamp would make a transcription — which mixes on its
+// own, on import — allocate and write silence in proportion to it. Both now place audio through one bounded
+// rule (`RecordingMixPlan.placement`, tested directly), limited to the file's own audio length. A file
+// with such a timestamp cannot be written through AVFoundation, so this pins the two call sites.
+@Test("Every place that puts a track's audio on the timeline bounds it by the audio's own length (F942 review)")
+func timelinePlacementIsBoundedEverywhere() throws {
+    let mixer = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/RecordingMixer.swift")
+    let decoded = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/DecodedAudio.swift")
+    for (name, source) in [("RecordingMixer", mixer), ("DecodedAudio", decoded)] {
+        #expect(source.contains("RecordingMixPlan.placement(firstFrame:"), "\(name) places through the bounded rule")
+        #expect(source.contains("RecordingMixPlan.placementLimit(audioEnd:"), "\(name) bounds by the audio's own end")
+    }
+}
+
 @Test("Every decode of a recording for listening is reached through the mixer, and no new one is added unseen (F942)")
 func everyDecodeForListeningGoesThroughTheMixer() throws {
     // Derived, not restated: the files that hand a recording to a decoder that keeps one track are found

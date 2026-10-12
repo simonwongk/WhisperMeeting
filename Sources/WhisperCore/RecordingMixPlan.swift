@@ -89,6 +89,49 @@ public enum RecordingMixPlan {
     /// capture would hear it.
     public static func channelWeight(channels: Int) -> Double { 1 / Double(Swift.max(1, channels)) }
 
+    // MARK: - Placing a track's audio on the timeline (review of F942)
+
+    /// Where a buffer of a track's audio goes, read in step with the others.
+    public struct Placement: Sendable, Equatable {
+        /// The frame the track's waiting audio starts at, after placing: when nothing was waiting, where
+        /// this buffer starts, and never before what was already handed on. So a track that starts late
+        /// stores nothing for the silence before it.
+        public var laneStart: Int
+        /// Frames at the buffer's front dropped: they lie at or before what is already placed or handed on
+        /// (an overlap, which a well-formed track does not have), so what was placed first stands.
+        public var skip: Int
+        /// Silence to place before the buffer's frames: a gap inside the track.
+        public var gap: Int
+
+        public init(laneStart: Int, skip: Int, gap: Int) {
+            self.laneStart = laneStart
+            self.skip = skip
+            self.gap = gap
+        }
+    }
+
+    /// The last frame, at `rate`, a track's audio may be placed up to: the audio's own end — the latest end
+    /// of the audio tracks' time ranges — and a second. Saturating, and a second when the end is not a
+    /// number.
+    public static func placementLimit(audioEnd: TimeInterval, rate: Double) -> Int {
+        let seconds = audioEnd.isFinite ? Swift.max(0, audioEnd) : 0
+        return Int(saturating: (seconds + 1) * rate)
+    }
+
+    /// Where a buffer of `frames` frames presented at `firstFrame` goes in a track's waiting audio, which
+    /// holds `laneCount` frames from `laneStart`, with `handed` frames of the timeline already handed on;
+    /// or nil when the buffer reaches past `limit` or starts before the timeline (review of F942). The
+    /// bound is the file's own audio length, so a corrupt timestamp cannot make a mix allocate, or write,
+    /// silence in proportion to it: before this, the mixer padded up to whatever the timestamp said.
+    public static func placement(firstFrame: Int, frames: Int, laneStart: Int, laneCount: Int,
+                                 handed: Int, limit: Int) -> Placement? {
+        guard firstFrame >= 0, frames >= 0, firstFrame <= limit, frames <= limit - firstFrame else { return nil }
+        let start = laneCount == 0 ? Swift.max(firstFrame, handed) : laneStart
+        let end = start + laneCount
+        return Placement(laneStart: start, skip: Swift.min(frames, Swift.max(0, end - firstFrame)),
+                         gap: Swift.max(0, firstFrame - end))
+    }
+
     // MARK: - Showing that a copy holds every track (F942, review R2)
 
     /// The most channels, over all tracks, whose presence in a mixed copy Shrink checks one by one: the

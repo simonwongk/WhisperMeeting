@@ -203,3 +203,32 @@ func leastSquaresIsDefinedWhenRegressorsCoincide() {
     let silent = RecordingMixPlan.leastSquares(gram: [4, 0, 0, 0], projection: [2, 0], size: 2)
     #expect(abs(silent.solution[1]) < 1e-6)
 }
+
+// MARK: - Review of F942: placing a track's audio on the timeline, bounded by the audio's own length
+
+@Test("A buffer is placed where its time says, and one timed past the audio's end is refused, not padded to (F942 review)")
+func placementIsBoundedByTheAudiosOwnLength() {
+    let limit = RecordingMixPlan.placementLimit(audioEnd: 10, rate: 16_000)
+    #expect(limit == 176_000, "the audio's end and a second, at 16 kHz")
+    // A track starting with the others.
+    #expect(RecordingMixPlan.placement(firstFrame: 0, frames: 1_024, laneStart: 0, laneCount: 0, handed: 0, limit: limit)
+            == .init(laneStart: 0, skip: 0, gap: 0))
+    // A track starting 5 s late: placed there, with nothing stored for the silence before it.
+    #expect(RecordingMixPlan.placement(firstFrame: 80_000, frames: 1_024, laneStart: 0, laneCount: 0, handed: 0, limit: limit)
+            == .init(laneStart: 80_000, skip: 0, gap: 0))
+    // Overlapping what is already placed, or what was handed on: those frames are dropped.
+    #expect(RecordingMixPlan.placement(firstFrame: 900, frames: 1_024, laneStart: 0, laneCount: 1_000, handed: 0, limit: limit)
+            == .init(laneStart: 0, skip: 100, gap: 0))
+    #expect(RecordingMixPlan.placement(firstFrame: 900, frames: 1_024, laneStart: 0, laneCount: 0, handed: 1_000, limit: limit)
+            == .init(laneStart: 1_000, skip: 100, gap: 0))
+    // A gap inside a track is silence, bounded by the limit like everything else.
+    #expect(RecordingMixPlan.placement(firstFrame: 2_000, frames: 1_024, laneStart: 0, laneCount: 1_000, handed: 0, limit: limit)
+            == .init(laneStart: 0, skip: 0, gap: 1_000))
+    // A corrupt timestamp — far past the audio, reaching past its end, or negative — is refused.
+    #expect(RecordingMixPlan.placement(firstFrame: Int.max / 2, frames: 1_024, laneStart: 0, laneCount: 0, handed: 0, limit: limit) == nil)
+    #expect(RecordingMixPlan.placement(firstFrame: limit - 10, frames: 1_024, laneStart: 0, laneCount: 0, handed: 0, limit: limit) == nil)
+    #expect(RecordingMixPlan.placement(firstFrame: -1, frames: 1_024, laneStart: 0, laneCount: 0, handed: 0, limit: limit) == nil)
+    // A limit is never computed from a length that is not a number, nor past what an Int holds.
+    #expect(RecordingMixPlan.placementLimit(audioEnd: .nan, rate: 16_000) == 16_000)
+    #expect(RecordingMixPlan.placementLimit(audioEnd: 1e30, rate: 48_000) == Int.max)
+}

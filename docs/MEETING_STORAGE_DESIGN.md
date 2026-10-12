@@ -429,7 +429,9 @@ transcription and Shrink. Wave 6 built the mixing, so the two refusals above giv
   tagged `und`, so a call saved a side per track by ffmpeg, or a tool built on it, is mixed (review of F942, R3).
 - **How.** `RecordingMixer` reads each track with AVFoundation at 16 kHz with its own channel count, and for more than
   two channels a discrete layout, so nothing is downmixed on the way: asked for one channel, AVFoundation keeps only
-  channel 1 of a WAV with no layout. Each track's audio is placed on the timeline by its presentation time. Then a
+  channel 1 of a WAV with no layout. Each track's audio is placed on the timeline by its presentation time, within the
+  audio's own length: a time past the audio tracks' end and a second is refused as corrupt rather than padded to, and
+  a track that starts late stores nothing for the silence before it (review of F942). Then a
   capture's rule: each track's channels are averaged into its own signal, as a capture averages a microphone's
   channels (F659), and the tracks are summed as a capture sums its two (0.95 of the sum, a limiter above full scale).
   So a voice alone on its track keeps nearly its level and no sum clips — dividing by the number of tracks would make

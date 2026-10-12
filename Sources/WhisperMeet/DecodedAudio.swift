@@ -143,6 +143,9 @@ enum DecodedAudio {
         }
         var sums = WindowSums()
         var firstChannel = 0
+        // Where the audio ends: no buffer may be placed past it and a second, so a corrupt timestamp cannot
+        // make this allocate windows in proportion to it, nor overflow a frame index (review of F942).
+        let audioEnd = (try? await RecordingMixer.audioEnd(of: tracks)) ?? 0
         for track in tracks {
             let reader: AVAssetReader
             do { reader = try AVAssetReader(asset: asset) } catch { throw Failure.unreadable(error.localizedDescription) }
@@ -171,6 +174,11 @@ enum DecodedAudio {
                 guard copied == kCMBlockBufferNoErr else { throw Failure.unreadable("a buffer could not be read") }
                 let time = CMSampleBufferGetPresentationTimeStamp(buffer)
                 let start = time.isNumeric ? Int(saturating: (time.seconds * format.mSampleRate).rounded()) : 0
+                let limit = RecordingMixPlan.placementLimit(audioEnd: audioEnd, rate: format.mSampleRate)
+                guard RecordingMixPlan.placement(firstFrame: start, frames: frames, laneStart: 0, laneCount: 0,
+                                                 handed: 0, limit: limit) != nil else {
+                    throw Failure.unreadable("a track is timed past the end of the recording's audio")
+                }
                 let count = channels
                 sums.add(frames: frames, channelCount: count, firstChannel: firstChannel, rate: format.mSampleRate,
                          startFrame: start) { samples[$0 * count + $1] }

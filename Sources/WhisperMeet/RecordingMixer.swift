@@ -41,6 +41,8 @@ enum RecordingMixer {
         case notMixable(RecordingMixPlan.Refusal)
         case unreadable(String)
         case shortDecode(expected: TimeInterval, decoded: TimeInterval)
+        /// A track's audio is timed past the end of the recording's audio: a corrupt timestamp.
+        case implausibleTiming
 
         var errorDescription: String? {
             switch self {
@@ -50,6 +52,8 @@ enum RecordingMixer {
                 return "This recording's audio tracks could not be read to mix them into one."
             case let .shortDecode(expected, decoded):
                 return "Mixing this recording's audio tracks stopped at \(TranscriptFormatter.clock(decoded)) of \(TranscriptFormatter.clock(expected))."
+            case .implausibleTiming:
+                return "This recording's audio tracks could not be mixed into one: one of them is timed past the end of the recording's audio."
             }
         }
     }
@@ -123,7 +127,7 @@ enum RecordingMixer {
         do {
             let handle = try writer(at: output, expectedSeconds: end)
             defer { try? handle.close() }
-            let frames = try readInStep(asset: asset, tracks: tracks, channels: facts.map(\.channels)) { _, count, lanes in
+            let frames = try readInStep(asset: asset, tracks: tracks, channels: facts.map(\.channels), audioEnd: end) { _, count, lanes in
                 var block = Data(count: count * 2)
                 block.withUnsafeMutableBytes { raw in
                     let samples = raw.bindMemory(to: Int16.self)
@@ -155,7 +159,7 @@ enum RecordingMixer {
     /// read with AVAudioFile at 16 kHz — what Shrink writes. Frames past the copy's end are not measured:
     /// the length check judges the end.
     static func audit(of original: URL, against copy: URL) async throws -> RecordingMixPlan.Audit {
-        let (asset, tracks, facts, _) = try await open(original)
+        let (asset, tracks, facts, end) = try await open(original)
         let copyFile: AVAudioFile
         do { copyFile = try AVAudioFile(forReading: copy) } catch { throw Failure.unreadable(error.localizedDescription) }
         guard copyFile.processingFormat.sampleRate == Double(sampleRate), copyFile.processingFormat.channelCount == 1 else {
@@ -168,7 +172,7 @@ enum RecordingMixer {
         guard channelCount <= RecordingMixPlan.mostCheckedChannels else {
             return RecordingMixPlan.Audit(trackChannels: channels, sampleRate: Double(sampleRate), windows: [])
         }
-        let perWindow = Int(MeetingStoragePlan.levelWindowSeconds * Double(sampleRate))
+        let perWindow = Swift.max(1, Int(saturating: MeetingStoragePlan.levelWindowSeconds * Double(sampleRate)))
         var windows: [RecordingMixPlan.Audit.Window] = []
         var gram = [Double](repeating: 0, count: channelCount * channelCount)
         var projection = [Double](repeating: 0, count: channelCount)
@@ -187,7 +191,7 @@ enum RecordingMixer {
             frames = 0
         }
         var sample = [Double](repeating: 0, count: channelCount)
-        _ = try readInStep(asset: asset, tracks: tracks, channels: channels) { start, count, lanes in
+        _ = try readInStep(asset: asset, tracks: tracks, channels: channels, audioEnd: end) { start, count, lanes in
             let (copied, valid) = try copyReader.read(count)
             for frame in 0..<valid {
                 let index = (start + frame) / perWindow
@@ -247,8 +251,10 @@ enum RecordingMixer {
 
     /// Reads every audio track at 16 kHz, each channel apart, in step, and hands `body` each stretch of the
     /// timeline in order: its first frame, its length, and for each track its channels' samples over it
-    /// (silence where the track has none). Returns the frames handed on.
-    static func readInStep(asset: AVAsset, tracks: [AVAssetTrack], channels: [Int],
+    /// (silence where the track has none). Returns the frames handed on. Throws `Failure.implausibleTiming` for
+    /// a buffer timed past `audioEnd` and a second: nothing is allocated or written in proportion to a
+    /// corrupt timestamp (review of F942).
+    static func readInStep(asset: AVAsset, tracks: [AVAssetTrack], channels: [Int], audioEnd: TimeInterval,
                            body: (_ start: Int, _ count: Int, _ lanes: [[[Float]]]) throws -> Void) throws -> Int {
         let reader: AVAssetReader
         do { reader = try AVAssetReader(asset: asset) } catch { throw Failure.unreadable(error.localizedDescription) }
@@ -277,6 +283,7 @@ enum RecordingMixer {
         }
         defer { reader.cancelReading() }
         var handed = 0
+        let limit = RecordingMixPlan.placementLimit(audioEnd: audioEnd, rate: Double(sampleRate))
 
         func pull(_ index: Int) throws {
             guard let buffer = lanes[index].output.copyNextSampleBuffer() else {
@@ -294,19 +301,20 @@ enum RecordingMixer {
                 CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: raw.count, destination: raw.baseAddress!)
             }
             guard copied == kCMBlockBufferNoErr else { throw Failure.unreadable("a buffer could not be read") }
-            // Its place on the timeline. A gap before it is silence; frames at or before what is already
-            // placed — an overlap, which a well-formed track does not have, or a stretch already handed on
-            // — are dropped, so what was placed first stands.
+            // Its place on the timeline, within the audio's own length (`RecordingMixPlan.placement`): a
+            // late start stores nothing for the silence before it, a gap inside a track is silence, and
+            // frames already placed or handed on are dropped, so what was placed first stands.
             let time = CMSampleBufferGetPresentationTimeStamp(buffer)
             let first = time.isNumeric ? Int(saturating: (time.seconds * Double(sampleRate)).rounded()) : lanes[index].end
-            if lanes[index].count == 0, lanes[index].end < handed { lanes[index].start = handed }
-            let end = lanes[index].end
-            let skip = Swift.max(0, end - first)
-            guard skip < frames else { return }
-            let gap = Swift.max(0, first - end)
+            guard let place = RecordingMixPlan.placement(firstFrame: first, frames: frames, laneStart: lanes[index].start,
+                                                         laneCount: lanes[index].count, handed: handed, limit: limit) else {
+                throw Failure.implausibleTiming
+            }
+            lanes[index].start = place.laneStart
+            guard place.skip < frames else { return }
             for channel in 0..<count {
-                if gap > 0 { lanes[index].pending[channel].append(contentsOf: repeatElement(0, count: gap)) }
-                for frame in skip..<frames { lanes[index].pending[channel].append(interleaved[frame * count + channel]) }
+                if place.gap > 0 { lanes[index].pending[channel].append(contentsOf: repeatElement(0, count: place.gap)) }
+                for frame in place.skip..<frames { lanes[index].pending[channel].append(interleaved[frame * count + channel]) }
             }
         }
 
