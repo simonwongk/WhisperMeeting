@@ -1872,7 +1872,8 @@ final class AppModel: ObservableObject {
         // F942: a recording with several audio tracks, or with more than two channels, is mixed into
         // one 16 kHz mono WAV before any engine hears it. Each engine's own decode keeps one track of a
         // container (Whisper's ffmpeg, Qwen's afconvert transcode), and of more than two channels with
-        // no layout afconvert keeps channel 1 and ffmpeg drops the one it guesses is LFE. Above the
+        // no layout afconvert keeps channel 1 and ffmpeg drops the one it guesses is LFE (of 3, 6 or 8
+        // channels; it mixes 4 unevenly). Above the
         // override, so a stubbed engine is handed exactly what a real one would be. The mix is a temp
         // file of this run's, removed when the run ends; the recording is only read.
         let mixDirectory = FileManager.default.temporaryDirectory

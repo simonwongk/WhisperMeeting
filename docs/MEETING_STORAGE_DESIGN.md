@@ -430,7 +430,8 @@ transcription and Shrink. Wave 6 built the mixing, so the two refusals above giv
   voice reaching many microphones in phase can pass it: computed, not measured, six microphones that each hear the
   speaker 15 dB down beside the speaker's own read about 4.1 times the level over all channels, and are refused. That
   is the safe direction.
-- **Resume mode** is unchanged by this: it encodes nothing.
+- **Resume mode** encodes nothing. Before it removes a leftover with several tracks or more than two channels, it
+  checks the copy against it (F955, under *Resuming* above).
 
 ## Amendment for F911 (2026-10-10)
 
