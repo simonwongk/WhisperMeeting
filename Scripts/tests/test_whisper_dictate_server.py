@@ -729,17 +729,38 @@ class CachedStartSweepTests(MainHarnessCase):
         self.assertTrue(os.path.exists(self.partial), "a .part whose blob is not published is a download to resume")
         self.assertEqual(lines, [{"ready": True}], "the sweep must not write to the wire")
 
+    def record_lock_waits(self):
+        """Wraps the helper's `download_lock` so each call's `wait` (defaults applied) is recorded."""
+        import inspect
+
+        real = server.download_lock
+        waits = []
+
+        def recording(*args, **kwargs):
+            bound = inspect.signature(real).bind(*args, **kwargs)
+            bound.apply_defaults()
+            waits.append(bound.arguments["wait"])
+            return real(*args, **kwargs)
+
+        server.download_lock = recording
+        self.addCleanup(setattr, server, "download_lock", real)
+        return waits
+
     def test_with_the_download_lock_held_elsewhere_the_part_is_left(self):
         self.make_cached()
         part, orphan = self.superseded_leftovers()
         self.hold_lock()
+        waits = self.record_lock_waits()
 
         status, lines = self.run_main()
 
-        self.assertEqual(status, 0, "a held lock must not fail or delay a cached start")
+        self.assertEqual(status, 0, "a held lock must not fail a cached start")
         self.assertEqual(lines, [{"ready": True}])
         self.assertTrue(os.path.exists(part), "the sweep raced the process that holds the download lock")
         self.assertTrue(os.path.exists(orphan))
+        # "Never delays" is pinned on the call, not on a clock (review finding d): a sweep that waited
+        # out the helper's usual 10 s for a held lock passed every other assertion here.
+        self.assertEqual(waits, [0], "the cached start's sweep waited for the download lock")
 
     def test_a_cached_start_with_nothing_to_sweep_writes_nothing(self):
         """A cached start takes no lock and creates no file when there is nothing to remove (the
