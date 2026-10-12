@@ -135,7 +135,49 @@ func quitStopsALinkImportExtracting() async throws {
     try await quitDuringImport(extracting: true)
 }
 
-@Test("Quit cancels the link import, and the sheet runs and stops it through the model (F893)")
+// Review of F893 (finding 4). The app is a `WindowGroup`, so two windows can each have a link sheet.
+// The model held one task, the latest start, so a second window's Download — refused, since an
+// import was running — took the running import's place, and Quit cancelled the refusal while the
+// downloader ran on. And each sheet's Cancel stopped "the model's import", so Cancel or Escape on an
+// idle sheet in another window stopped the running one, whose catch then deleted its folder.
+
+@MainActor
+@Test("A second start that is refused does not hide the running import from Quit, nor stop it (F893)")
+func aRefusedSecondStartLeavesTheRunningImportToQuit() async throws {
+    let scratch = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F893-second-\(UUID().uuidString)", isDirectory: true)
+    let root = scratch.appendingPathComponent("library", isDirectory: true)
+    let markers = scratch.appendingPathComponent("markers", isDirectory: true)
+    try FileManager.default.createDirectory(at: markers, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer {
+        if let pid = readPID(markers.appendingPathComponent("leader.pid")) { kill(pid, SIGKILL) }
+        try? FileManager.default.removeItem(at: scratch)
+    }
+    let model = makeModel(root: root, downloader: try standInDownloader(in: markers, extracting: false))
+
+    let first = model.startLinkImport("https://www.youtube.com/watch?v=abc123")
+    try #require(await eventually { FileManager.default.fileExists(atPath: markers.appendingPathComponent("started").path) },
+                 "the stand-in downloader never started")
+    let leader = try #require(readPID(markers.appendingPathComponent("leader.pid")))
+
+    // Another window's sheet presses Download while the first import runs, and then its Stop.
+    let second = model.startLinkImport("https://www.youtube.com/watch?v=other")
+    try #require(await second.value == .refused(AppModel.linkImportBusy), "the second start was not refused")
+    second.cancel()
+    #expect(!first.isCancelled, "another start's task reached the running import")
+
+    // What AppEntry wires `AppLifecycle.onTerminate` to.
+    model.cancelWorkForQuit()
+
+    #expect(first.isCancelled, "Quit did not reach the running import")
+    let leaderStopped = await eventually { !isAlive(leader) }
+    #expect(leaderStopped, "the downloader outlived Quit")
+    first.cancel()
+    _ = await first.value
+}
+
+@Test("Quit cancels the link imports, and a sheet starts its import through the model and stops only its own (F893)")
 func quitAndTheSheetUseTheModelsLinkImport() throws {
     let entry = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppEntry.swift")
     let initRegion = try #require(entry.range(of: "var body: some Scene {")?.lowerBound)
@@ -149,7 +191,15 @@ func quitAndTheSheetUseTheModelsLinkImport() throws {
     let sheetStart = try #require(view.range(of: "private struct LinkImportSheet")?.lowerBound)
     let sheetEnd = try #require(view.range(of: "private struct AskMeetingsView")?.lowerBound)
     let sheet = String(view[sheetStart..<sheetEnd])
-    #expect(sheet.contains("model.startLinkImport("), "the sheet does not start the import through the model")
-    #expect(!sheet.contains("model.importFromURL("), "the sheet runs an import the model does not hold")
-    #expect(sheet.contains("model.cancelLinkImport()"), "the sheet's Stop does not stop the model's import")
+    let startsThroughTheModel = sheet.contains("model.startLinkImport(")
+    let runsItsOwn = sheet.contains("model.importFromURL(")
+    #expect(startsThroughTheModel, "the sheet does not start the import through the model")
+    #expect(!runsItsOwn, "the sheet runs an import the model does not hold")
+    // Its Stop cancels the task it started, and nothing that belongs to another window's sheet.
+    let keepsItsTask = sheet.contains("runningImport = running")
+    let stopsItsTask = sheet.contains("runningImport?.cancel()")
+    let stopsTheModels = sheet.contains("model.cancelLinkImport")
+    #expect(keepsItsTask, "the sheet does not keep the task it started")
+    #expect(stopsItsTask, "the sheet's Stop does not stop its own import")
+    #expect(!stopsTheModels, "the sheet's Stop can stop another window's import")
 }

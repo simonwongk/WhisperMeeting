@@ -2187,8 +2187,10 @@ private struct LinkImportSheet: View {
     /// default only otherwise, so a Return typed in the field is not also a click (F537).
     @FocusState private var linkFieldFocused: Bool
     /// Waits for the import the model is running (`AppModel.startLinkImport`), to act on its outcome.
-    /// The import itself is held by the model, so Quit can stop it as well as Stop (F893).
     @State private var importTask: Task<Void, Never>?
+    /// The import this sheet started, while it runs. Stop cancels this one and nothing else: another
+    /// window's sheet may be running an import of its own (F893). The model holds it too, for Quit.
+    @State private var runningImport: Task<AppModel.LinkImportOutcome, Never>?
     /// What the last attempt said when it declined (F539). Drawn inside this sheet because the
     /// window's alert, where these used to go, is behind it. Cleared the moment the link is edited
     /// or another attempt starts, so it never describes a link that is no longer in the field.
@@ -2297,10 +2299,12 @@ private struct LinkImportSheet: View {
         isWorking = true
         refusal = nil
         let running = model.startLinkImport(trimmedLink, confirmedLongDuration: confirmed)
+        runningImport = running
         importTask = Task {
             let outcome = await running.value
             isWorking = false
             importTask = nil
+            runningImport = nil
             switch outcome {
             case let .imported(id):
                 onImported(id)
@@ -2323,7 +2327,8 @@ private struct LinkImportSheet: View {
     /// Stops an in-flight download (the runner kills the whole process group and the import cleans up
     /// its folder) before closing, so Cancel never leaves an invisible fetch running.
     private func cancel() {
-        model.cancelLinkImport()
+        runningImport?.cancel()
+        runningImport = nil
         importTask?.cancel()
         importTask = nil
         isWorking = false

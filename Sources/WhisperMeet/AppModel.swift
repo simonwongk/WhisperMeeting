@@ -572,8 +572,9 @@ final class AppModel: ObservableObject {
 
     /// Live download progress for the link-import sheet. Nil when no download is running.
     @Published var mediaDownloadProgress: MediaDownloadProgress?
-    /// The latest link import started through `startLinkImport`, so Quit can stop it (F893).
-    private var linkImportTask: Task<LinkImportOutcome, Never>?
+    /// Every link import started through `startLinkImport` that has not ended, so Quit can stop them
+    /// (F893). Each removes itself when it ends.
+    private var runningLinkImports: [UUID: Task<LinkImportOutcome, Never>] = [:]
     /// What a link import is doing once its audio has downloaded, for the link-import sheet (F895).
     /// Nil before the download has finished and once the import has ended, however it ended.
     @Published private(set) var linkImportStage: LinkImportStage?
@@ -5447,33 +5448,40 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Starts a link import as a task the model holds, and returns it for the sheet to await (F893).
+    /// Starts a link import as a task the model holds until it ends, and returns it for the sheet that
+    /// started it to await and, on its Stop, to cancel (F893).
     ///
-    /// Held here rather than in the sheet's `@State` because Quit has to reach it. The downloader runs
-    /// in a process group of its own (`ProcessGroupRunner`), which is signalled only when the task
-    /// running it is cancelled, so an import whose task nothing on the model held went on after the
-    /// app quit — yt-dlp, and the ffmpeg it starts to extract the audio. Only one import runs at a
-    /// time (`importFromURL` refuses a second while `isImporting`), so this holds the latest start.
+    /// Held here as well as by the sheet because Quit has to reach it. The downloader runs in a process
+    /// group of its own (`ProcessGroupRunner`), which is signalled only when the task running it is
+    /// cancelled, so an import whose task nothing on the model held went on after the app quit —
+    /// yt-dlp, and the ffmpeg it starts to extract the audio.
+    ///
+    /// Every start is held until it ends, not only the latest. The app is a `WindowGroup`, so two
+    /// windows can each have a link sheet: holding the latest let a second window's Download — refused
+    /// while an import ran — take the running import's place, and Quit then cancelled the refusal
+    /// (review of F893, finding 4). Nor can a start that will be refused be told apart here: `importFromURL`
+    /// sets `isImporting` only after its probe, so a second start during the first one's probe is not
+    /// refused at all, and both run.
     func startLinkImport(_ raw: String, confirmedLongDuration: Bool = false) -> Task<LinkImportOutcome, Never> {
-        let task = Task { await importFromURL(raw, confirmedLongDuration: confirmedLongDuration) }
-        linkImportTask = task
+        let token = UUID()
+        // The task runs on the main actor, so it cannot end before it is recorded below.
+        let task = Task {
+            let outcome = await importFromURL(raw, confirmedLongDuration: confirmedLongDuration)
+            runningLinkImports[token] = nil
+            return outcome
+        }
+        runningLinkImports[token] = task
         return task
     }
 
-    /// Stops the link import in flight: the sheet's Stop, and Quit (F893). The cancellation runs the
-    /// active runner's cancellation handler on this thread, so the downloader's whole process group —
-    /// yt-dlp and any ffmpeg it started — has SIGTERM before this returns. A finished import is not
-    /// affected.
-    func cancelLinkImport() {
-        linkImportTask?.cancel()
-    }
-
     /// What Quit stops (`AppLifecycle.onTerminate`, wired in `AppEntry`): running model installs
-    /// (F520) and a link import (F893). Both run in processes of their own that would otherwise go on
-    /// after the app is gone.
+    /// (F520) and every link import still running (F893). Both run in processes of their own that
+    /// would otherwise go on after the app is gone. Cancelling a link import's task runs its runner's
+    /// cancellation handler on this thread, so the downloader's whole process group — yt-dlp and any
+    /// ffmpeg it started — has SIGTERM before this returns.
     func cancelWorkForQuit() {
         cancelAllInstalls()
-        cancelLinkImport()
+        for task in runningLinkImports.values { task.cancel() }
     }
 
     /// What `importFromURL` did (F539). The sheet closes on `.imported`, keeps itself open for
