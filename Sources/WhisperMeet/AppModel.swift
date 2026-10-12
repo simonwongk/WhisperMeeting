@@ -3459,6 +3459,8 @@ final class AppModel: ObservableObject {
             // A free lock is TAKEN here and held through the rebuild below, so a third instance
             // probing the same folder meanwhile sees a live holder rather than joining in.
             var live: Set<URL> = []
+            // F894: the link imports `settleInterruptedLinkImport` decided, tidied once all are indexed.
+            var settledLinkImports: [UUID] = []
             var probeLocks: [URL: RecordingCaptureLock.Handle] = [:]
             var candidates: [OrphanedRecording] = []
             var deferredForLease = 0
@@ -3672,6 +3674,7 @@ final class AppModel: ObservableObject {
                 // conversion in progress. The download is never touched.
                 var linkImportWarning: String?
                 if recovered.source == .importedRecording, let mediaSource {
+                    settledLinkImports.append(orphan.id)
                     switch await settleInterruptedLinkImport(recovered, duration: duration) {
                     case .leaveForNextLaunch:
                         // Nothing is indexed, so the next launch finds the folder as it was.
@@ -3813,6 +3816,12 @@ final class AppModel: ObservableObject {
                 if let recoveryWarning {
                     messages.append(recoveryWarning)
                 }
+            }
+            // F894: once its meeting is indexed (each upsert above saves the index), a link import
+            // made from its complete download loses the WAV ffmpeg never finished beside it. A folder
+            // left for the next launch has no meeting, so it is left as it is.
+            for id in settledLinkImports {
+                if let meeting = store.meeting(id: id) { await removeUnfinishedExtraction(of: meeting) }
             }
             // F297: let go of every lock the probe took. The file goes too for a folder that is
             // now indexed — it no longer looks crashed, because it no longer is. A folder still

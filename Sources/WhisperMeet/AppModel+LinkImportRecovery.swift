@@ -109,6 +109,43 @@ extension AppModel {
         }
     }
 
+    /// Removes the WAV ffmpeg never finished from a recovered link import's folder, once the meeting
+    /// is indexed from the complete download beside it (F894). Startup recovery calls it after the
+    /// sweep has saved the index, for every link import `settleInterruptedLinkImport` decided.
+    ///
+    /// Recovery used to delete nothing, so that WAV — gigabytes for a multi-hour import — stayed in
+    /// the folder, counted against the meeting until it was deleted. It is removed only when all of
+    /// these hold, and kept otherwise:
+    /// - the meeting is made from the download, not from the WAV. A meeting made from its WAV keeps
+    ///   the download beside it: both are complete, and recovery never deletes a complete copy
+    ///   (Shrink removes the download when it can show the recording covers it, F911, F947);
+    /// - the WAV is shown to hold less than the download: ffmpeg's placeholder header, or a complete
+    ///   header shorter than the download by more than `lengthTolerance` (F911's SIGTERM shape),
+    ///   measured with the reader Shrink uses (F948);
+    /// - the kernel says no process has the WAV or the download open (F946). An answer it cannot give
+    ///   keeps the file, which costs disk space and nothing else.
+    func removeUnfinishedExtraction(of meeting: MeetingRecord) async {
+        let recording = store.recordingURL(for: meeting)
+        let folder = recording.deletingLastPathComponent()
+        let wav = folder.appendingPathComponent("\(MediaDownloadArguments.outputBasename).wav")
+        guard recording.lastPathComponent != wav.lastPathComponent,
+              let download = InterruptedLinkImportExtraction.download(in: folder),
+              download.lastPathComponent == recording.lastPathComponent,
+              FileManager.default.fileExists(atPath: wav.path) else { return }
+        var holdsLess = InterruptedLinkImportExtraction.isUnfinishedWAV(at: wav)
+        if !holdsLess, let seconds = InterruptedLinkImportExtraction.finishedWAVSeconds(at: wav) {
+            let downloadSeconds = await linkImportDownloadSeconds(download, estimate: 0)
+            holdsLess = downloadSeconds > 0 && InterruptedLinkImportExtraction.holdsLess(seconds, than: downloadSeconds)
+        }
+        guard holdsLess else { return }
+        let probe = importFileOpenState
+        let closed = await Task.detached(priority: .utility) {
+            probe(wav) == .notHeld && probe(download) == .notHeld
+        }.value
+        guard closed else { return }
+        try? FileManager.default.removeItem(at: wav)
+    }
+
     /// The import files in `folder` that some process has open (F946), asked of `importFileOpenState`
     /// off the main actor, since each answer looks through every process's open files.
     func importFilesHeldOpen(in folder: URL) async -> [String] {

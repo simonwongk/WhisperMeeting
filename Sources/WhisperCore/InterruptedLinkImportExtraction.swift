@@ -199,6 +199,16 @@ extension InterruptedLinkImportExtraction {
             .first
     }
 
+    /// Whether `url` is a WAV whose header declares more audio than the file holds — ffmpeg's
+    /// 0xFFFFFFFF placeholder sizes, which it replaces only when it finishes (F894). False for a
+    /// missing file, one whose header cannot be read, and a WAV whose header is complete.
+    public static func isUnfinishedWAV(at url: URL) -> Bool {
+        guard url.pathExtension.lowercased() == "wav", let header = WAVInspection.header(at: url),
+              let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value
+        else { return false }
+        return !header.holdsDeclaredData(fileSize: size)
+    }
+
     /// The length a WAV's complete header declares, or nil when it is not a finished WAV.
     public static func finishedWAVSeconds(at url: URL) -> TimeInterval? {
         InterruptedRecordingRecovery.finalizedDuration(at: url)

@@ -208,9 +208,11 @@ func aConversionPastTheLaunchLimitIsListedAndKept() async throws {
     #expect(meeting.errorMessage?.localizedCaseInsensitiveContains("delete") == false, "\(meeting.errorMessage ?? "")")
     #expect(model.alertMessage?.localizedCaseInsensitiveContains("delete") == false, "\(model.alertMessage ?? "")")
     #expect(meeting.recordingPath.hasSuffix("recording.webm"), "indexed against \(meeting.recordingPath)")
-    for name in ["recording.webm", "recording.wav", MediaSource.sidecarFilename] {
+    for name in ["recording.webm", MediaSource.sidecarFilename] {
         #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent(name).path), "\(name) was removed")
     }
+    // The WAV ffmpeg never finished goes once the entry is indexed against the download (F894).
+    #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("recording.wav").path))
 }
 
 @Test("Startup recovery's real conversion runs under the launch's time limit (F453)")

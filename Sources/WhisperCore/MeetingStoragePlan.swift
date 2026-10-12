@@ -49,12 +49,16 @@ public enum MeetingStoragePlan {
         return ext == "m4a" ? name : stem + ".m4a"
     }
 
-    /// Whether `name` is a recording Shrink wrote for an in-app capture or rebuild. Such a meeting is
-    /// never encoded again; Shrink only finishes removing what an interrupted run left behind.
     /// Whether Shrink only has to finish an earlier, interrupted run: the recording is already its
-    /// AAC output and the originals it replaced are still there. A capture's `meeting*.m4a` is always
-    /// Shrink's own output; an import's `recording.m4a` beside a leftover `recording.<ext>` can only
-    /// come from Shrink's commit, since an import keeps exactly one file. Nothing is encoded again.
+    /// AAC output and the originals it replaced are still there. Nothing is encoded again.
+    ///
+    /// A capture's `meeting*.m4a` is always Shrink's own output. An import's `recording.m4a` beside
+    /// another `recording.<ext>` usually is too, but not only: a link import recovered from its M4A
+    /// download (F453) can hold the WAV ffmpeg never finished, or since F911 a shorter finished one,
+    /// beside it — recovery removes that WAV since F894, but not in a folder recovered by an earlier
+    /// build, nor while a process still had it open. What makes such a resume safe is not where the
+    /// files came from: `unavailability` refuses first while any other `recording.<ext>` is not shown
+    /// to hold no more audio than the recording (F911).
     public static func isResume(_ disk: DiskFacts) -> Bool {
         if isShrunkCapture(disk.recordingName) { return true }
         guard URL(fileURLWithPath: disk.recordingName).pathExtension.lowercased() == "m4a",
@@ -62,6 +66,8 @@ public enum MeetingStoragePlan {
         return !removableFiles(in: disk.entries, keeping: output).isEmpty
     }
 
+    /// Whether `name` is a recording Shrink wrote for an in-app capture or rebuild. Such a meeting is
+    /// never encoded again; Shrink only finishes removing what an interrupted run left behind.
     public static func isShrunkCapture(_ name: String) -> Bool {
         ["meeting.m4a", "meeting-recovered.m4a"].contains(name.lowercased())
     }
