@@ -5,11 +5,18 @@ public struct GlossaryCorrection: Sendable, Equatable {
     public let segmentIndex: Int
     public let from: String
     public let to: String
+    /// Where in its segment's text the occurrence this row changes starts, in `Character`s — set
+    /// only where that is not the first genuine occurrence of `from`, which is where every row
+    /// without one is applied (F950). Apply Replacement Rules sets it for a sentence's first word
+    /// that follows the same word mid-sentence ("Zoë and Jon. Jon left." with "jon → jonathan"):
+    /// a row naming only "Jon" would change the name. Never persisted: a row lives for one review.
+    public let characterOffset: Int?
 
-    public init(segmentIndex: Int, from: String, to: String) {
+    public init(segmentIndex: Int, from: String, to: String, characterOffset: Int? = nil) {
         self.segmentIndex = segmentIndex
         self.from = from
         self.to = to
+        self.characterOffset = characterOffset
     }
 }
 
@@ -487,7 +494,8 @@ public enum GlossaryCorrector {
     }
 
     /// Applies reviewed corrections to a copy of the segments: within each correction's segment,
-    /// replaces the first genuine occurrence of its `from` phrase with `to` (F444's
+    /// replaces the first genuine occurrence of its `from` phrase with `to` — or the one at the
+    /// correction's `characterOffset`, where it carries one (F950; see `place`) — (F444's
     /// `ReplacementBoundary` — the same rule the matcher used to propose it, so a proposal and its
     /// application can never disagree about which occurrence was meant: not a fragment of a longer
     /// Latin word, and not a `from` that only reads that way because it sits inside an already-`to`
@@ -533,12 +541,18 @@ public enum GlossaryCorrector {
     }
 
     /// Where `apply` changes `correction` in `text`: the first genuine occurrence of its `from`
-    /// (F444's `ReplacementBoundary`, with `evidence` for Chinese, F594), or nil when there is none.
-    /// The review sheet's sentence for a row is drawn around the same place (`context`).
+    /// (F444's `ReplacementBoundary`, with `evidence` for Chinese, F594), or, for a row that carries
+    /// a `characterOffset`, the genuine occurrence that starts there (F950) — nil when there is none,
+    /// as when the line has changed since the row was proposed: a row whose place no longer reads its
+    /// text changes nothing, rather than the first occurrence it never showed. The review sheet's
+    /// sentence for a row is drawn around the same place (`context`).
     static func place(
         of correction: GlossaryCorrection, in text: String, evidence: CJKWordEvidence
     ) -> Range<String.Index>? {
-        ReplacementBoundary.firstRange(of: correction.from, notCoveredBy: correction.to, in: text, evidence: evidence)
+        let boundary = ReplacementBoundary(heard: correction.from, notCoveredBy: correction.to, evidence: evidence)
+        let segmented = SegmentedText(text, segmenter: evidence.segmenter)
+        guard let offset = correction.characterOffset else { return boundary.firstRange(in: segmented) }
+        return boundary.genuineRanges(in: segmented).first { text.distance(from: text.startIndex, to: $0.lowerBound) == offset }
     }
 
     /// A Latin window's phrase without the punctuation stuck to its outer words (F819): "Kestrol,"

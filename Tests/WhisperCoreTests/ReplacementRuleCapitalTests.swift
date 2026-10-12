@@ -215,15 +215,55 @@ func sentenceStartsAreMarksLineBreaksAndTheStartOfTheText() {
 func ruleProposalIsWhereApplyPutsIt() {
     // "jon → big jon" on "Big jon and jon": the first "jon" is already right — it is inside "Big
     // jon", the preferred text with a sentence's capital — so the rule means the second one. But
-    // apply changes the first genuine "jon" it finds, and with no capital rule of its own that is
-    // the first: "Big big jon". So the sheet proposes nothing here rather than that row; dictation,
-    // which replaces the ranges it found, fixes the second.
+    // apply, with no capital rule of its own, finds the first genuine "jon" first: a row naming only
+    // its text wrote "Big big jon", so until F950 the sheet proposed nothing here. The row now
+    // carries the second one's place, apply writes there, and the sheet agrees with dictation.
     let rules = [ReplacementRule(heard: "jon", preferred: "big jon")]
     let segments = [seg("Big jon and jon")]
     let proposed = ReplacementRuleMatcher.corrections(rules: rules, segments: segments)
-    #expect(proposed.isEmpty)
-    #expect(GlossaryCorrector.apply(proposed, to: segments)[0].text == "Big jon and jon")
+    #expect(proposed == [GlossaryCorrection(segmentIndex: 0, from: "jon", to: "big jon", characterOffset: 12)])
+    #expect(GlossaryCorrector.apply(proposed, to: segments)[0].text == "Big jon and big jon")
     #expect(ReplacementRuleMatcher.applied(rules, to: "Big jon and jon") == "Big jon and big jon")
+}
+
+@Test("Improve proposes a sentence-start capital after the same word mid-sentence, at its own place, as dictation fixes it (F950)")
+func sentenceStartAfterTheSameWordMidSentenceIsProposed() throws {
+    let rules = [ReplacementRule(heard: "jon", preferred: "jonathan")]
+    // Apply every row, then propose again, until nothing more is proposed — what a user repeating
+    // Improve ▸ Apply Replacement Rules gets. Each round must change the text, so this ends.
+    func improved(_ text: String) throws -> String {
+        var segments = [seg(text)]
+        while true {
+            let proposed = ReplacementRuleMatcher.corrections(rules: rules, segments: segments)
+            if proposed.isEmpty { return segments[0].text }
+            let next = GlossaryCorrector.apply(proposed, to: segments)
+            try #require(next != segments, "a round of rows changed nothing: \(proposed)")
+            segments = next
+        }
+    }
+    // The review's three texts: the mid-sentence name stays, the sentence's first word is fixed.
+    let zoe = "Zoë and Jon. Jon left."
+    let proposed = ReplacementRuleMatcher.corrections(rules: rules, segments: [seg(zoe)])
+    #expect(proposed == [GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan", characterOffset: 13)])
+    let row = GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan", characterOffset: 13)
+    #expect(GlossaryCorrector.context(of: row, in: zoe) == ProposalContext(before: "Zoë and Jon. ", match: "Jon", after: " left."))
+    for text in [zoe, "I met Jon today. Jon said hi.", "Ask Jon. Then jon. Jon left."] {
+        #expect(try improved(text) == ReplacementRuleMatcher.applied(rules, to: text))
+    }
+    #expect(try improved(zoe) == "Zoë and Jon. Jonathan left.")
+    #expect(try improved("Ask Jon. Then jon. Jon left.") == "Ask Jon. Then jonathan. Jonathan left.")
+}
+
+@Test("A row whose place no longer reads its text changes nothing, rather than the first occurrence (F950)")
+func aRowWhosePlaceHasChangedIsNotApplied() {
+    let row = GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan", characterOffset: 13)
+    // The line was changed between proposing and applying: its place now holds another word.
+    #expect(GlossaryCorrector.apply([row], to: [seg("Zoë and Jon. Bob left.")])[0].text == "Zoë and Jon. Bob left.")
+    #expect(GlossaryCorrector.context(of: row, in: "Zoë and Jon. Bob left.") == nil)
+    // Its place reads "Jon" but inside a longer word: not a genuine occurrence, so not changed either.
+    #expect(GlossaryCorrector.apply([row], to: [seg("Zoë and Jon. Jones left.")])[0].text == "Zoë and Jon. Jones left.")
+    // Unchanged, it applies where it was proposed.
+    #expect(GlossaryCorrector.apply([row], to: [seg("Zoë and Jon. Jon left.")])[0].text == "Zoë and Jon. Jonathan left.")
 }
 
 @Test("Two rules that give one row propose it once, so Apply never changes an occurrence nobody reviewed (F858)")

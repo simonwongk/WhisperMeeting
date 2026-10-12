@@ -34,9 +34,12 @@ public enum ReplacementRuleMatcher {
     /// Rule-major, then segment order, as when this mapped the rules through F165's
     /// `TranscriptCorrection.glossaryCorrections`. A proposal's `from` is the text as it stands in
     /// the segment ("Jon", for a rule written "jon") and its `to` carries that capital, so
-    /// `GlossaryCorrector.apply`'s exact search finds it. It is proposed only where that search
-    /// would apply it — the first occurrence `apply` finds must be this one — or a ticked proposal
-    /// could change a different occurrence than the one reviewed (F444).
+    /// `GlossaryCorrector.apply`'s exact search finds it. It must be an occurrence that search
+    /// finds, or a ticked proposal could change a different occurrence than the one reviewed (F444);
+    /// where it is not the first one the search finds, the proposal carries its place
+    /// (`characterOffset`, F950) — a sentence's "Jon" after the name "Jon" mid-sentence ("Zoë and
+    /// Jon. Jon left."), which `apply` reached only by the name until then, so Improve never
+    /// proposed what dictation fixed.
     ///
     /// For the same reason an occurrence gets one row however many rules reach it — the first rule's
     /// in list order, as in dictation, which applies the rules in that order. The store keeps
@@ -74,10 +77,12 @@ public enum ReplacementRuleMatcher {
                     let from = String(text[range])
                     let to = boundary.replacement(for: from)
                     let applier = ReplacementBoundary(heard: from, notCoveredBy: to, evidence: evidence)
-                    guard applier.firstRange(in: segmented[index]) == range else { continue }
+                    guard let position = applier.genuineRanges(in: segmented[index]).firstIndex(of: range) else { continue }
                     if !proposed[index].contains(where: { $0.overlaps(range) }) {
                         proposed[index].append(range)
-                        result.append(GlossaryCorrection(segmentIndex: index, from: from, to: to))
+                        // Not the first occurrence `apply` would find: the row names its place (F950).
+                        let offset = position == 0 ? nil : text.distance(from: text.startIndex, to: range.lowerBound)
+                        result.append(GlossaryCorrection(segmentIndex: index, from: from, to: to, characterOffset: offset))
                     }
                     break
                 }
