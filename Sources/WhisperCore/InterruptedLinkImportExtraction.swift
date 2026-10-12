@@ -11,12 +11,25 @@ import Foundation
 /// listed as audio macOS cannot verify. This runs the conversion yt-dlp was running, with the import's
 /// own ffmpeg options, so the recovered meeting is the WAV the import would have produced.
 ///
-/// It writes `recording.extracting.wav` and renames it over `recording.wav` (the half-written one)
-/// only once ffmpeg has exited cleanly. So an interruption of this run leaves what it found, plus a
-/// partial temp file that is never a recovery candidate (its stem is not `recording`) and that the
-/// liveness probe still sees grow if this ffmpeg outlives the app too (its name starts `recording.`).
-/// **The download is never touched**, on success or failure. A failure removes the temp file and
-/// throws; cancellation is rethrown as it is, so the caller can leave the folder for the next launch.
+/// It writes a temporary file of its own, `recording.extracting.<run>.wav`, and renames it over
+/// `recording.wav` (the half-written one) only once ffmpeg has exited cleanly. So an interruption of
+/// this run leaves what it found, plus a partial temp file that is never a recovery candidate (its
+/// stem is not `recording`) and that the liveness probe still sees grow if this ffmpeg outlives the
+/// app too (its name starts `recording.`). **The download is never touched**, on success or failure.
+/// A failure removes the temp file and throws; cancellation is rethrown as it is, so the caller can
+/// leave the folder for the next launch.
+///
+/// **One temp file per run, held for the run (F945).** Two app instances whose library lease cannot
+/// tell them apart (`.unavailable`, `.unmanaged`) can both convert one interrupted import. With one
+/// temp name for every run, the run that started second removed the first one's temp as stale and
+/// wrote its own under the same name, and the first run, exiting first, then found a file by that
+/// name and renamed the second one's unfinished output into place. Now each run renames only the
+/// file it created, and holds an exclusive `flock` on it from the moment it creates it (`O_EXLOCK`,
+/// one step) until it has renamed or removed it. The sweep that clears what a quit, crash or kill
+/// left behind removes only a temp file whose lock it can take, which is one no run in any process
+/// is holding: the kernel releases a dead process's lock, so an abandoned file is always free, and a
+/// running one never is. Two runs that both finish leave the folder holding whichever renamed last,
+/// and both are complete conversions of the same download with the same options.
 ///
 /// A run still going when its `timeLimit` passes is killed — SIGKILL to its process group
 /// (`ProcessGroupRunner.kill()`) — and throws `extractionTimedOut`. Not the SIGTERM a cancellation
@@ -28,8 +41,20 @@ import Foundation
 /// stopped arriving (measured with 8.1.2: sixteen reports in eight seconds, all at one `time=`), and
 /// any output resets that watchdog, so a stuck conversion would otherwise never end.
 public enum InterruptedLinkImportExtraction {
-    /// Where the conversion writes until it has finished.
-    public static let temporaryFilename = "\(MediaDownloadArguments.outputBasename).extracting.wav"
+    /// How every file the conversion writes until it has finished is named: each run's own
+    /// `recording.extracting.<run>.wav` (F945), and the single `recording.extracting.wav` that builds
+    /// before it wrote.
+    public static let temporaryFilenamePrefix = "\(MediaDownloadArguments.outputBasename).extracting"
+
+    /// Whether `name` is a conversion's temporary file, this build's or an earlier one's.
+    public static func isTemporaryFile(named name: String) -> Bool {
+        name.hasPrefix(temporaryFilenamePrefix + ".") && name.lowercased().hasSuffix(".wav")
+    }
+
+    /// The temporary file of one run (F945).
+    static func temporaryFilename(forRun run: UUID) -> String {
+        "\(temporaryFilenamePrefix).\(run.uuidString).wav"
+    }
 
     /// Converts `download` into `recording.wav` beside it and returns that file's URL.
     ///
@@ -44,8 +69,14 @@ public enum InterruptedLinkImportExtraction {
         guard let ffmpeg else { throw MediaDownloadError.ffmpegMissing }
         let directory = download.deletingLastPathComponent()
         let output = directory.appendingPathComponent("\(MediaDownloadArguments.outputBasename).wav")
-        let temporary = directory.appendingPathComponent(temporaryFilename)
-        try? FileManager.default.removeItem(at: temporary)
+        removeAbandonedTemporaryFiles(in: directory)
+        let temporary = directory.appendingPathComponent(temporaryFilename(forRun: UUID()))
+        // Created and locked in one step (`O_EXLOCK`), and held until it is renamed into place or
+        // removed, so no other run's sweep takes it for abandoned. ffmpeg's `-y` writes into this
+        // same file. `O_CLOEXEC`, so ffmpeg does not inherit the lock.
+        let claim = open(temporary.path, O_RDWR | O_CREAT | O_EXCL | O_EXLOCK | O_NONBLOCK | O_CLOEXEC, 0o644)
+        guard claim >= 0 else { throw MediaDownloadError.extractionFailed }
+        defer { AdvisoryLockDescriptor.unlockAndClose(claim) }
         let runner = ProcessGroupRunner()
         let limit = TimeLimitWatch()
         // Timed on the monotonic uptime, so a clock change at launch cannot move it.
@@ -82,7 +113,9 @@ public enum InterruptedLinkImportExtraction {
                 // The watch's cancel, not the caller's: a caller's cancellation is rethrown as it is.
                 throw MediaDownloadError.extractionTimedOut(timeLimit ?? 0)
             }
-            guard outcome.exitStatus == 0, FileManager.default.fileExists(atPath: temporary.path) else {
+            // Non-empty, not merely present: this run created the file before ffmpeg started.
+            let written = (try? FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?.int64Value ?? 0
+            guard outcome.exitStatus == 0, written > 0 else {
                 throw MediaDownloadError.extractionFailed
             }
             // One atomic step from "half-written" to "finished": rename(2) replaces the old WAV.
@@ -91,6 +124,25 @@ public enum InterruptedLinkImportExtraction {
         } catch {
             try? FileManager.default.removeItem(at: temporary)
             throw error
+        }
+    }
+}
+
+extension InterruptedLinkImportExtraction {
+    /// Removes every temporary file in `directory` that no conversion is writing: the ones a quit, a
+    /// crash or a kill left behind (F945). A running conversion holds its file's lock from creating
+    /// it until it has renamed or removed it, in whatever process it runs, and the kernel releases a
+    /// dead process's lock. So a file whose lock this can take has no run left to finish it, and one
+    /// whose lock is held is left alone, as is one this cannot open. The single name earlier builds
+    /// wrote carries no lock, so it always reads as abandoned.
+    static func removeAbandonedTemporaryFiles(in directory: URL) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        for name in names where isTemporaryFile(named: name) {
+            let path = directory.appendingPathComponent(name).path
+            let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+            guard descriptor >= 0 else { continue }
+            if flock(descriptor, LOCK_EX | LOCK_NB) == 0 { unlink(path) }
+            AdvisoryLockDescriptor.unlockAndClose(descriptor)
         }
     }
 }

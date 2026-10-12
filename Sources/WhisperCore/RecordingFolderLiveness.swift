@@ -35,7 +35,7 @@ public enum RecordingFolderLiveness {
 
     /// What a link import writes (F453): yt-dlp's `recording.<ext>.part` while it downloads, then
     /// `recording.<ext>`, then ffmpeg's `recording.wav` while it extracts — and recovery's own
-    /// conversion writes `recording.extracting.wav`. Quit stops yt-dlp and ffmpeg
+    /// conversion writes `recording.extracting.<run>.wav` (F945). Quit stops yt-dlp and ffmpeg
     /// (`AppModel.cancelWorkForQuit`, F893); a crash sends them no signal, since yt-dlp leads its own
     /// process group and ffmpeg is its child. Measured with yt-dlp 2026.08.19 and ffmpeg 8.1.2 (F893):
     /// during the download yt-dlp dies at its next progress line, within a second, on the app's closed

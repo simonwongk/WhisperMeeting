@@ -84,15 +84,20 @@ func aFinishedExtractionBeatsItsSource() throws {
 
 @Test("Recovery's conversion temp is never the recording, however finished its header reads (F453)")
 func theConversionTempIsNeverACandidate() throws {
-    // `InterruptedLinkImportExtraction` writes `recording.extracting.wav` and renames it into place
-    // only after a clean exit. A quit leaves it with ffmpeg running on to the end, and a SIGTERM makes
-    // ffmpeg finish its header, so the temp a later launch finds can read as a complete WAV — of part
-    // of the audio, or of all of it with nothing to say so (review of F453 round 2, finding 3).
-    let tempName = InterruptedLinkImportExtraction.temporaryFilename
-    let shapes: [[String: Data]] = [
-        ["recording.webm": downloadedSource, "recording.wav": try extractionInProgressWAV(), tempName: finishedWAV()],
-        ["recording.webm": downloadedSource, tempName: finishedWAV()],
-    ]
+    // `InterruptedLinkImportExtraction` writes a temp of its own and renames it into place only after
+    // a clean exit. A quit leaves it with ffmpeg running on to the end, and a SIGTERM makes ffmpeg
+    // finish its header, so the temp a later launch finds can read as a complete WAV — of part of the
+    // audio, or of all of it with nothing to say so (review of F453 round 2, finding 3). Both names:
+    // each run's own since F945, and the single one earlier builds wrote.
+    let runName = InterruptedLinkImportExtraction.temporaryFilename(forRun: UUID())
+    let earlierName = "recording.extracting.wav"
+    #expect(InterruptedLinkImportExtraction.isTemporaryFile(named: runName))
+    #expect(InterruptedLinkImportExtraction.isTemporaryFile(named: earlierName))
+    var shapes: [[String: Data]] = []
+    for tempName in [runName, earlierName] {
+        shapes.append(["recording.webm": downloadedSource, "recording.wav": try extractionInProgressWAV(), tempName: finishedWAV()])
+        shapes.append(["recording.webm": downloadedSource, tempName: finishedWAV()])
+    }
     for files in shapes {
         let folder = try makeFolder(files)
         defer { try? FileManager.default.removeItem(at: folder) }
