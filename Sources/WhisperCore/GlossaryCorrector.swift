@@ -149,7 +149,8 @@ public enum GlossaryCorrector {
     }
 
     /// F65's search, which picks the same window for text without Chinese: the first 1–3-token
-    /// window with the highest ratio at or above the threshold, not equal to the term, unless the
+    /// window (1–n for a term of n > 3 words, F940, below) with the highest ratio at or above the
+    /// threshold, not equal to the term, unless the
     /// term already stands as a window — one token or, since F820, several: F65 asked only whether
     /// it was one token, so a correct "Priya Raman said" scored 10/14 against "Priya Raman" and was
     /// proposed as it, deleting "said". The phrase returned is the window's without the punctuation
