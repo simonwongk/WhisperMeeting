@@ -701,7 +701,8 @@ def download_lock(hub_dir, mlx_repo, wait=DOWNLOAD_LOCK_WAIT_SECONDS, sleep=time
     other's verify-then-replace could append to the already-published blob. And a Repair during the
     download moved the `.part` into the installer's backup and deleted it. Now the second helper
     waits briefly and then says why it cannot download, and the installer leaves a model alone while
-    this lock is held. (The installer only probes the lock; it does not hold it while it downloads.)"""
+    this lock is held. The installer also holds it, from its first check of the model to its swap
+    (F898), so a helper that starts during an install's download waits here and then says so."""
     path = download_lock_path(hub_dir, mlx_repo)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)

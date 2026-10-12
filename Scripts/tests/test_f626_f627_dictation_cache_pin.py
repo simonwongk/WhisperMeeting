@@ -129,7 +129,7 @@ class InstallerBlockCase(unittest.TestCase):
         with open(os.path.join(self.target, "refs", "main"), "w") as handle:
             handle.write(ref if ref is not None else revision)
 
-    def run_block(self):
+    def run_block(self, after=()):
         script = "\n".join([
             "#!/bin/zsh",
             "set -euo pipefail",
@@ -137,6 +137,7 @@ class InstallerBlockCase(unittest.TestCase):
             'staging_venv="%s"' % self.venv,
             _function(required=False),
             _block(),
+            *after,
             'print "block finished"',
         ])
         path = os.path.join(self.tmp, "run-block.sh")
@@ -246,8 +247,9 @@ class HelperDownloadLockTests(InstallerBlockCase):
     dictation helper's first-run download moved the helper's partial download into
     `.dictation-model-backup-$$` and deleted it. The helper now holds a `flock(2)` lock while it
     downloads (`download_lock` in `whisper_dictate_server.py`; `LockTests` there pins the path to
-    this one), and the block leaves the model alone while it is held — checked before anything is
-    downloaded, and again just before the swap."""
+    this one), and the block leaves the model alone while it is held. Since F898 the block holds the
+    lock itself from its first check until after the swap, so a helper that starts during the
+    install's download waits for it instead of downloading beside it."""
 
     LOCK = os.path.join(".locks", REPOSITORY_FOLDER, "whispermeet-dictation-download.lock")
 
@@ -296,48 +298,68 @@ class HelperDownloadLockTests(InstallerBlockCase):
         self.assertIn("left to finish there", result.stdout)
         self.assertEqual(self.leftovers(), [])
 
-    def test_a_download_the_helper_starts_during_the_install_is_not_swapped_away(self):
-        """The helper can start its download while the installer's own is running; the second check,
-        just before the swap, sees it. The fake download step starts a holder of the lock itself."""
-        self.write_partial_download()
-        lock = os.path.join(self.hub, self.LOCK)
-        pid_file = os.path.join(self.tmp, "holder.pid")
+    def test_a_helper_that_starts_during_the_installs_download_waits_for_the_lock_instead_of_downloading(self):
+        """F898 — the installer used to probe the lock and then download for minutes without holding
+        it, so a helper that started meanwhile downloaded the same 1.6 GB beside it. The block now
+        holds the lock from its first check to after the swap. Two processes: while the stand-in
+        download runs, the REAL helper's `download_lock` — the gate its download passes first — is
+        tried from a second python, without waiting, and says what it got."""
+        import sys
+
+        record = os.path.join(self.tmp, "helper-lock-attempt.txt")
+        attempt = os.path.join(self.tmp, "helper_lock_attempt.py")
+        with open(attempt, "w") as handle:
+            handle.write(
+                "import importlib.util, sys\n"
+                "spec = importlib.util.spec_from_file_location('helper', sys.argv[1])\n"
+                "helper = importlib.util.module_from_spec(spec)\n"
+                "spec.loader.exec_module(helper)\n"
+                "try:\n"
+                "    with helper.download_lock(sys.argv[2], sys.argv[3], wait=0):\n"
+                "        result = 'acquired'\n"
+                "except helper.ModelDownloadError as error:\n"
+                "    result = 'busy: ' + str(error)\n"
+                "open(sys.argv[4], 'w').write(result)\n"
+            )
+        helper = os.path.abspath(os.path.join(_HERE, "..", "whisper_dictate_server.py"))
         python = os.path.join(self.venv, "bin", "python")
         with open(python) as handle:
             original = handle.read()
-        import sys
-
-        hold = ("import fcntl, os, sys, time; os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True); "
-                "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644); fcntl.flock(fd, fcntl.LOCK_EX); "
-                "time.sleep(60)")
-        holder_start = (
-            'mkdir -p "%s"\n' % os.path.dirname(lock)
-            + "'%s' -c '%s' '%s' </dev/null >/dev/null 2>&1 &\n" % (sys.executable, hold, lock)
-            + 'echo $! > "%s"\n' % pid_file
-            + "i=0\n"
-            # until the holder has the lock (lockf -t 0 succeeds only while it is free), bounded
-            + 'while /usr/bin/lockf -s -k -t 0 "%s" /usr/bin/true && [ $i -lt 1000 ]; do i=$((i+1)); sleep 0.01; done\n' % lock
-        )
+        during_download = "'%s' '%s' '%s' '%s' 'mlx-community/whisper-large-v3-turbo' '%s'\n" % (
+            sys.executable, attempt, helper, self.hub, record)
         with open(python, "w") as handle:
-            handle.write(original.replace("cat > /dev/null\n", "cat > /dev/null\n" + holder_start))
-        self.addCleanup(self.stop_holder, pid_file)
+            handle.write(original.replace("cat > /dev/null\n", "cat > /dev/null\n" + during_download))
 
         result = self.run_block()
 
-        self.assertEqual(self.downloads(), 1, "the installer's own download ran: the lock was free then")
-        self.assertTrue(os.path.exists(self.part), "the helper's partial download was swapped away and deleted")
-        self.assertIn("during this install", result.stdout)
-        self.assertEqual(self.leftovers(), [], "the installer's unused copy must not be left behind")
+        with open(record) as handle:
+            attempted = handle.read()
+        self.assertTrue(attempted.startswith("busy:"),
+                        "a helper that started during the install's download got the lock (%r): it would "
+                        "have downloaded the model beside the installer" % attempted)
+        self.assertIn("another WhisperMeet process is downloading", attempted)
+        self.assertEqual(self.downloads(), 1)
+        self.assertEqual(self.snapshot_file("weights.safetensors"), FAKE_WEIGHTS, "the install's own model was not swapped in")
+        self.assertEqual(self.ref(), FAKE_REVISION)
+        self.assertEqual(self.leftovers(), [])
+        self.assertNotIn("left to finish there", result.stdout)
 
-    @staticmethod
-    def stop_holder(pid_file):
-        import signal
+    AFTER_BLOCK_PROBE = ('/usr/bin/lockf -s -k -t 0 "$dictation_download_lock" /usr/bin/true '
+                         '&& print "lock after block: free" || print "lock after block: held"')
 
-        try:
-            with open(pid_file) as handle:
-                os.kill(int(handle.read().strip()), signal.SIGTERM)
-        except (OSError, ValueError):
-            pass
+    def test_the_lock_is_free_again_as_soon_as_the_block_has_run(self):
+        """The rest of the install (yt-dlp, the shebang rewrite, the swap of the venv) runs after
+        this block, and a helper that starts then must be able to take the lock: one the installer
+        kept until it exits would turn that helper's first-run download into "another process is
+        downloading". Probed by the same script, right after the block."""
+        self.write_partial_download()
+        result = self.run_block(after=[self.AFTER_BLOCK_PROBE])
+        self.assertIn("lock after block: free", result.stdout)
+
+        self.write_cache()  # a cache that already matches the pin: the "kept" path releases it too
+        result = self.run_block(after=[self.AFTER_BLOCK_PROBE])
+        self.assertIn("already matches the pinned revision", result.stdout)
+        self.assertIn("lock after block: free", result.stdout)
 
     def test_with_the_lock_free_the_block_runs_as_before(self):
         self.write_partial_download()

@@ -28,6 +28,7 @@ model downloads and curl are stood in for), in its own process group, signalled 
 import os
 import re
 import shutil
+import subprocess
 import unittest
 
 import installer_harness as harness
@@ -167,6 +168,21 @@ class WhisperDictationModelCancelTests(unittest.TestCase):
         self.assert_nothing_leaked(stderr)
         self.assertEqual(harness.read(os.path.join(self.model, "MARKER")), "old model")
         self.assertEqual(harness.read(os.path.join(self.venv, "MARKER")), "old")
+
+    def test_a_cancel_during_the_model_download_leaves_the_download_lock_free(self):
+        """F898: the block holds the dictation download lock across its download, through a `lockf`
+        coprocess. A Cancel (SIGTERM to the group) must not leave that holder alive — a lock nobody
+        releases would make every later first-run download say another process is downloading."""
+        returncode, stderr = self.sandbox.run_and_terminate_group(self.runtime, "download")
+        self.assertEqual(returncode, 130, stderr)
+        lock = os.path.join(self.hub, ".locks", "models--mlx-community--whisper-large-v3-turbo",
+                            "whispermeet-dictation-download.lock")
+        self.assertTrue(os.path.exists(lock), "the block never took the lock, so this proves nothing")
+
+        def free():
+            return subprocess.run(["/usr/bin/lockf", "-s", "-k", "-t", "0", lock, "/usr/bin/true"]).returncode == 0
+
+        harness.wait_until(free, 30, "the cancelled install's hold on the dictation download lock to end")
 
     def test_a_cancel_between_the_model_swaps_puts_the_old_model_back(self):
         # Hang the move of the NEW model into place: the old one has just been moved aside.
