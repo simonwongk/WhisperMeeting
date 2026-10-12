@@ -4,9 +4,9 @@ import Testing
 @testable import WhisperCore
 @testable import WhisperMeet
 
-// F942 — the mixer itself, on synthetic files: every channel of every track is summed, each at its own
-// time, by the capture mixer's rule (0.95 of the sum, a limiter above full scale), into a 16 kHz mono
-// 16-bit WAV. The recording is only read.
+// F942 — the mixer itself, on synthetic files: each track's channels are averaged, each track placed at its
+// own time, and the tracks summed by the capture mixer's rule (0.95 of the sum, a limiter above full scale),
+// into a 16 kHz mono 16-bit WAV. The recording is only read.
 
 private func scratch(_ label: String) throws -> URL {
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("\(label)-\(UUID().uuidString)")
@@ -70,6 +70,32 @@ func mixerAveragesATracksChannels() async throws {
     // 0.95 of the voice's own level, as a capture's limiter rule gives a lone track; summed, it read 0.57.
     #expect(abs(fixtureToneAmplitude(mix, rate: 16_000, frequency: 300, from: 0.2, to: 1.8) - 0.285) < 0.01)
     #expect(mix.filter { abs($0) > 0.5 }.isEmpty, "nowhere near the limiter")
+}
+
+// F964 — a segment re-run decodes a WAV with more than two channels by averaging them (`decodedSegmentClip`,
+// F581), while round 1 of F942 summed them for the full transcription, so a re-run line on a four-microphone
+// recording was 12 dB quieter than what transcribed the meeting. Averaging a track's channels in the mix
+// (review of F942) puts both at the same level, to the capture's 0.95.
+@Test("A segment re-run of a four-channel WAV hears each channel as loud as the full transcription did (F964)")
+@MainActor
+func segmentClipIsAsLoudAsTheMixOfAPolyWAV() async throws {
+    let dir = try scratch("F964"); defer { try? FileManager.default.removeItem(at: dir) }
+    let tones = [300.0, 500.0, 700.0, 900.0]
+    let input = dir.appendingPathComponent("recording.wav")
+    try fixturePolyWAV(tones.map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 4) }).write(to: input)
+
+    let (mix, _) = try await mixed(input, in: dir)
+    let clipURL = try AppModel.makeSegmentClip(from: input, startSeconds: 1, endSeconds: 3)
+    defer { try? FileManager.default.removeItem(at: clipURL) }
+    let clip = try fixtureDecode(clipURL)
+    let clipSamples = try #require(clip.channels.first)
+
+    for tone in tones {
+        let full = fixtureToneAmplitude(mix, rate: 16_000, frequency: tone, from: 1.2, to: 2.8)
+        let rerun = fixtureToneAmplitude(clipSamples, rate: clip.rate, frequency: tone, from: 0.2, to: 1.8)
+        // 0.05 in the clip (0.2 averaged over four), 0.0475 in the mix; summed, the mix read 0.19.
+        #expect(full > 0.04 && rerun / full > 0.9 && rerun / full < 1.2, "\(tone) Hz: full run \(full), re-run \(rerun)")
+    }
 }
 
 @Test("A stereo track beside a mono one: each of the three channels is in the mix (F942)")
