@@ -519,3 +519,47 @@ func removeIfUnchangedRemovesOnlyTheMeasuredFile() throws {
     // A file that is not there is not removed.
     #expect(!InterruptedLinkImportExtraction.removeIfUnchanged(partial, identity: now))
 }
+
+// MARK: - A volume that cannot lock (review of F945, finding 5)
+
+/// The flags each open was asked for, and what a volume without `flock` answers to `O_EXLOCK`.
+private final class OpenLog: @unchecked Sendable {
+    var flags: [Int32] = []
+}
+
+@Test("On a volume that cannot lock, the run's temp file is created without the lock instead of failing (F945)")
+func aVolumeWithoutLocksStillGetsATempFile() throws {
+    // open(2): "[EOPNOTSUPP] O_SHLOCK or O_EXLOCK is specified, but the underlying filesystem does not
+    // support locking" — NFS mounted with `nolocks`, some SMB and WebDAV setups. Failing there made every
+    // recovery conversion on such a volume an "Unfinished import". The library lease fails open on the
+    // same condition. The per-run name alone keeps two runs from renaming each other's output.
+    for refusal in [EOPNOTSUPP, ENOTSUP] {
+        let (folder, _, _) = try makeInterruptedFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let path = folder.appendingPathComponent(InterruptedLinkImportExtraction.temporaryFilename(forRun: UUID())).path
+        let log = OpenLog()
+        let descriptor = InterruptedLinkImportExtraction.createTemporaryFile(at: path) { path, flags in
+            log.flags.append(flags)
+            if flags & O_EXLOCK != 0 { return (-1, refusal) }
+            return InterruptedLinkImportExtraction.systemOpen(path, flags)
+        }
+        let created = try #require(descriptor, "no temp file on a volume that answers \(refusal) to O_EXLOCK")
+        defer { close(created) }
+        #expect(FileManager.default.fileExists(atPath: path))
+        #expect(log.flags.count == 2 && log.flags[0] & O_EXLOCK != 0 && log.flags[1] & O_EXLOCK == 0, "\(log.flags)")
+    }
+}
+
+@Test("Any other refusal to create the temp file is still a failure, not a second try (F945)")
+func anotherOpenFailureIsNotRetried() throws {
+    let (folder, _, _) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let path = folder.appendingPathComponent(InterruptedLinkImportExtraction.temporaryFilename(forRun: UUID())).path
+    let log = OpenLog()
+    let descriptor = InterruptedLinkImportExtraction.createTemporaryFile(at: path) { _, flags in
+        log.flags.append(flags)
+        return (-1, EACCES)
+    }
+    #expect(descriptor == nil)
+    #expect(log.flags.count == 1)
+}

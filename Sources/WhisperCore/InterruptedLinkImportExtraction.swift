@@ -72,10 +72,10 @@ public enum InterruptedLinkImportExtraction {
         removeAbandonedTemporaryFiles(in: directory)
         let temporary = directory.appendingPathComponent(temporaryFilename(forRun: UUID()))
         // Created and locked in one step (`O_EXLOCK`), and held until it is renamed into place or
-        // removed, so no other run's sweep takes it for abandoned. ffmpeg's `-y` writes into this
-        // same file. `O_CLOEXEC`, so ffmpeg does not inherit the lock.
-        let claim = open(temporary.path, O_RDWR | O_CREAT | O_EXCL | O_EXLOCK | O_NONBLOCK | O_CLOEXEC, 0o644)
-        guard claim >= 0 else { throw MediaDownloadError.extractionFailed }
+        // removed, so no other run's sweep takes it for abandoned — unlocked on a volume that cannot
+        // lock (`createTemporaryFile`). ffmpeg's `-y` writes into this same file. `O_CLOEXEC`, so
+        // ffmpeg does not inherit the lock.
+        guard let claim = createTemporaryFile(at: temporary.path) else { throw MediaDownloadError.extractionFailed }
         defer { AdvisoryLockDescriptor.unlockAndClose(claim) }
         let runner = ProcessGroupRunner()
         let limit = TimeLimitWatch()
@@ -129,6 +129,34 @@ public enum InterruptedLinkImportExtraction {
 }
 
 extension InterruptedLinkImportExtraction {
+    /// Creates a run's temporary file at `path` and returns its descriptor, holding an exclusive lock
+    /// on it where the volume can lock; nil when it cannot be created (F945).
+    ///
+    /// On a volume without `flock` — NFS mounted with `nolocks`, some SMB and WebDAV setups — `open(2)`
+    /// refuses `O_EXLOCK` with `EOPNOTSUPP` ("the underlying filesystem does not support locking"), and
+    /// failing there made every recovery conversion on such a volume an unfinished import (review of
+    /// F945, finding 5). The file is then created without the lock, as the library lease fails open
+    /// on the same condition: the per-run name alone keeps two runs from renaming each other's output,
+    /// and the sweep, unable to take a lock there either, leaves the file — the safe direction. The
+    /// second open does not ask for `O_EXCL`, because the refused one may have created the file
+    /// already, and the name is this run's alone. Any other failure is a failure.
+    static func createTemporaryFile(
+        at path: String,
+        open openFile: (String, Int32) -> (descriptor: Int32, error: Int32) = systemOpen
+    ) -> Int32? {
+        let locked = openFile(path, O_RDWR | O_CREAT | O_EXCL | O_EXLOCK | O_NONBLOCK | O_CLOEXEC)
+        if locked.descriptor >= 0 { return locked.descriptor }
+        guard locked.error == EOPNOTSUPP || locked.error == ENOTSUP else { return nil }
+        let unlocked = openFile(path, O_RDWR | O_CREAT | O_NONBLOCK | O_CLOEXEC)
+        return unlocked.descriptor >= 0 ? unlocked.descriptor : nil
+    }
+
+    /// `open(2)` with mode 0644, answering the descriptor and, when it failed, its `errno`.
+    static func systemOpen(_ path: String, _ flags: Int32) -> (descriptor: Int32, error: Int32) {
+        let descriptor = open(path, flags, 0o644)
+        return (descriptor, descriptor >= 0 ? 0 : errno)
+    }
+
     /// Removes every temporary file in `directory` that no conversion is writing: the ones a quit, a
     /// crash or a kill left behind (F945). A running conversion holds its file's lock from creating
     /// it until it has renamed or removed it, in whatever process it runs, and the kernel releases a
