@@ -205,3 +205,27 @@ func accentedLatinLetterContinuesTheWord() {
     // Cyrillic and full-width letters are still word edges, as F592 decided.
     #expect(ReplacementRuleMatcher.applied(rules, to: "jonЙ and \u{FF4A}jon") == "JonathanЙ and \u{FF4A}Jonathan")
 }
+
+@Test("A letter written with a separate combining accent continues the word too, in dictation and Improve (F951)")
+func decomposedAccentContinuesTheWord() {
+    // "á" as "a" + U+0301 is one Character of two scalars, which F858's check read as a word edge:
+    // dictation pasted "Jonathanás met Jonathan." and Improve proposed the "Jon" of Jonás.
+    let rules = [ReplacementRule(heard: "jon", preferred: "Jonathan")]
+    let decomposed = "Jona\u{301}s met jon."
+    #expect(decomposed.unicodeScalars.count == decomposed.count + 1, "the premise: the accent is a scalar of its own")
+    #expect(ReplacementRuleMatcher.applied(rules, to: decomposed) == "Jona\u{301}s met Jonathan.")
+    let segments = [seg(decomposed)]
+    let proposed = ReplacementRuleMatcher.corrections(rules: rules, segments: segments)
+    #expect(proposed == [GlossaryCorrection(segmentIndex: 0, from: "jon", to: "Jonathan")])
+    #expect(GlossaryCorrector.apply(proposed, to: segments)[0].text == "Jona\u{301}s met Jonathan.")
+    // Before the word as well as after it: "élan" with its accent decomposed.
+    let lan = [ReplacementRule(heard: "lan", preferred: "LAN")]
+    #expect(ReplacementRuleMatcher.applied(lan, to: "the lan has e\u{301}lan") == "the LAN has e\u{301}lan")
+    let lanSegments = [seg("e\u{301}lan and the lan")]
+    let lanProposed = ReplacementRuleMatcher.corrections(rules: lan, segments: lanSegments)
+    #expect(lanProposed == [GlossaryCorrection(segmentIndex: 0, from: "lan", to: "LAN")])
+    #expect(GlossaryCorrector.apply(lanProposed, to: lanSegments)[0].text == "e\u{301}lan and the LAN")
+    // A mark after a character that is no Latin letter keeps it an edge: a space with an accent on
+    // it is still a space, and a Cyrillic letter with one is still another script.
+    #expect(ReplacementRuleMatcher.applied(rules, to: "Й\u{301}jon and jon") == "Й\u{301}Jonathan and Jonathan")
+}

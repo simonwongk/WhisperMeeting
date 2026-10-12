@@ -30,10 +30,17 @@ import Foundation
 /// not, and "jon → Jonathan" turned "Jonás" into "Jonathanás" once F858 let replacement rules reach
 /// capitalised names (the Wave 5 review of F858, T3). The Latin-1 Supplement's letters, Latin
 /// Extended-A and -B and Latin Extended Additional now continue a token; every other script —
-/// Cyrillic and full-width forms included — is still a boundary, exactly as F592 decided. A letter
-/// written as a base letter plus a separate combining accent (decomposed) is one `Character` of
-/// several scalars and is still a boundary here, as before; `ProtectedTerms` composes text before
-/// it matches, so only `ReplacementBoundary` would see one.
+/// Cyrillic and full-width forms included — is still a boundary, exactly as F592 decided.
+///
+/// A letter written as a base letter plus a separate combining accent ("a" + U+0301, decomposed) is
+/// one `Character` of several scalars, and it is read by its base letter (F951): until then it was
+/// a boundary, so "jon → Jonathan" turned a decomposed "Jonás" into "Jonathanás" — and
+/// `ProtectedTerms`, which composes text before it matches, read the same text as one word, so the
+/// two callers disagreed (the Wave 5 review of F858, R5). They agree wherever the accented letter
+/// has a precomposed form, as the accented letters of the four blocks below do. A letter with a mark
+/// that has none (or with two marks stacked) stays decomposed after composing, and before a term
+/// `ProtectedTerms`'s regex then sees the mark, not the letter. Not planned: that pairing — no
+/// language this app transcribes writes one.
 public enum LatinTokenBoundary {
     /// The Latin letters outside ASCII, as scalar ranges: the Latin-1 Supplement's letters (U+00C0
     /// to U+00FF without × and ÷), Latin Extended-A and -B, and Latin Extended Additional.
@@ -49,12 +56,19 @@ public enum LatinTokenBoundary {
 
     /// Whether `character` continues an existing Latin/alphanumeric token rather than ending it.
     /// True for an ASCII letter, an ASCII digit, an underscore, or one of the Latin letters outside
-    /// ASCII — the set `regexCharacterClass` spells as a regex class. Every other character (space,
-    /// punctuation, a CJK ideograph, a letter of another script, a full-width Latin letter or digit)
-    /// is a boundary.
+    /// ASCII — the set `regexCharacterClass` spells as a regex class — alone or followed by combining
+    /// accents (F951: decomposed "á" is "a" with an accent, and continues the word as "á" does). Every
+    /// other character (space, punctuation, a CJK ideograph, a letter of another script, a full-width
+    /// Latin letter or digit, any of these with an accent on it) is a boundary.
     public static func isConnector(_ character: Character) -> Bool {
-        if character.isASCII { return character.isLetter || character.isNumber || character == "_" }
-        guard character.unicodeScalars.count == 1, let scalar = character.unicodeScalars.first else { return false }
-        return nonASCIILatinLetters.contains { $0.contains(scalar.value) }
+        let scalars = character.unicodeScalars
+        guard let base = scalars.first,
+              scalars.dropFirst().allSatisfy({ $0.properties.generalCategory == .nonspacingMark }) else { return false }
+        let value = base.value
+        if base.isASCII {
+            return (0x41...0x5A).contains(value) || (0x61...0x7A).contains(value) || (0x30...0x39).contains(value)
+                || value == 0x5F
+        }
+        return nonASCIILatinLetters.contains { $0.contains(value) }
     }
 }

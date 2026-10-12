@@ -57,6 +57,18 @@ private let boundaryCases: [BoundaryCase] = [
         reason: "symmetric with the case above: the connector rule applies on both sides of a match"
     ),
     BoundaryCase(
+        name: "a decomposed accented letter after the term continues the token",
+        term: "Jon", text: "ask Jona\u{301}s today", expected: false,
+        reason: "\"a\" followed by a separate combining acute is the same letter as \"á\" — ProtectedTerms "
+            + "composes the text first and reads one word, so ReplacementBoundary must read one too "
+            + "(the Wave 5 review of F858, R5; F951)"
+    ),
+    BoundaryCase(
+        name: "a decomposed accented letter before the term continues the token",
+        term: "lan", text: "with e\u{301}lan", expected: false,
+        reason: "symmetric with the case above: the connector rule applies on both sides of a match"
+    ),
+    BoundaryCase(
         name: "a Latin letter outside ASCII with no accent continues the token",
         term: "Stra", text: "the Straße sign", expected: false,
         reason: "ß, ø, æ and ł are Latin letters too; the class is the Latin script's letters, not "
