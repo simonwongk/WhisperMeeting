@@ -91,6 +91,29 @@ private final class ReadWatchdog: @unchecked Sendable {
     }
 }
 
+/// Where in a helper's start a test hook runs (F878).
+enum HelperStartPoint: Sendable {
+    /// The process has been launched and is not yet registered live, so a stop that lands now
+    /// finds nothing to terminate.
+    case launched
+    /// The process is registered live; a stop that lands now terminates it.
+    case registered
+}
+
+/// A helper's start was ended by `evict()` or `shutdown()` (F878).
+///
+/// **Not a reason to fall back.** Nothing about this Mac was learned: the helper was stopped
+/// because the app asked for its memory back (a meeting is about to transcribe) or switched
+/// dictation off, so `FallbackDictationEngine` must not read it as "the warm helper cannot run
+/// here" and move the session to the batch engine for good. The next warm-up starts it again.
+public struct DictationHelperStoppedError: LocalizedError, Equatable, Sendable {
+    public init() {}
+
+    public var errorDescription: String? {
+        "The dictation model was stopped before it finished starting. The next dictation starts it again."
+    }
+}
+
 /// Keeps a Whisper model resident in a child Python process, driven over stdin/stdout
 /// newline-delimited JSON, so repeat dictations skip the multi-second model-load cost.
 /// All process/IO work is serialized on a private queue; the model is evicted on `shutdown()`.
@@ -119,6 +142,19 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     private var liveProcess: Process?
     private var liveStdin: FileHandle?
     private var retired = false
+    /// How many times `evict()` or `shutdown()` has asked the helper to stop (F878), guarded by
+    /// `liveLock`. A start compares it with the count when its operation was asked for: a request
+    /// that arrives before the new helper is registered live finds nothing to terminate, so the
+    /// start itself has to see it, or the eviction waits out the whole model load.
+    private var stopRequests = 0
+
+    /// The count above, for a test.
+    var stopRequestCount: Int { liveLock.withLock { stopRequests } }
+
+    /// Run on `queue` at two points of a helper's start, for a test to land a stop exactly there
+    /// (F878): right after the process is launched and before it is registered live, and right
+    /// after it is registered. nil in the app.
+    var helperStartHookForTesting: ((HelperStartPoint) -> Void)?
 
     // Continuously-drained stderr, so an early failure (e.g. an MLX import traceback) shows WHY the
     // helper died instead of a generic "stopped unexpectedly". Draining on a background handler
@@ -199,7 +235,8 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     }
 
     public func warmUp() async throws {
-        try await run { try self.ensureRunning() }
+        let stops = stopRequestCount
+        try await run { try self.ensureRunning(stopsWhenAsked: stops) }
     }
 
     /// F891: one second of silence through the resident helper's own request path (for the Qwen
@@ -229,8 +266,9 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         language: WhisperLanguage,
         initialPrompt: String?
     ) async throws -> DictationResult {
-        try await run {
-            try self.ensureRunning()
+        let stops = stopRequestCount
+        return try await run {
+            try self.ensureRunning(stopsWhenAsked: stops)
             let request = DictationRequest(
                 wavPath: url.path,
                 language: language.commandLineValue,
@@ -262,7 +300,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // the queued operation returns at once — instead of the state-cleanup below (queued behind
         // it) having to wait out the read's 120s/1800s timeout. Mirrors the off-queue terminate the
         // readLine watchdog and LocalWhisperClient's ProcessCancellationController already rely on.
-        let (process, input) = captureLiveProcess()
+        let (process, input) = requestStopAndCaptureLiveProcess()
         requestHelperTermination(process: process, input: input)
 
         queue.async {
@@ -274,7 +312,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // Meeting transcription needs the unified memory now, but this engine remains usable for
         // the next hotkey press. Close/terminate off the queue so a blocked line read unblocks,
         // then wait until cleanup confirms the child is gone before another model starts.
-        let (process, input) = captureLiveProcess()
+        let (process, input) = requestStopAndCaptureLiveProcess()
         requestHelperTermination(process: process, input: input)
 
         await withCheckedContinuation { continuation in
@@ -306,9 +344,12 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         return (process, input)
     }
 
-    private func captureLiveProcess() -> (Process?, FileHandle?) {
+    /// Counts the stop (F878) and returns the helper to terminate, in one critical section with the
+    /// start's registration, so a request is either seen by the start or finds the helper live.
+    private func requestStopAndCaptureLiveProcess() -> (Process?, FileHandle?) {
         liveLock.lock()
         defer { liveLock.unlock() }
+        stopRequests &+= 1
         return (liveProcess, liveStdin)
     }
 
@@ -340,11 +381,18 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         }
     }
 
-    private func ensureRunning() throws {
+    /// Starts the helper unless one is running. `stopsWhenAsked` is `stopRequestCount` when the
+    /// operation was asked for, before it queued (F878): an `evict()` or `shutdown()` since then was
+    /// meant for this start, whether it lands before the helper is launched, before it is registered
+    /// live (where it finds nothing to terminate), or after (where it terminates it mid-load). Each
+    /// ends the start with `DictationHelperStoppedError` at once; the first two used to wait out the
+    /// whole model load and have it killed afterwards.
+    private func ensureRunning(stopsWhenAsked: Int) throws {
         if let process, process.isRunning { return }
         guard !isRetired else {
             throw processFailure("Dictation model was replaced before it finished starting.")
         }
+        guard !wasAskedToStop(since: stopsWhenAsked) else { throw DictationHelperStoppedError() }
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
             throw runtimeMissing
         }
@@ -397,19 +445,26 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
                 self?.appendStderr(text)
             }
         }
-        // Expose the live handles so shutdown() can terminate this child off-queue.
+        helperStartHookForTesting?(.launched)
+        // Expose the live handles so shutdown() can terminate this child off-queue. Read under the
+        // same lock a stop counts itself under, so a stop is either seen here or finds this child.
         liveLock.lock()
         liveProcess = process
         liveStdin = self.stdin
         let shouldStop = retired
+        let askedToStop = stopRequests != stopsWhenAsked
         liveLock.unlock()
-        if shouldStop {
+        if shouldStop || askedToStop {
             // Same escalation as every other termination site: a helper that ignores TERM while
-            // being retired mid-launch must not outlive this call on the strength of the queued
-            // `clearProcessState()` happening to reach it later.
+            // being retired or evicted mid-launch must not outlive this call on the strength of the
+            // queued `clearProcessState()` happening to reach it later.
             requestHelperTermination(process: process, input: self.stdin)
-            throw processFailure("Dictation model was replaced before it finished starting.")
+            if shouldStop {
+                throw processFailure("Dictation model was replaced before it finished starting.")
+            }
+            throw DictationHelperStoppedError()
         }
+        helperStartHookForTesting?(.registered)
 
         // Block until the helper reports the model is resident. Model load gets the flat
         // `warmUpTimeout`. The first enable may also download the model (~1.6 GB), which no flat
@@ -417,7 +472,17 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // helper that reports `{"downloading":true}` as bytes arrive is instead given
         // `downloadStallTimeout` of silence, from its last report (F522). Subsequent warm-ups
         // (model cached) return in seconds and never report a download.
-        let readyLine = try readLine(timeout: warmUpTimeout, stallTimeout: downloadStallTimeout)
+        let readyLine: Data
+        do {
+            readyLine = try readLine(timeout: warmUpTimeout, stallTimeout: downloadStallTimeout)
+        } catch let download as DictationModelDownloadError {
+            throw download
+        } catch {
+            // A stop that found this child live terminated it, and the read then ended as "stopped
+            // unexpectedly". That is the stop's doing, not the helper's (F878).
+            if wasAskedToStop(since: stopsWhenAsked) { throw DictationHelperStoppedError() }
+            throw error
+        }
         if let ready = try? JSONDecoder().decode([String: Bool].self, from: readyLine),
            ready["ready"] == true {
             return
@@ -564,6 +629,10 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         return retired
     }
 
+    private func wasAskedToStop(since stopsWhenAsked: Int) -> Bool {
+        stopRequestCount != stopsWhenAsked
+    }
+
     private func clearProcessState() {
         try? stdin?.close()
         if let process {
@@ -610,6 +679,15 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
     private let liveLock = NSLock()
     private var liveProcess: Process?
     private var liveStdin: FileHandle?
+    /// As `WarmWhisperDictationEngine.stopRequests` (F878): this engine had no `retired` flag, so
+    /// nothing at all stopped a start that an eviction had already been asked to end.
+    private var stopRequests = 0
+
+    /// The count above, for a test.
+    var stopRequestCount: Int { liveLock.withLock { stopRequests } }
+
+    /// As `WarmWhisperDictationEngine.helperStartHookForTesting` (F878). nil in the app.
+    var helperStartHookForTesting: ((HelperStartPoint) -> Void)?
 
     private let stderrLock = NSLock()
     private var stderrText = ""
@@ -634,8 +712,9 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
     }
 
     public func warmUp() async throws {
+        let stops = stopRequestCount
         try await run {
-            try self.ensureRunning()
+            try self.ensureRunning(stopsWhenAsked: stops)
             guard let primePrompt = self.primePrompt, !self.primed else { return }
             // Attempt-once even on failure: a helper that errors on the prime would otherwise be
             // re-primed on every press. The reply MUST be consumed here — leaving it unread would
@@ -674,8 +753,9 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
     }
 
     public func refine(_ request: RefineRequest) async throws -> String {
-        try await run {
-            try self.ensureRunning()
+        let stops = stopRequestCount
+        return try await run {
+            try self.ensureRunning(stopsWhenAsked: stops)
             if let stdin = self.stdin {
                 try ThrowingFileHandleIO.write(
                     try DictationWireProtocol.encodeLine(request),
@@ -694,7 +774,7 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
     public func shutdown() {
         // Same off-queue interrupt as WarmWhisperDictationEngine.shutdown: terminating the child
         // closes its stdout, unblocking a parked read so queued state cleanup runs immediately.
-        let (process, input) = captureLiveProcess()
+        let (process, input) = requestStopAndCaptureLiveProcess()
         requestHelperTermination(process: process, input: input)
         queue.async {
             self.clearProcessState()
@@ -704,7 +784,7 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
     public func evict() async {
         // Same temporary, wait-for-exit boundary as the ASR helper above. A meeting Qwen run can
         // otherwise begin while this 4B/8B model is still consuming unified memory.
-        let (process, input) = captureLiveProcess()
+        let (process, input) = requestStopAndCaptureLiveProcess()
         requestHelperTermination(process: process, input: input)
 
         await withCheckedContinuation { continuation in
@@ -724,14 +804,18 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
         }
     }
 
-    private func captureLiveProcess() -> (Process?, FileHandle?) {
+    /// As `WarmWhisperDictationEngine.requestStopAndCaptureLiveProcess` (F878).
+    private func requestStopAndCaptureLiveProcess() -> (Process?, FileHandle?) {
         liveLock.lock()
         defer { liveLock.unlock() }
+        stopRequests &+= 1
         return (liveProcess, liveStdin)
     }
 
-    private func ensureRunning() throws {
+    /// As `WarmWhisperDictationEngine.ensureRunning(stopsWhenAsked:)` (F878).
+    private func ensureRunning(stopsWhenAsked: Int) throws {
         if let process, process.isRunning { return }
+        guard stopRequestCount == stopsWhenAsked else { throw DictationHelperStoppedError() }
         guard FileManager.default.isExecutableFile(atPath: python.path),
               FileManager.default.fileExists(atPath: script.path),
               FileManager.default.fileExists(
@@ -769,12 +853,25 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
                 self?.appendStderr(text)
             }
         }
+        helperStartHookForTesting?(.launched)
         liveLock.lock()
         liveProcess = process
         liveStdin = self.stdin
+        let askedToStop = stopRequests != stopsWhenAsked
         liveLock.unlock()
+        if askedToStop {
+            requestHelperTermination(process: process, input: self.stdin)
+            throw DictationHelperStoppedError()
+        }
+        helperStartHookForTesting?(.registered)
 
-        let readyLine = try readLine(timeout: Self.readyTimeout)
+        let readyLine: Data
+        do {
+            readyLine = try readLine(timeout: Self.readyTimeout)
+        } catch {
+            if stopRequestCount != stopsWhenAsked { throw DictationHelperStoppedError() }
+            throw error
+        }
         if let ready = try? JSONDecoder().decode([String: Bool].self, from: readyLine),
            ready["ready"] == true {
             return
@@ -928,7 +1025,8 @@ public final class WarmQwenDictationEngine: DictationEngine, @unchecked Sendable
 /// propagates instead. The batch engine would download a second model on the same link and cannot
 /// resume it, and the choice sticks for the session; the primary's helper keeps its partial download
 /// (on its resumable path), so telling the user and letting the next warm-up resume costs less and
-/// keeps the fast engine.
+/// keeps the fast engine. Nor for a primary whose start was ended by `evict()` or `shutdown()`
+/// (`DictationHelperStoppedError`, F878): a meeting that needed the memory says nothing about this Mac.
 public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable {
     private let primary: DictationEngine
     private let fallback: DictationEngine
@@ -960,6 +1058,10 @@ public final class FallbackDictationEngine: DictationEngine, @unchecked Sendable
             // Nothing is chosen, so the next `warmUp` — or the `transcribe` that triggers one — tries
             // the primary again and resumes the download.
             throw download
+        } catch let stopped as DictationHelperStoppedError {
+            // F878: evicted or shut down mid-start (a meeting wanted the memory). Nothing about this
+            // Mac was learned, so nothing is chosen and the next warm-up tries the primary again.
+            throw stopped
         } catch {
             try await fallback.warmUp()
             setChosen(fallback)
