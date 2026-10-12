@@ -8,10 +8,11 @@ import Testing
 // it read only their length (F911), never their tracks or channels. A build without F801's refusal (the
 // installed F795 build) shrank a two-track or four-channel import to its first track or channel; if it
 // was interrupted between saving the index and removing the original, the next resume deleted the last
-// copy of the rest. Now a leftover with several tracks or more than two channels is removed only when the
-// copy is shown to hold each of its channels, the check an encode makes since F942 — so a copy a current
-// build mixed still finishes, and one that kept track 1 keeps its original. Driven through the Shrink
-// button's calls, with the real encoder and decoder.
+// copy of the rest. As shipped, while Shrink of a recording that needs mixing is held back (F980), such a
+// leftover is always kept. With the switch on (`mixing: true`, the held-back path these tests keep running),
+// it is removed only when the copy is shown to hold each of its channels, the check a mixing encode makes —
+// so a copy a mixing build made finishes, and one that kept track 1 keeps its original. Driven through the
+// Shrink button's calls, with the real encoder and decoder.
 
 @MainActor
 private struct ResumeFixture {
@@ -22,7 +23,8 @@ private struct ResumeFixture {
 
     /// A meeting whose index already names `recording.m4a` (the copy `makeCopy` writes from the leftover
     /// `leftoverName`, which `writeLeftover` makes): the state an interrupted Shrink leaves.
-    init(leftoverName: String, duration: TimeInterval, writeLeftover: (URL) async throws -> Void,
+    /// `mixing` sets `shrinkMixesRecordings`, the switch: off as shipped (F980), on for the held-back path.
+    init(leftoverName: String, duration: TimeInterval, mixing: Bool = false, writeLeftover: (URL) async throws -> Void,
          makeCopy: (URL, URL, URL) async throws -> Void) async throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("F955-\(UUID().uuidString)")
         id = UUID()
@@ -38,6 +40,7 @@ private struct ResumeFixture {
             recordingPath: "Recordings/\(id.uuidString)/recording.m4a",
             status: .completed, transcriptText: "Hi."))
         model.availableBytesForShrink = { _ in .max }
+        model.shrinkMixesRecordings = mixing
     }
 
     func exists(_ name: String) -> Bool {
@@ -75,7 +78,7 @@ private func twoSidedCall(_ url: URL) async throws {
 @Test("A resume keeps a two-track leftover whose copy holds only its first track, and says why (F955)")
 @MainActor
 func shrinkResumeKeepsATwoTrackLeftoverItsCopyLacks() async throws {
-    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20,
+    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20, mixing: true,
                                     writeLeftover: twoSidedCall, makeCopy: firstTrackCopy)
     defer { try? FileManager.default.removeItem(at: f.root) }
     let original = try Data(contentsOf: f.folder.appendingPathComponent("recording.mov"))
@@ -94,7 +97,7 @@ func shrinkResumeKeepsATwoTrackLeftoverItsCopyLacks() async throws {
 func shrinkResumeKeepsAFourChannelLeftoverItsCopyLacks() async throws {
     // A panel's four microphones, each speaker in turn for five seconds.
     let tones = [300.0, 500.0, 700.0, 900.0]
-    let f = try await ResumeFixture(leftoverName: "recording.wav", duration: 20, writeLeftover: { url in
+    let f = try await ResumeFixture(leftoverName: "recording.wav", duration: 20, mixing: true, writeLeftover: { url in
         try fixturePolyWAV(tones.enumerated().map { index, tone in
             fixtureTone(frequency: tone, amplitude: 0.2, seconds: 20, from: Double(index) * 5, to: Double(index + 1) * 5)
         }).write(to: url)
@@ -116,7 +119,7 @@ func shrinkResumeKeepsAFourChannelLeftoverItsCopyLacks() async throws {
 @MainActor
 func shrinkResumeKeepsATwoTrackLeftoverWhoseTracksOverlap() async throws {
     // The review's probe I: the second side speaks under the first, never alone.
-    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20, writeLeftover: { url in
+    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20, mixing: true, writeLeftover: { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 20),
                                                FixtureTrack(channels: [(800, 0.1)], seconds: 20, audibleFrom: 2, audibleTo: 18)])
     }, makeCopy: firstTrackCopy)
@@ -135,7 +138,7 @@ func shrinkResumeKeepsATwoTrackLeftoverWhoseTracksOverlap() async throws {
 func shrinkResumeKeepsAFourChannelLeftoverWhoseChannelsOverlap() async throws {
     // R5's four simultaneous feeds at one level: the copy of channel 1 alone is louder than their mix.
     let tones = [300.0, 500.0, 700.0, 900.0]
-    let f = try await ResumeFixture(leftoverName: "recording.wav", duration: 6, writeLeftover: { url in
+    let f = try await ResumeFixture(leftoverName: "recording.wav", duration: 6, mixing: true, writeLeftover: { url in
         try fixturePolyWAV(tones.map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 6) }).write(to: url)
     }, makeCopy: firstTrackCopy)
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -153,7 +156,7 @@ func shrinkResumeKeepsAFourChannelLeftoverWhoseChannelsOverlap() async throws {
 func shrinkResumeKeepsALeftoverMeasuredWithFewerChannels() async throws {
     // The copy is the leftover's own mix, so every check passes on it; only the count shows that the
     // decode left a channel unjudged.
-    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20,
+    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20, mixing: true,
                                     writeLeftover: twoSidedCall, makeCopy: mixedCopy)
     defer { try? FileManager.default.removeItem(at: f.root) }
     f.model.decodeForShrink = { url in
@@ -172,7 +175,7 @@ func shrinkResumeKeepsALeftoverMeasuredWithFewerChannels() async throws {
 @Test("A resume still removes a several-track leftover whose copy is its mix (F955 control)")
 @MainActor
 func shrinkResumeRemovesALeftoverItsMixHolds() async throws {
-    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20,
+    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20, mixing: true,
                                     writeLeftover: twoSidedCall, makeCopy: mixedCopy)
     defer { try? FileManager.default.removeItem(at: f.root) }
 
@@ -195,4 +198,22 @@ func shrinkResumeRemovesAOneTrackLeftover() async throws {
 
     let alert = f.model.alertMessage ?? "nil"
     #expect(!f.exists("recording.mov") && f.exists("recording.m4a"), "\(alert)")
+}
+
+// F980: while Shrink of a recording that needs mixing is held back, a resume keeps a several-track leftover
+// too, even beside a copy that is its own mix: the check that would show the copy holds it is F980's.
+@Test("A resume keeps a several-track leftover while mixing Shrink is held back, even beside its own mix (F955, F980)")
+@MainActor
+func shrinkResumeKeepsASeveralTrackLeftoverWhileMixingIsHeldBack() async throws {
+    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20,
+                                    writeLeftover: twoSidedCall, makeCopy: mixedCopy)
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    let original = try Data(contentsOf: f.folder.appendingPathComponent("recording.mov"))
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(f.exists("recording.mov") && f.exists("recording.m4a"), "\(alert)")
+    #expect(try Data(contentsOf: f.folder.appendingPathComponent("recording.mov")) == original)
+    #expect(alert.contains("“recording.mov”, which has 2 audio tracks"), "\(alert)")
 }

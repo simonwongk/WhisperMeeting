@@ -59,48 +59,87 @@ private func disk(_ name: String, bytes: Int64 = 900_000_000) -> MeetingStorageP
                                  entries: [Entry(name: name, bytes: bytes)])
 }
 
-@Test("Shrink mixes a recording whose tracks it read, and refuses alternates and the unread (F942, F953)")
+@Test("Mixing Shrink is off as shipped, until F980 proves its check of a mixed copy (F942, F980)")
+func shrinkMixingSwitchIsOff() {
+    #expect(MeetingStoragePlan.shrinkMixesRecordings == false)
+}
+
+@Test("As shipped, Shrink refuses a recording it would mix, saying it isn't available yet (F942, F980)")
+func shrinkRefusesWhatItWouldMixWhileHeldBack() {
+    let idle = MeetingStoragePlan.LiveFacts()
+    var call = disk("recording.mov")
+    call.audioTrackCount = 2
+    call.channelCount = 1
+    call.audioTracks = [Track(channels: 1), Track(channels: 1)]
+    #expect(MeetingStoragePlan.unavailability(disk: call, live: idle) == .mixingNotAvailableYet(tracks: 2, channels: 2))
+    #expect(MeetingStoragePlan.Unavailability.mixingNotAvailableYet(tracks: 2, channels: 2).message
+        == "This recording has 2 audio tracks; shrinking it isn't available yet, so its audio is kept as it is.")
+    var surround = disk("recording.wav", bytes: 1_382_400_000)
+    surround.channelCount = 6
+    surround.audioTracks = [Track(channels: 6)]
+    #expect(MeetingStoragePlan.unavailability(disk: surround, live: idle) == .mixingNotAvailableYet(tracks: 1, channels: 6))
+    #expect(MeetingStoragePlan.Unavailability.mixingNotAvailableYet(tracks: 1, channels: 6).message
+        == "This recording has 6 channels; shrinking it isn't available yet, so its audio is kept as it is.")
+    var many = surround
+    many.channelCount = 24
+    many.audioTracks = [Track(channels: 24)]
+    #expect(MeetingStoragePlan.unavailability(disk: many, live: idle) == .mixingNotAvailableYet(tracks: 1, channels: 24))
+    // Alternates and unread tracks keep their own reasons, which mixing would not change.
+    var languages = call
+    languages.audioTracks = [Track(channels: 1, alternateGroup: 0, language: "eng"), Track(channels: 1, alternateGroup: 0, language: "fra")]
+    #expect(MeetingStoragePlan.unavailability(disk: languages, live: idle) == .alternateAudioTracks(count: 2))
+    var unread = call
+    unread.audioTracks = nil
+    #expect(MeetingStoragePlan.unavailability(disk: unread, live: idle) == .multipleAudioTracks(count: 2))
+    // One track of one or two channels is the encode's own, and still shrinks.
+    var stereo = disk("recording.wav")
+    stereo.channelCount = 2
+    #expect(MeetingStoragePlan.unavailability(disk: stereo, live: idle) == nil)
+}
+
+@Test("With the switch on, Shrink mixes a recording whose tracks it read, and refuses alternates and the unread (F942, F953)")
 func shrinkMixesWhatItCanRead() {
+    // The held-back path, which F980 starts from.
     let idle = MeetingStoragePlan.LiveFacts()
     var call = disk("recording.mov")
     call.audioTrackCount = 2
     call.channelCount = 1
     call.audioTracks = [Track(channels: 1), Track(channels: 1)]
     #expect(MeetingStoragePlan.needsMix(call))
-    #expect(MeetingStoragePlan.unavailability(disk: call, live: idle) == nil)
+    #expect(MeetingStoragePlan.unavailability(disk: call, live: idle, mixing: true) == nil)
 
     var poly = disk("recording.wav", bytes: 1_382_400_000)
     poly.channelCount = 4
     poly.audioTracks = [Track(channels: 4)]
-    #expect(MeetingStoragePlan.unavailability(disk: poly, live: idle) == nil, "F953: whatever the layout")
+    #expect(MeetingStoragePlan.unavailability(disk: poly, live: idle, mixing: true) == nil, "F953: whatever the layout")
     var many = poly
     many.channelCount = 24
     many.audioTracks = [Track(channels: 24)]
-    #expect(MeetingStoragePlan.unavailability(disk: many, live: idle) == .tooManyChannelsToCheck(count: 24),
+    #expect(MeetingStoragePlan.unavailability(disk: many, live: idle, mixing: true) == .tooManyChannelsToCheck(count: 24),
             "more than the copy's check fits one by one (review R2)")
     #expect(MeetingStoragePlan.Unavailability.tooManyChannelsToCheck(count: 24).message.contains("24 channels"))
 
     var languages = call
     languages.audioTracks = [Track(channels: 1, alternateGroup: 0, language: "eng"), Track(channels: 1, alternateGroup: 0, language: "fra")]
-    #expect(MeetingStoragePlan.unavailability(disk: languages, live: idle) == .alternateAudioTracks(count: 2))
+    #expect(MeetingStoragePlan.unavailability(disk: languages, live: idle, mixing: true) == .alternateAudioTracks(count: 2))
     #expect(MeetingStoragePlan.Unavailability.alternateAudioTracks(count: 2).message.contains("in different languages"))
 
     // Fail-closed: not read, or read as something that needs no mix while the counts say it does.
     var unread = call
     unread.audioTracks = nil
-    #expect(MeetingStoragePlan.unavailability(disk: unread, live: idle) == .multipleAudioTracks(count: 2))
+    #expect(MeetingStoragePlan.unavailability(disk: unread, live: idle, mixing: true) == .multipleAudioTracks(count: 2))
     var disagreeing = poly
     disagreeing.audioTracks = [Track(channels: 2)]
-    #expect(MeetingStoragePlan.unavailability(disk: disagreeing, live: idle) == .multipleChannels(count: 4))
+    #expect(MeetingStoragePlan.unavailability(disk: disagreeing, live: idle, mixing: true) == .multipleChannels(count: 4))
     var unreadable = call
     unreadable.audioTracks = [Track(channels: 0), Track(channels: 1)]
-    #expect(MeetingStoragePlan.unavailability(disk: unreadable, live: idle) == .multipleAudioTracks(count: 2))
+    #expect(MeetingStoragePlan.unavailability(disk: unreadable, live: idle, mixing: true) == .multipleAudioTracks(count: 2))
 
     // One track of one or two channels is the encode's own business, as before.
     var stereo = disk("recording.wav")
     stereo.channelCount = 2
     #expect(!MeetingStoragePlan.needsMix(stereo))
-    #expect(MeetingStoragePlan.unavailability(disk: stereo, live: idle) == nil)
+    #expect(MeetingStoragePlan.unavailability(disk: stereo, live: idle, mixing: true) == nil)
 }
 
 // MARK: - Review R2: showing that a mixed copy holds every track and channel

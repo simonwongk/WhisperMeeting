@@ -213,6 +213,28 @@ func fixturePolyWAV(_ channels: [[Float]], mask: UInt32? = nil) -> Data {
     return data
 }
 
+/// A 32-bit float WAV (`WAVE_FORMAT_IEEE_FLOAT`, no layout) at `rate` holding one channel per array, each
+/// sample written as it is — NaN and infinity included, which a float recording can carry and a 16-bit one
+/// cannot (the second review of F942, D2).
+func fixtureFloatWAV(_ channels: [[Float]], rate: Int) -> Data {
+    let count = channels.count, frames = channels.map(\.count).min() ?? 0
+    var data = Data()
+    func u32(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+    func u16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+    let byteCount = UInt32(frames * count * 4)
+    data.append(contentsOf: Array("RIFF".utf8)); u32(4 + 8 + 16 + 8 + byteCount)
+    data.append(contentsOf: Array("WAVE".utf8))
+    data.append(contentsOf: Array("fmt ".utf8)); u32(16)
+    u16(3); u16(UInt16(count)); u32(UInt32(rate)); u32(UInt32(rate * count * 4)); u16(UInt16(count * 4)); u16(32)
+    data.append(contentsOf: Array("data".utf8)); u32(byteCount)
+    var samples = [Float](repeating: 0, count: frames * count)
+    for frame in 0..<frames {
+        for channel in 0..<count { samples[frame * count + channel] = channels[channel][frame] }
+    }
+    samples.withUnsafeBytes { data.append(contentsOf: $0) }
+    return data
+}
+
 /// What a file holds, decoded by AVAudioFile: its rate, its channels' samples, deinterleaved. AVAudioFile
 /// reads a container's first audio track only, as afconvert and Whisper's ffmpeg decode do (F801's
 /// probe), so for a several-track file this is what the engines heard before F942.
