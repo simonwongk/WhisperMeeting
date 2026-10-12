@@ -590,21 +590,44 @@ def drop_superseded_partials(repo_cache):
     beside a finished `<etag>` — left by the library's downloader, which never looks at it, or by
     anything else that completed the blob — and the library's own `.incomplete` orphans, which it
     never reuses. Either can be 1.6 GB, and a cached helper never runs a download pass again to
-    notice them. A `.part` whose blob is not there yet is a download to resume, and is kept."""
+    notice them (so a cached start sweeps too, F897). A `.part` whose blob is not there yet is a
+    download to resume, and is kept."""
     blobs = os.path.join(repo_cache, "blobs")
+    for name in _superseded_partials(blobs):
+        try:
+            os.remove(os.path.join(blobs, name))
+        except OSError:
+            pass
+
+
+def _superseded_partials(blobs):
+    """The names in `blobs` that `drop_superseded_partials` removes; none if it cannot be listed."""
     try:
         names = os.listdir(blobs)
     except OSError:
+        return []
+    return [name for name in names
+            if name.endswith(".incomplete")
+            or (name.endswith(".part") and os.path.isfile(os.path.join(blobs, name[:-len(".part")])))]
+
+
+def sweep_superseded_partials_at_cached_start(hub_dir, mlx_repo):
+    """F897: `drop_superseded_partials` for a start whose cache is already complete.
+
+    F828 sweeps at the end of a download pass, which a cached helper never runs again, so a `.part`
+    F522's library fallback left beside its finished blob (2026-10-07 until F828) stayed — up to
+    1.6 GB. The sweep runs under F826's download lock, taken without waiting: if another process
+    holds it, the leftovers are left for a later start, so a cached start is never delayed and never
+    races a second helper. Nothing to remove means no lock and no file written, as before. Never
+    raises: a sweep that fails defers to the next start."""
+    repo_cache = os.path.join(hub_dir, "models--" + mlx_repo.replace("/", "--"))
+    if not _superseded_partials(os.path.join(repo_cache, "blobs")):
         return
-    for name in names:
-        superseded = name.endswith(".incomplete") or (
-            name.endswith(".part") and os.path.isfile(os.path.join(blobs, name[:-len(".part")]))
-        )
-        if superseded:
-            try:
-                os.remove(os.path.join(blobs, name))
-            except OSError:
-                pass
+    try:
+        with download_lock(hub_dir, mlx_repo, wait=0):
+            drop_superseded_partials(repo_cache)
+    except Exception as error:  # held elsewhere (ModelDownloadError), or the disk refused
+        sys.stderr.write("superseded partial downloads left for a later start (%s)\n" % error)
 
 
 def hub_snapshot_download(mlx_repo, hub_dir, heartbeat, revision):
@@ -992,6 +1015,7 @@ def main() -> int:
         pass
     elif model_fully_cached(hub_dir, args.mlx_repo):
         go_offline()
+        sweep_superseded_partials_at_cached_start(hub_dir, args.mlx_repo)
     else:
         # No cache, or an unfinished one — a download that was interrupted (kill, quit/disable
         # mid-download, network drop, disk-full). Forcing HF_HUB_OFFLINE here would wedge dictation

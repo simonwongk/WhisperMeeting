@@ -482,7 +482,7 @@ class UnexpectedFailureTests(unittest.TestCase):
         self.assertIsNone(result)
 
 
-class MainCacheHandlingTests(unittest.TestCase):
+class MainHarnessCase(unittest.TestCase):
     """F522 — what `main()` does with a model cache it finds unfinished, run through the real
     `main()` with fake `mlx` and `mlx_whisper` modules, a recorded downloader, and `huggingface_hub`
     made UNIMPORTABLE.
@@ -593,6 +593,10 @@ class MainCacheHandlingTests(unittest.TestCase):
             status = server.main()
         return status, [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
 
+
+class MainCacheHandlingTests(MainHarnessCase):
+    """F522's cases, through the harness above."""
+
     def test_an_unfinished_cache_is_completed_and_nothing_in_it_is_deleted(self):
         status, lines = self.run_main()
 
@@ -662,6 +666,108 @@ class MainCacheHandlingTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(self.downloads, [])
         self.assertTrue(os.path.exists(self.partial))
+
+
+class CachedStartSweepTests(MainHarnessCase):
+    """F897 — F828 removes a `<etag>.part` beside its published blob at the end of a download pass,
+    but a helper whose cache is already complete never runs one, so a `.part` F522's library
+    fallback leaked (2026-10-07 until F828) stayed: up to 1.6 GB. A cached start now sweeps it, under
+    F826's download lock taken without waiting, so a second helper that holds it is never raced.
+
+    Inherits the real-`main()` harness: fake `mlx`/`mlx_whisper`, `huggingface_hub` unimportable,
+    the downloader recorded. `setUp` leaves a `.part` whose blob is NOT published (`self.partial`):
+    a download to resume, which must survive every start."""
+
+    LOCK = os.path.join(".locks", "models--mlx-community--whisper-large-v3-turbo",
+                        "whispermeet-dictation-download.lock")
+
+    def superseded_leftovers(self):
+        """A `.part` beside the published blob `make_cached` writes, and a library orphan."""
+        blobs = os.path.join(self.repo_cache, "blobs")
+        part = os.path.join(blobs, "c" * 64 + ".part")
+        orphan = os.path.join(blobs, "c" * 64 + ".408d0ef8.incomplete")
+        for path in (part, orphan):
+            with open(path, "wb") as handle:
+                handle.write(b"leaked by an outage before F828")
+        return part, orphan
+
+    def hold_lock(self):
+        import subprocess
+        import sys
+
+        path = os.path.join(self.model_dir, "hf", "hub", self.LOCK)
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import fcntl, os, sys\n"
+             "os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True)\n"
+             "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o644)\n"
+             "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+             "print('held', flush=True)\n"
+             "sys.stdin.read()\n",
+             path],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+
+        def release():
+            holder.stdin.close()
+            holder.wait(timeout=30)
+            holder.stdout.close()
+
+        self.addCleanup(release)
+        self.assertEqual(holder.stdout.readline().strip(), "held")
+
+    def test_a_cached_start_removes_a_part_beside_its_published_blob(self):
+        self.make_cached()
+        part, orphan = self.superseded_leftovers()
+
+        status, lines = self.run_main()
+
+        self.assertEqual(status, 0)
+        self.assertEqual(self.downloads, [])
+        self.assertFalse(os.path.exists(part), "a .part beside its finished blob outlived a cached start")
+        self.assertFalse(os.path.exists(orphan), "the library's orphan outlived a cached start")
+        self.assertTrue(os.path.exists(self.partial), "a .part whose blob is not published is a download to resume")
+        self.assertEqual(lines, [{"ready": True}], "the sweep must not write to the wire")
+
+    def test_with_the_download_lock_held_elsewhere_the_part_is_left(self):
+        self.make_cached()
+        part, orphan = self.superseded_leftovers()
+        self.hold_lock()
+
+        status, lines = self.run_main()
+
+        self.assertEqual(status, 0, "a held lock must not fail or delay a cached start")
+        self.assertEqual(lines, [{"ready": True}])
+        self.assertTrue(os.path.exists(part), "the sweep raced the process that holds the download lock")
+        self.assertTrue(os.path.exists(orphan))
+
+    def test_a_cached_start_with_nothing_to_sweep_writes_nothing(self):
+        """A cached start takes no lock and creates no file when there is nothing to remove (the
+        property Wave 5's real-helper run recorded)."""
+        os.remove(self.partial)
+        self.make_cached()
+
+        status, _ = self.run_main()
+
+        self.assertEqual(status, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.model_dir, "hf", "hub", ".locks")),
+                         "a cached start with nothing to sweep created the lock file")
+
+    def test_a_sweep_that_fails_never_fails_the_start(self):
+        self.make_cached()
+        self.superseded_leftovers()
+        saved = server.drop_superseded_partials
+
+        def broken(_repo_cache):
+            raise OSError("read-only file system")
+
+        server.drop_superseded_partials = broken
+        self.addCleanup(setattr, server, "drop_superseded_partials", saved)
+
+        status, lines = self.run_main()
+
+        self.assertEqual(status, 0)
+        self.assertEqual(lines, [{"ready": True}])
 
 
 if __name__ == "__main__":
