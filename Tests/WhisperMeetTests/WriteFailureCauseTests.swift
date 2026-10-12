@@ -59,16 +59,20 @@ func aRefusedWriteIsAStorageFailure() throws {
     }
 }
 
-@Test("The in-window health panel words failing writes from the snapshot's cause (F888)")
+@Test("The in-window health panel words failing writes from the snapshot's cause and its one unsaved track (F888, F932)")
 func thePanelWordsFailingWritesFromTheCause() throws {
     // The panel cannot be rendered here (F174), so its wiring is pinned as source, comments stripped:
     // the sentence is `RecordingHUD.failingWritesDetail`'s, which the WhisperCore tests check, fed the
-    // cause of the snapshot the panel is showing.
+    // cause and the unsaved track of the snapshot the panel is showing.
     let content = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
-    #expect(content.contains("warningMessage(warning, writeFailureCause: health.writeFailureCause)"))
+    #expect(content.contains(
+        "warningMessage(warning, writeFailureCause: health.writeFailureCause, unsavedTrack: health.unsavedTrack)"
+    ))
     let branch = try #require(content.range(of: "case .captureWritesFailing:"))
     let next = try #require(content.range(of: "case .approachingLengthLimit:", range: branch.upperBound..<content.endIndex))
     let body = content[branch.upperBound..<next.lowerBound]
-    #expect(body.contains("RecordingHUD.failingWritesDetail(writeFailureCause: writeFailureCause)"), "\(body)")
+    #expect(body.contains(
+        "RecordingHUD.failingWritesDetail(writeFailureCause: writeFailureCause, unsavedTrack: unsavedTrack)"
+    ), "\(body)")
     #expect(!body.contains("free space"), "the panel restates the sentence instead of asking for it: \(body)")
 }

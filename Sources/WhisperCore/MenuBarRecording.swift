@@ -78,7 +78,10 @@ public enum MenuBarRecording {
                   .min(by: { RecordingHUD.rank($0) < RecordingHUD.rank($1) }) else {
             return nil
         }
-        return "Recording needs attention: \(RecordingHUD.message(worst, writeFailureCause: health?.writeFailureCause))."
+        let line = RecordingHUD.message(
+            worst, writeFailureCause: health?.writeFailureCause, unsavedTrack: health?.unsavedTrack
+        )
+        return "Recording needs attention: \(line)."
     }
 
     /// - Parameter canStartRecording: `RecordingStartRule`'s answer, computed by the caller from the
@@ -108,7 +111,9 @@ public enum MenuBarRecording {
         // unseen. Only a live recording's health counts — a snapshot outliving its recording is stale.
         let liveHealth = recording ? health : nil
         let healthLine = liveHealth.flatMap {
-            RecordingHUD.topWarning(from: $0.warnings, writeFailureCause: $0.writeFailureCause)
+            RecordingHUD.topWarning(
+                from: $0.warnings, writeFailureCause: $0.writeFailureCause, unsavedTrack: $0.unsavedTrack
+            )
         }
             .map { atRisk ? "⚠︎ \($0)" : $0 }
         return MenuBarRecordingPresentation(
@@ -164,6 +169,9 @@ public struct RecordingRiskAnnouncer: Sendable {
         guard let worst = fresh.min(by: { RecordingHUD.rank($0) < RecordingHUD.rank($1) }) else { return nil }
         // Only the one announced is marked, so a second problem hidden behind it still gets its turn.
         announced.insert(worst)
-        return "Recording needs attention: \(RecordingHUD.message(worst, writeFailureCause: snapshot.writeFailureCause))."
+        let line = RecordingHUD.message(
+            worst, writeFailureCause: snapshot.writeFailureCause, unsavedTrack: snapshot.unsavedTrack
+        )
+        return "Recording needs attention: \(line)."
     }
 }

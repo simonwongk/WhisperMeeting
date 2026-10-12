@@ -852,7 +852,7 @@ private struct RecordMeetingView: View {
             return "Audio capture stopped on both channels. This happens when a display is disconnected or the lid is closed."
         }
         if let warning = health.warnings.first {
-            return warningMessage(warning, writeFailureCause: health.writeFailureCause)
+            return warningMessage(warning, writeFailureCause: health.writeFailureCause, unsavedTrack: health.unsavedTrack)
         }
         return "Both channels are being captured and saved to this Mac."
     }
@@ -909,7 +909,8 @@ private struct RecordMeetingView: View {
 
     private func warningMessage(
         _ warning: RecordingHealthWarning,
-        writeFailureCause: RecordingWriteFailureCause?
+        writeFailureCause: RecordingWriteFailureCause?,
+        unsavedTrack: RecordingChannel?
     ) -> String {
         switch warning {
         case .microphoneCaptureStopped:
@@ -926,9 +927,9 @@ private struct RecordMeetingView: View {
             "Storage is running low. Stop soon to protect the recording."
         case .captureWritesFailing:
             // The one warning that means audio is being lost as they read it, so the instruction
-            // comes first (F386). Its advice depends on the cause (F888), so it is chosen in
-            // WhisperCore, where that choice is tested.
-            RecordingHUD.failingWritesDetail(writeFailureCause: writeFailureCause)
+            // comes first (F386). Its advice depends on the cause (F888) and on whether only one
+            // track is lost (F932), so it is chosen in WhisperCore, where that choice is tested.
+            RecordingHUD.failingWritesDetail(writeFailureCause: writeFailureCause, unsavedTrack: unsavedTrack)
         case .approachingLengthLimit:
             // Says what happens and what to do, and does not mention the format. A user cannot act
             // on "the WAV data-size field is a UInt32"; they can act on "stop and start another".

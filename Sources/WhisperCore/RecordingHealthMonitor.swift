@@ -132,19 +132,26 @@ public struct RecordingHealthSnapshot: Sendable, Equatable {
     /// writes are failing. Live only: the saved report keeps the warning, and its advisory gives no
     /// advice to drop.
     public let writeFailureCause: RecordingWriteFailureCause?
+    /// The one track whose writes are failing while the other track is still being saved (F932),
+    /// for the wording only. Nil when no track's writes are failing, when both tracks' are, and when
+    /// the other track has stopped arriving or has never arrived: then nothing is being saved, and
+    /// "the rest is still recording" would be false. Live only, like `writeFailureCause`.
+    public let unsavedTrack: RecordingChannel?
 
     public init(
         microphoneLevel: RecordingAudioLevel,
         systemAudioLevel: RecordingAudioLevel,
         availableStorageBytes: Int64?,
         warnings: [RecordingHealthWarning],
-        writeFailureCause: RecordingWriteFailureCause? = nil
+        writeFailureCause: RecordingWriteFailureCause? = nil,
+        unsavedTrack: RecordingChannel? = nil
     ) {
         self.microphoneLevel = microphoneLevel
         self.systemAudioLevel = systemAudioLevel
         self.availableStorageBytes = availableStorageBytes
         self.warnings = warnings
         self.writeFailureCause = writeFailureCause
+        self.unsavedTrack = unsavedTrack
     }
 
     /// Both channels stopped together — the capture itself stopped, not one device (F292). On the
@@ -529,7 +536,8 @@ public final class RecordingHealthMonitor {
             systemAudioLevel: systemAudio.level,
             availableStorageBytes: availableStorageBytes,
             warnings: warnings,
-            writeFailureCause: writeFailureCause
+            writeFailureCause: writeFailureCause,
+            unsavedTrack: unsavedTrack(at: time)
         )
 
         // Fold this snapshot into the running report.
@@ -600,6 +608,20 @@ public final class RecordingHealthMonitor {
         if systemAudioWriteFailures >= writeFailureThreshold { failingRunsHitStorage.append(systemAudioRunHitStorage) }
         guard !failingRunsHitStorage.isEmpty else { return nil }
         return failingRunsHitStorage.contains(true) ? .storage : .format
+    }
+
+    /// The one track whose audio is not being saved while the other's still is (F932); see
+    /// `RecordingHealthSnapshot.unsavedTrack`. The other track counts as still being saved when its
+    /// own writes are not failing and it has delivered within the staleness window, which a track
+    /// that has never delivered has not.
+    private func unsavedTrack(at time: TimeInterval) -> RecordingChannel? {
+        let microphoneFailing = microphoneWriteFailures >= writeFailureThreshold
+        let systemAudioFailing = systemAudioWriteFailures >= writeFailureThreshold
+        switch (microphoneFailing, systemAudioFailing) {
+        case (true, false): return isStale(systemAudio, at: time) ? nil : .microphone
+        case (false, true): return isStale(microphone, at: time) ? nil : .systemAudio
+        case (true, true), (false, false): return nil
+        }
     }
 
     /// Whether either track's writes are failing persistently right now — the live half of the

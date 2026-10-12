@@ -80,7 +80,8 @@ func theWarningIsRankedAndWorded() {
     #expect(RecordingHUD.rank(.captureWritesFailing) < RecordingHUD.rank(.lowStorage))
     // A failed write to the disk; F888's tests cover the format cause, which drops the disk advice.
     let top = RecordingHUD.topWarning(
-        from: [.systemAudioClipping, .captureWritesFailing, .lowStorage], writeFailureCause: .storage
+        from: [.systemAudioClipping, .captureWritesFailing, .lowStorage], writeFailureCause: .storage,
+        unsavedTrack: nil
     )
     #expect(top == "Audio is not being saved — stop and check disk space", "\(top ?? "")")
 

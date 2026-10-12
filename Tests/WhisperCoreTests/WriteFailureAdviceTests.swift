@@ -36,7 +36,9 @@ private func surfaces(_ snapshot: RecordingHealthSnapshot) -> [(surface: String,
         ("HUD", RecordingHUD.make(isRecording: true, isStopping: false, elapsedSeconds: 5, health: snapshot, level: 0).topWarning),
         ("menu bar", menu.healthLine),
         ("announcement", announcer.announcement(for: snapshot)),
-        ("health panel", RecordingHUD.failingWritesDetail(writeFailureCause: snapshot.writeFailureCause)),
+        ("health panel", RecordingHUD.failingWritesDetail(
+            writeFailureCause: snapshot.writeFailureCause, unsavedTrack: snapshot.unsavedTrack
+        )),
     ]
     return lines.map { ($0.0, $0.1 ?? "<nothing>") }
 }
