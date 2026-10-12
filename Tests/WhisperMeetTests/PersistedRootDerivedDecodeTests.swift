@@ -246,7 +246,11 @@ struct PersistedRootDerivedDecodeTests {
         try expectFixtureComplete(log)
         try expectEveryLeafTolerated(
             log,
-            mustTry: ["entries[0].refinement", "entries[0].outcomeKind", "entries[0].outcome.failed._0", "limit"]
+            mustTry: [
+                "entries[0].refinement", "entries[0].outcomeKind", "entries[0].outcome.failed._0", "limit",
+                "entries[0].clipSeconds", "entries[0].transcribeSeconds", "entries[0].refineSeconds",
+                "entries[0].gpuBusyPercent",
+            ]
         )
     }
 
@@ -383,7 +387,8 @@ struct PersistedRootDerivedDecodeTests {
     }
 
     static func fullyPopulatedDictationEntry() -> DictationLogEntry {
-        // `outcomeKind` is set explicitly: it is nil for every case this build knows.
+        // `outcomeKind` is set explicitly: it is nil for every case this build knows. F892's
+        // timings too: each is nil until measured.
         DictationLogEntry(
             id: UUID(),
             date: Date(timeIntervalSince1970: 1_700_000_000),
@@ -391,7 +396,8 @@ struct PersistedRootDerivedDecodeTests {
             outcome: .failed("x"),
             rawText: "helo",
             refinement: DictationRefinement.refined.rawValue,
-            outcomeKind: "discarded"
+            outcomeKind: "discarded",
+            timings: DictationTimings(clipSeconds: 4, transcribeSeconds: 6.93, refineSeconds: 1.04, gpuBusyPercent: 28)
         )
     }
 }
