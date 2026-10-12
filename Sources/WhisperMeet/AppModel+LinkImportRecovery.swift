@@ -45,8 +45,15 @@ extension AppModel {
         }
 
         if chosen.lastPathComponent == download.lastPathComponent {
-            // F453: the WAV beside the download was never finished, or there is none.
-            if duration > 0 { return .recording(recovered, duration: duration, warning: nil) }
+            // F453: the WAV beside the download was never finished, or there is none. The download
+            // is the recording, so its length is the meeting's — as Shrink reads it (F948).
+            let seconds = await linkImportDownloadSeconds(download, estimate: duration)
+            if seconds > 0 {
+                return .recording(
+                    RecoveredRecording(recordingURL: download, duration: seconds, source: .importedRecording),
+                    duration: seconds, warning: nil
+                )
+            }
             // macOS cannot open it — YouTube's audio is usually Opus in WebM — so the conversion the
             // import was running is finished here, with its own ffmpeg options.
             switch await convertInterruptedLinkImportDownload(download) {
@@ -66,7 +73,7 @@ extension AppModel {
             return .recording(recovered, duration: duration, warning: nil)
         }
         // F911: a WAV whose header is complete, beside the complete download.
-        let downloadSeconds = await Self.loadDuration(of: download)
+        let downloadSeconds = await linkImportDownloadSeconds(download, estimate: nil)
         if downloadSeconds > 0 {
             guard InterruptedLinkImportExtraction.holdsLess(duration, than: downloadSeconds) else {
                 // The extraction finished, and the app stopped before yt-dlp deleted the download.
@@ -100,6 +107,26 @@ extension AppModel {
                 duration: seconds, warning: Self.uncheckedLinkImportWarning(reason: reason)
             )
         }
+    }
+
+    /// The length of an interrupted link import's download, read the way Shrink reads it
+    /// (`declaredDurationForShrink`, AVAudioFile), or 0 when it cannot be measured (F948).
+    ///
+    /// Recovery used `loadDuration` here, which is `AVURLAsset` with no options, and that may be an
+    /// estimate: a VBR MP3 without a length header and with a loud start read 16.4 s of its 20.0 s on
+    /// macOS 27, and the review of F911 measured 41.3 s of 60.0 s. So a WAV ffmpeg finished on SIGTERM,
+    /// shorter than the download but longer than the estimate, was indexed as the whole import, while
+    /// Shrink, reading the same file exactly, refused to delete it. One reader for both means they
+    /// cannot disagree about one file. AVAudioFile counts the packets of a file with no length header,
+    /// so it is read off the main actor. Only a file AVAudioFile cannot open falls back to `estimate`
+    /// (or to `loadDuration` when the caller has none); Shrink refuses such a file as unmeasured, so
+    /// the fallback cannot lead it to delete anything.
+    private func linkImportDownloadSeconds(_ download: URL, estimate: TimeInterval?) async -> TimeInterval {
+        let reader = declaredDurationForShrink
+        let exact = await Task.detached(priority: .utility) { reader(download) }.value
+        if let exact, exact.isFinite, exact > 0 { return exact }
+        if let estimate { return estimate }
+        return await Self.loadDuration(of: download)
     }
 
     private enum LinkImportConversion {

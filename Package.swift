@@ -83,7 +83,10 @@ let package = Package(
         ),
         .testTarget(
             name: "WhisperMeetTests",
-            dependencies: ["WhisperCore", "WhisperMeet", "ObjCExceptionBridge"]
+            dependencies: ["WhisperCore", "WhisperMeet", "ObjCExceptionBridge"],
+            // Media read by source path (`#filePath`), never from a bundle — the WhisperCoreTests
+            // precedent above (F948's MP3).
+            exclude: ["Fixtures"]
         )
     ],
     swiftLanguageModes: [.v5]

@@ -118,9 +118,11 @@ private final class TimeLimitWatch: @unchecked Sendable {
 extension InterruptedLinkImportExtraction {
     /// How far apart two lengths of the same audio may be and still count as the same: the length
     /// macOS reads for a link import's download and the length of the WAV the import's ffmpeg vector
-    /// makes from it. Measured with ffmpeg 8.1.2 and `afinfo` on 7 s and 1,801 s sines: 32 ms apart
-    /// for MP3, 19 ms for AAC in M4A, 6.5 ms for Opus in Ogg (WebM cannot be read at all). Half a
-    /// second leaves fifteen times the widest of those, and it is the margin Shrink already allows a
+    /// makes from it. Recovery and Shrink both read the download with AVAudioFile (F948). Measured on
+    /// 7 s sines made with ffmpeg 8.1.2 (review of F911): AVAudioFile read 7.000 s of AAC in M4A,
+    /// 7.032 s of MP3 and 7.000 s of Opus in Ogg, against 7.019, 7.000 and 7.000 s for the WAV made
+    /// from each — at most 32 ms apart (WebM cannot be read at all); `afinfo` found the same 32 ms at
+    /// 1,801 s. Half a second leaves fifteen times that, and it is the margin Shrink already allows a
     /// compressed copy against its original.
     public static let lengthTolerance: TimeInterval = 0.5
 
