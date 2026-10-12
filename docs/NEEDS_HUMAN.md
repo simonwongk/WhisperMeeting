@@ -392,7 +392,8 @@ The exact steps for each are in that ticket's entry in `docs/TICKET_LOG.md`.
 ## Settled — nothing needed from you
 
 **F299 · F347 · F349 — answered 2026-10-12, in chat.** F349: "Yes, counts only" — a session runs the cluster-count sweep over two of
-your meetings, read-only, printing counts per setting and never any words (F349 in progress). F347 and F299: "Drop both for now" — short
+your meetings, read-only, printing counts per setting and never any words — done the same day: both meetings hold 3 speakers from 0.50
+to 0.90, so the shipped 0.60 is inside a stable range (curve in `DIARIZATION_SCORECARD.md`; F349 closed). F347 and F299: "Drop both for now" — short
 rows stay unnamed and speaker labels stay in beta; the speaker-analysis spec's value gate and the scorecard's Value row now say the gate was
 dropped (both closed; reopen either any time). The letter as it stood is kept below.
 

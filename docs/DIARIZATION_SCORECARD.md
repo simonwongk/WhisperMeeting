@@ -496,8 +496,24 @@ over-split. The only real-audio datapoint is the F232 probe: **4 clusters at 0.6
 user's 35-minute meetings (§8 item 3), which is a sanity check on one point of the curve rather than
 a curve. So the threshold is a calibration and not a backstop, and the backstop is now separate:
 `SpeakerTurns.maximumClusterCount` refuses a result with more than 64 distinct voices, leaving the
-transcript untouched and the meeting re-analysable. A cluster-count-vs-threshold curve on real
-app-mix audio is still worth having and needs the user's own recordings to produce.
+transcript untouched and the meeting re-analysable.
+
+**The curve on this app's own audio (F349, 2026-10-12).** With the user's permission ("counts only"), `sweep` ran over two of their
+recorded meetings — the app's own laptop-microphone plus system-audio mix, 29.9 and 54.3 minutes, 48 kHz mono resampled to 16 kHz by
+`afconvert` into temporary copies that were deleted afterwards — and printed only the number of clusters per threshold. No transcript or
+audio content was read or kept.
+
+| threshold | 0.30 | 0.40 | 0.50 | 0.55 | **0.60** | 0.65 | 0.70 | 0.80 | 0.90 | 1.00 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| meeting A (29.9 min) | 5 | 3 | 3 | 3 | **3** | 3 | 3 | 3 | 3 | 1 |
+| meeting B (54.3 min) | 2 | 2 | 3 | 3 | **3** | 3 | 3 | 3 | 3 | 3 |
+
+What it shows: on real app-mix audio the count is flat at 3 from 0.50 to 0.90 on both meetings, so the shipped 0.60 sits 0.10 above the
+plateau's lower edge and 0.30 below its upper one, and nothing here approaches the 179-cluster failure (which was sherpa-onnx's, not this
+runtime's). Outside the plateau the two meetings do not move together: below 0.50, A splits (5 at 0.30) while B merges (2 at 0.30–0.40); at
+1.00, A collapses to 1 while B stays at 3. So the count is not monotonic in the threshold on this audio, and the plateau is the finding, not a
+direction. What it does not show: whether 3 is the right number — there is no ground truth for these meetings, and none was sought. Cost: segmentation and
+embeddings took 9 s per meeting; the whole sweep 30 s (`.claude/wave5/gates/f349/sweep.log`, local).
 
 **Reproduced end to end, 2026-09-21 (F348).** Both tables above were regenerated from the
 committed producers against the cached corpus, and every figure matched: the DER row at the shipped
