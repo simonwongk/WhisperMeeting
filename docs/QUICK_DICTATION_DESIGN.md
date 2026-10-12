@@ -81,7 +81,12 @@ sheet's word boundaries: not inside a longer Latin word, not inside an occurrenc
 and for Chinese not inside a word NLTokenizer keeps whole or a longer vocabulary term (F594) — and
 never inside a dictated email address, URL or dotted host name. Every genuine occurrence is
 replaced. The history shows what was pasted; when refinement or a rule changed
-it, the entry's `rawText` keeps what the recognizer heard.
+it, the entry's `rawText` keeps what the recognizer heard. Each entry also keeps how long the
+dictation took (F892): the clip's seconds, the recognizer's (from the release to its reply, the
+"transcribed in" log line), the refiner's own pass when it was asked, and how busy the GPU was just
+before recognition — the figures F890 and F891 needed, which the unified log keeps for about a day.
+They are not shown in the window; `WhisperMeet --dictation-refine-report <dictation-log.json>`
+prints the slowest dictations with them (figures only, never the text).
 
 Fallback / edge branches:
 - **No Accessibility permission** (or auto-paste off) → text left on clipboard + a user notification
@@ -123,10 +128,14 @@ Fallback / edge branches:
   Whisper waits until the download ends (F823). The helper downloads only the pinned revision and
   checks it against the pinned SHA-256s (F830), resumes a partial file after a bad reply or an
   unreachable Hub instead of starting over (F828, F829), and holds a lock while it downloads, so a
-  second copy of the app says why it cannot and the installer leaves the model alone (F826). On
+  second copy of the app says why it cannot and the installer leaves the model alone (F826). The
+  installer holds the same lock across its own download and swap, so a helper that starts during an
+  install waits and says why instead of downloading beside it (F898); a cached start removes a
+  partial file left beside its finished one, if no one holds the lock (F897). On
   Intel the batch engine's turbo checkpoint is downloaded by openai-whisper on the first dictation,
   which no Repair can do, so the model row says so instead of offering one; that download is shown
-  the same way (a percentage, no size) and is stopped after 180 s without progress (F860).
+  the same way (a percentage, no size) and is stopped after 180 s without progress (F860), and the
+  partial file a stopped download leaves does not read as a ready model (F900).
 - **Trigger used in a shortcut** (a modifier trigger held while another key goes down or the mouse
   is clicked: ⌘-Tab, ⌥-click, a character typed with Right ⌥) → the capture is dropped unheard;
   nothing is transcribed, pasted or logged (F448).
