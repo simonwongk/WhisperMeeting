@@ -178,3 +178,80 @@ func transcodeMixesStereoInsteadOfKeepingTheLeftChannel() throws {
     // A mix of a full-scale tone and silence is half its RMS (8485 -> ~4242); the discard was 0.
     #expect(try pcm16RMS(ofWAVAt: out) > 3_000)
 }
+
+// F941 — `afconvert -c 1 --mix` exits 1 ("Couldn't set audio converter property (-50)") when its input
+// is already exactly the output's format, 16 kHz mono 16-bit integer PCM, in a WAV or a CAF: there is no
+// converter for `--mix` to be set on. That is the WAV every link import holds (yt-dlp's `-ar 16000 -ac 1
+// -sample_fmt s16`), so Shrink failed on every one after the user confirmed it. Measured on macOS 27;
+// the macos-15 runner may never have failed, so these assert the transcode succeeds and keeps the sound,
+// which holds on both.
+
+/// A 16 kHz mono 16-bit WAV of a 440 Hz tone at 12,000 of 32,767: what a link import's `recording.wav` is.
+private func writeSixteenKilohertzMonoTone(seconds: Double, at url: URL) throws {
+    let rate: UInt32 = 16_000, frames = UInt32(seconds * Double(rate))
+    let dataBytes = frames * 2
+    var data = Data()
+    func a32(_ v: UInt32) { data.append(contentsOf: withUnsafeBytes(of: v.littleEndian) { Array($0) }) }
+    func a16(_ v: UInt16) { data.append(contentsOf: withUnsafeBytes(of: v.littleEndian) { Array($0) }) }
+    data.append(contentsOf: Array("RIFF".utf8)); a32(36 + dataBytes); data.append(contentsOf: Array("WAVE".utf8))
+    data.append(contentsOf: Array("fmt ".utf8)); a32(16); a16(1); a16(1); a32(rate); a32(rate * 2); a16(2); a16(16)
+    data.append(contentsOf: Array("data".utf8)); a32(dataBytes)
+    for i in 0..<Int(frames) {
+        a16(UInt16(bitPattern: Int16(12_000 * sin(2 * Double.pi * 440 * Double(i) / Double(rate)))))
+    }
+    try data.write(to: url)
+}
+
+@Test("A recording already in the engines' format, 16 kHz mono 16-bit, transcodes from a WAV and a CAF (F941)")
+func transcodeAcceptsAnInputAlreadyInTheTargetFormat() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("F941-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let wav = dir.appendingPathComponent("recording.wav")
+    try writeSixteenKilohertzMonoTone(seconds: 2, at: wav)
+    let toneRMS = 12_000 / 2.0.squareRoot()
+
+    let fromWAV = dir.appendingPathComponent("from-wav.wav")
+    try AudioTranscoder.transcodeToWAV(input: wav, output: fromWAV)
+    #expect(abs(try pcm16RMS(ofWAVAt: fromWAV) - toneRMS) < 100, "the tone is carried through unchanged")
+    #expect(wavFormat(try Data(contentsOf: fromWAV))?.channels == 1)
+    #expect(wavFormat(try Data(contentsOf: fromWAV))?.sampleRate == 16_000)
+
+    // The same audio in a CAF, made without `--mix`, which is how afconvert accepts that input.
+    let caf = dir.appendingPathComponent("recording.caf")
+    let make = Process()
+    make.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+    make.arguments = ["-f", "caff", "-d", "LEI16@16000", wav.path, caf.path]
+    try make.run(); make.waitUntilExit()
+    try #require(make.terminationStatus == 0)
+    let fromCAF = dir.appendingPathComponent("from-caf.wav")
+    try AudioTranscoder.transcodeToWAV(input: caf, output: fromCAF)
+    #expect(abs(try pcm16RMS(ofWAVAt: fromCAF) - toneRMS) < 100)
+}
+
+@Test("Only a recording known to hold one channel skips the downmix (F941)")
+func transcodeDownmixesUnlessTheInputIsKnownMono() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("F941-mono-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let mono = dir.appendingPathComponent("mono.wav")
+    try writeSixteenKilohertzMonoTone(seconds: 0.1, at: mono)
+    let stereo = dir.appendingPathComponent("stereo.wav")
+    try makeWav(sampleRate: 16_000, channels: 2, frames: 160, at: stereo)
+    let caf = dir.appendingPathComponent("mono.caf")
+    let make = Process()
+    make.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+    make.arguments = ["-f", "caff", "-d", "LEI16@16000", mono.path, caf.path]
+    try make.run(); make.waitUntilExit()
+    try #require(make.terminationStatus == 0)
+
+    #expect(AudioTranscoder.knownChannelCount(of: mono) == 1)
+    #expect(AudioTranscoder.knownChannelCount(of: caf) == 1)
+    #expect(AudioTranscoder.knownChannelCount(of: stereo) == 2)
+    // Unread, so mixed: the downmix is what kept the right channel of a stereo call (F796).
+    #expect(AudioTranscoder.knownChannelCount(of: URL(fileURLWithPath: "/x/clip.m4a")) == nil)
+    #expect(!AudioTranscoder.transcodeArguments(input: mono, output: stereo).contains("--mix"))
+    #expect(!AudioTranscoder.transcodeArguments(input: caf, output: stereo).contains("--mix"))
+    #expect(AudioTranscoder.transcodeArguments(input: stereo, output: mono).contains("--mix"))
+    #expect(AudioTranscoder.transcodeArguments(input: URL(fileURLWithPath: "/x/clip.m4a"), output: mono).contains("--mix"))
+}

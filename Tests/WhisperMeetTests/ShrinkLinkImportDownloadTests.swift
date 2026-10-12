@@ -13,11 +13,12 @@ import Testing
 // more audio than the recording. Driven through the calls the Shrink button makes, with the real
 // encoder and decoder (afconvert and AVFoundation ship with macOS, the CI runner included).
 //
-// The recordings here are 48 kHz WAVs, not the 16 kHz mono WAV a link import actually holds:
-// Shrink's first encode step (`afconvert … -c 1 --mix`) refuses a 16 kHz mono PCM input outright
-// ("Couldn't set audio converter property (-50)"), so with a real import's WAV the encode fails
-// before anything is deleted, which hides the deletion these tests are about. That refusal is its own
-// finding (lane U3's draft, Unfixed findings).
+// The recordings here are 48 kHz WAVs, not the 16 kHz mono WAV a link import actually holds: when
+// these were written, Shrink's first encode step (`afconvert … -c 1 --mix`) refused a 16 kHz mono PCM
+// input outright ("Couldn't set audio converter property (-50)"), so with a real import's WAV the
+// encode failed before anything was deleted, which hid the deletion these tests are about. That
+// refusal was F941; since its fix the real shape shrinks, and `ShrinkSixteenKilohertzImportTests`
+// drives it beside a download no longer than its WAV.
 
 /// A tone at `rate`: 16 kHz for a download, 48 kHz for the recording Shrink encodes.
 private func tone(seconds: Double, rate: Double = 16_000) -> [Float] {

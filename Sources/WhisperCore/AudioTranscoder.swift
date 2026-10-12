@@ -43,9 +43,7 @@ public enum AudioTranscoder {
     public static func transcodeToWAV(input: URL, output: URL) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
-        // `--mix`, because `-c 1` alone "add[s]/remove[s] channels without regard to order": it keeps
-        // the left channel and drops the right, so a two-channel call recording lost one party (F796).
-        process.arguments = ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", "--mix", input.path, output.path]
+        process.arguments = transcodeArguments(input: input, output: output)
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
@@ -61,6 +59,41 @@ public enum AudioTranscoder {
         guard process.terminationStatus == 0 else {
             throw AudioTranscoderError.transcodeFailed(String(decoding: data.suffix(2_000), as: UTF8.self))
         }
+    }
+
+    /// afconvert's arguments for `transcodeToWAV`.
+    ///
+    /// `--mix`, because `-c 1` alone "add[s]/remove[s] channels without regard to order": it keeps the
+    /// left channel and drops the right, so a two-channel call recording lost one party (F796). But not
+    /// for a recording known to hold one channel, where there is nothing to mix: afconvert exits 1 with
+    /// "Couldn't set audio converter property (-50)" when `--mix` is given for an input already in the
+    /// output's format — 16 kHz mono 16-bit integer PCM, in a WAV or a CAF — because no converter is
+    /// made for it to be set on, and that is the WAV every link import holds (F941). Measured on macOS
+    /// 27: without `--mix` that input converts; and a mono input of any rate has nothing to mix. A
+    /// recording whose channels cannot be read here keeps `--mix`, the safe side for a stereo call;
+    /// every such input measured converts with it (AAC, MP3, big-endian AIFF, movies with a video
+    /// track), as do mono WAVs that are not exactly the output's format (24-bit, Float32, 48 kHz).
+    static func transcodeArguments(input: URL, output: URL) -> [String] {
+        let mix: [String] = knownChannelCount(of: input) == 1 ? [] : ["--mix"]
+        return ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1"] + mix + [input.path, output.path]
+    }
+
+    /// How many channels `url` holds, read from its header when it is a WAV or a CAF, by content and not
+    /// by name; nil for anything else, or a header that cannot be read (F941). A bounded read of the
+    /// first bytes, never the audio.
+    static func knownChannelCount(of url: URL) -> Int? {
+        if let header = WAVInspection.header(at: url) { return Int(header.channels) }
+        // A CAF starts with its file header ('caff', version, flags: 8 bytes), and its first chunk must
+        // be the audio description ('desc', a 64-bit size, then an AudioStreamBasicDescription, all
+        // big-endian), whose mChannelsPerFrame is 24 bytes into the chunk's body (Core Audio Format
+        // Specification, "CAF File Header" and "Audio Description Chunk").
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 52), data.count == 52,
+              WAVInspection.fourCC(data, 0) == "caff", WAVInspection.fourCC(data, 8) == "desc" else { return nil }
+        var channels: UInt32 = 0
+        for offset in 44..<48 { channels = channels << 8 | UInt32(data[data.startIndex + offset]) }
+        return channels > 0 ? Int(channels) : nil
     }
 }
 
