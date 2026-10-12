@@ -168,6 +168,12 @@ public struct LocalWhisperRuntime: Sendable {
         }
     }
 
+    /// The openai-whisper release whose `_MODELS` URLs `checkpointByteCount` was measured for — the
+    /// one `setup-local-whisper.sh` pins (`openai_whisper_version`). A pin bump can point a model at a
+    /// new URL, and a stale size would read every whole checkpoint as not ready, so
+    /// `checkpointSizesFollowTheOpenAIWhisperPin` fails until the sizes are re-measured and this moves.
+    public static let checkpointSizesOpenAIWhisperVersion = "20250625"
+
     /// Whether the openai-whisper checkpoint for `model` is in the app's model directory, whole —
     /// the model the batch dictation engine runs where the warm MLX helper cannot (F823).
     ///
