@@ -410,3 +410,37 @@ func otherRecordingAtRiskReadsTheLogicalLength() {
     facts.entries[1] = Entry(name: "recording.webm", bytes: 0)
     #expect(MeetingStoragePlan.otherRecordingAtRisk(facts) == nil)
 }
+
+// MARK: - F955: a resume's leftovers, by their tracks and channels
+
+@Test("A resume checks the copy against a leftover a mix must hold, and keeps one it cannot check (F955)")
+func resumeLeftoverTracksDecideWhatIsChecked() {
+    let idle = MeetingStoragePlan.LiveFacts()
+    var resume = disk("recording.m4a", entries: [Entry(name: "recording.m4a", bytes: 14_800_000),
+                                                 Entry(name: "recording.mov", bytes: 900_000_000)])
+    resume.otherRecordingSeconds = ["recording.mov": 3_600]
+    // One track: its length is the whole question, as before (F911).
+    resume.otherRecordingTracks = ["recording.mov": [RecordingMixPlan.Track(channels: 2)]]
+    #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle) == nil)
+    #expect(MeetingStoragePlan.otherRecordingsToVerify(resume).isEmpty)
+    // Two tracks: allowed, and the resume checks the copy against it before removing it.
+    resume.otherRecordingTracks = ["recording.mov": [RecordingMixPlan.Track(channels: 1), RecordingMixPlan.Track(channels: 1)]]
+    #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle) == nil)
+    #expect(MeetingStoragePlan.otherRecordingsToVerify(resume).map(\.name) == ["recording.mov"])
+    // Alternates are never mixed, so no copy holds them both: kept, saying why.
+    resume.otherRecordingTracks = ["recording.mov": [RecordingMixPlan.Track(channels: 1, alternateGroup: 0),
+                                                     RecordingMixPlan.Track(channels: 1, alternateGroup: 0)]]
+    #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle)
+            == .otherRecordingHasMoreTracks(name: "recording.mov", tracks: 2, channels: 2))
+    #expect(MeetingStoragePlan.Unavailability.otherRecordingHasMoreTracks(name: "recording.mov", tracks: 2, channels: 2)
+        .message.contains("“recording.mov”, which has 2 audio tracks"))
+    // Outside a resume nothing checks the copy against another recording, so one a mix must hold is kept.
+    var encode = disk("recording.wav", entries: [Entry(name: "recording.wav", bytes: 1_382_400_000),
+                                                 Entry(name: "recording.caf", bytes: 1_382_400_000)])
+    encode.otherRecordingSeconds = ["recording.caf": 3_600]
+    encode.otherRecordingTracks = ["recording.caf": [RecordingMixPlan.Track(channels: 4)]]
+    #expect(MeetingStoragePlan.unavailability(disk: encode, live: idle)
+            == .otherRecordingHasMoreTracks(name: "recording.caf", tracks: 1, channels: 4))
+    #expect(MeetingStoragePlan.Unavailability.otherRecordingHasMoreTracks(name: "recording.caf", tracks: 1, channels: 4)
+        .message.contains("which has 4 channels"))
+}

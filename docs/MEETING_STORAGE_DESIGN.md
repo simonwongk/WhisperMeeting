@@ -178,6 +178,12 @@ in the same order. It does not encode again. The "damaged" and "nothing to gain"
 they are about the recording that would be encoded, and here there is none. A meeting whose recording is `meeting.m4a`
 or `meeting-recovered.m4a` and that has nothing left to remove shows "Already shrunk".
 
+A leftover with several audio tracks or more than two channels is removed only after the copy is checked against it
+(F955, 2026-10-12), with step 4's level, per-window and per-channel checks: a copy made before F942 holds only the
+first track or channel, and the leftover then holds the last copy of the rest, which a resume used to delete. A
+leftover whose tracks are alternatives, or cannot be read, is kept, and so, outside a resume, is any other
+`recording.<ext>` with more tracks than a plain encode keeps, since nothing compares it with the copy there.
+
 **Batch.** Shrink Selected runs the same sequence one meeting after another. Ineligible meetings are skipped with
 their reasons, and one summary at the end lists what was shrunk, skipped and failed.
 

@@ -156,6 +156,18 @@ public enum MeetingStoragePlan {
         return nil
     }
 
+    /// The other `recording.<ext>` files a resume must check the copy against before it removes them
+    /// (F955): those with several audio tracks or more than two channels, which a mix holds and a copy
+    /// made before F942 did not — that build kept the first track or channel. Their length alone, which
+    /// F911 compares, cannot tell the two apart.
+    public static func otherRecordingsToVerify(_ disk: DiskFacts) -> [FolderEntry] {
+        otherRecordings(in: disk.entries, recordingName: disk.recordingName).filter { other in
+            guard !other.isEmpty, let tracks = disk.otherRecordingTracks[other.name] else { return false }
+            if case .mixEveryChannel = RecordingMixPlan.decision(for: tracks) { return true }
+            return false
+        }
+    }
+
     /// Whether Shrink mixes this recording into its copy rather than encoding it as it is (F942): it
     /// has several audio tracks, or more than two channels. One or two channels of one track are mixed
     /// by the encode itself (F796).
@@ -299,11 +311,16 @@ public enum MeetingStoragePlan {
         /// tracks or more than two channels, so the plan can tell whether they can be mixed into the copy
         /// (F942). Nil when not read or not readable.
         public var audioTracks: [RecordingMixPlan.Track]?
+        /// What each other `recording.<ext>` in the folder holds, track by track, keyed like
+        /// `otherRecordingSeconds`, where it could be read (F955). A name missing here was not read, and is
+        /// judged by its length alone, as before.
+        public var otherRecordingTracks: [String: [RecordingMixPlan.Track]]
 
         public init(recordingName: String, recordingExists: Bool, inOwnFolder: Bool, hasIntegrityProblem: Bool,
                     rebuildOffered: Bool, durationSeconds: TimeInterval, entries: [FolderEntry],
                     audioTrackCount: Int? = nil, otherRecordingSeconds: [String: TimeInterval] = [:],
-                    channelCount: Int? = nil, audioTracks: [RecordingMixPlan.Track]? = nil) {
+                    channelCount: Int? = nil, audioTracks: [RecordingMixPlan.Track]? = nil,
+                    otherRecordingTracks: [String: [RecordingMixPlan.Track]] = [:]) {
             self.recordingName = recordingName
             self.recordingExists = recordingExists
             self.inOwnFolder = inOwnFolder
@@ -315,6 +332,7 @@ public enum MeetingStoragePlan {
             self.otherRecordingSeconds = otherRecordingSeconds
             self.channelCount = channelCount
             self.audioTracks = audioTracks
+            self.otherRecordingTracks = otherRecordingTracks
         }
     }
 
@@ -348,6 +366,11 @@ public enum MeetingStoragePlan {
         /// beside the shorter WAV an interrupted extraction finished. `seconds` is its length, nil when
         /// it could not be measured.
         case otherRecordingMayHoldMore(name: String, seconds: TimeInterval?)
+        /// Another `recording.<ext>` in the folder has several audio tracks or more than two channels, and
+        /// the copy is not shown to hold every one of them (F955): its tracks are alternatives that are
+        /// never mixed, or could not be read, or — outside a resume, which checks the copy against it
+        /// before removing it — nothing compares it with the copy at all.
+        case otherRecordingHasMoreTracks(name: String, tracks: Int, channels: Int)
         case cannotMeasureLength
         case alreadyShrunk
         case nothingToGain
@@ -379,6 +402,9 @@ public enum MeetingStoragePlan {
                 return "This meeting's folder also holds “\(name)”, which runs \(TranscriptFormatter.clock(seconds)), longer than this recording. Shrinking would delete it, so it isn't shrunk."
             case let .otherRecordingMayHoldMore(name, nil):
                 return "This meeting's folder also holds “\(name)”, and its length can't be read to show that this recording holds all of its audio. Shrinking would delete it, so it isn't shrunk."
+            case let .otherRecordingHasMoreTracks(name, tracks, channels):
+                let holds = tracks > 1 ? "\(tracks) audio tracks" : "\(channels) channels"
+                return "This meeting's folder also holds “\(name)”, which has \(holds), and the shrunk copy isn't shown to hold them all. Shrinking would delete it, so it isn't shrunk."
             case .cannotMeasureLength:
                 return "This recording's length can't be read, so a compressed copy couldn't be checked against it."
             case .alreadyShrunk:
@@ -412,12 +438,29 @@ public enum MeetingStoragePlan {
         if let other = otherRecordingAtRisk(disk) {
             return .otherRecordingMayHoldMore(name: other.name, seconds: disk.otherRecordingSeconds[other.name])
         }
+        // F955: and its tracks and channels, which its length cannot show. A leftover a mix must hold is
+        // removed by a resume only after the copy is checked against it (`otherRecordingsToVerify`);
+        // anything else of that kind is kept.
+        let resume = isResume(disk)
+        for other in otherRecordings(in: disk.entries, recordingName: disk.recordingName) where !other.isEmpty {
+            guard let tracks = disk.otherRecordingTracks[other.name] else { continue }
+            switch RecordingMixPlan.decision(for: tracks) {
+            case .asItIs:
+                continue
+            case .mixEveryChannel where resume:
+                continue
+            case .mixEveryChannel, .unsupported:
+                return .otherRecordingHasMoreTracks(name: other.name, tracks: tracks.count,
+                                                    channels: tracks.reduce(0) { $0 + Swift.max(0, $1.channels) })
+            }
+        }
         if isResume(disk) {
             // Resume mode: nothing is encoded, so damage and size rules about an encode don't apply. Nor
             // do the track and channel rules, which are about what an encode keeps of the recording: here
             // the recording is already Shrink's output and is kept. What a resume removes are originals
             // an earlier run had already replaced with its copy; F911's rule above refuses one that runs
-            // longer than the recording, and their tracks and channels are not read.
+            // longer than the recording, and F955's one whose tracks the copy is not shown to hold — the
+            // resume itself checks the copy against each leftover a mix must hold before removing it.
             if removableFiles(in: disk.entries, keeping: output).isEmpty { return .alreadyShrunk }
         } else {
             if disk.hasIntegrityProblem || disk.rebuildOffered {

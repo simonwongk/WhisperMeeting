@@ -321,6 +321,38 @@ extension AppModel {
                     return .failed(title: meeting.title, message: "\(reason) \(Self.leftCopyNote)")
                 }
             }
+        } else if !MeetingStoragePlan.otherRecordingsToVerify(disk).isEmpty {
+            // F955: a resume encodes nothing, but before it removes a leftover with several tracks or more
+            // than two channels it checks the copy against it as an encode checks a mix (F942): a copy a
+            // build before F942 made kept only the first track or channel, and the leftover then holds
+            // the last copy of the rest.
+            let leftovers = MeetingStoragePlan.otherRecordingsToVerify(disk)
+            let copyURL = store.recordingURL(for: meeting)
+            let decode = decodeForShrink
+            let checked: ShrinkFailure? = await Task.detached(priority: .userInitiated) {
+                for leftover in leftovers {
+                    let url = folder.appendingPathComponent(leftover.name)
+                    let copy: DecodedAudio.Decoded, original: DecodedAudio.Decoded
+                    do {
+                        copy = try await decode(copyURL)
+                        original = try await decode(url)
+                    } catch {
+                        return .leftoverUnchecked(name: leftover.name)
+                    }
+                    if !MeetingStoragePlan.levelsAgree(original: original.level, compressed: copy.level) {
+                        return .leftoverNotInCopy(name: leftover.name, at: nil)
+                    }
+                    if let window = MeetingStoragePlan.firstWindowLosingSound(
+                        original: original.windowLevels, compressed: copy.windowLevels, originalLevel: original.level
+                    ) ?? MeetingStoragePlan.firstWindowLosingAChannel(
+                        channels: original.channelWindowLevels, compressed: copy.windowLevels, originalLevel: original.level
+                    ) {
+                        return .leftoverNotInCopy(name: leftover.name, at: Double(window) * MeetingStoragePlan.levelWindowSeconds)
+                    }
+                }
+                return nil
+            }.value
+            if let checked { return .failed(title: meeting.title, message: checked.localizedDescription) }
         }
 
         // Delete (design, step 7), in the planner's order, only names on its list — and of those, only
@@ -359,6 +391,11 @@ extension AppModel {
         /// review). It is the first such stretch the check found, and the check stops there, so this
         /// says nothing about the stretches after it (second review, R7).
         case soundLost(at: TimeInterval)
+        /// A resume's leftover with several tracks or more than two channels holds sound the copy lacks,
+        /// in the stretch that starts at this second, or somewhere when nil (F955).
+        case leftoverNotInCopy(name: String, at: TimeInterval?)
+        /// A resume's leftover, or the copy, could not be read to compare them (F955).
+        case leftoverUnchecked(name: String)
         var errorDescription: String? {
             let size = { (b: Int64) in ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
             switch self {
@@ -379,6 +416,12 @@ extension AppModel {
                 return "The recording could not be read to check the compressed copy against it, so the copy was discarded."
             case let .soundLost(at):
                 return "The compressed copy is missing sound the recording has at about \(TranscriptFormatter.clock(at)), so it was discarded."
+            case let .leftoverNotInCopy(name, at?):
+                return "“\(name)”, which the compressed copy replaced, has sound at about \(TranscriptFormatter.clock(at)) that the copy is missing, so it was kept."
+            case let .leftoverNotInCopy(name, nil):
+                return "“\(name)”, which the compressed copy replaced, holds sound the copy doesn't, so it was kept."
+            case let .leftoverUnchecked(name):
+                return "“\(name)”, which the compressed copy replaced, could not be checked against the copy, so it was kept."
             }
         }
     }
@@ -430,12 +473,20 @@ extension AppModel {
             // whether removing it loses audio — a WAV from its header (or the audio it holds, when
             // ffmpeg never finished it), anything else with AVAudioFile. Unreadable stays unmeasured.
             var otherSeconds: [String: TimeInterval] = [:]
+            var otherTracks: [String: [RecordingMixPlan.Track]] = [:]
             for other in MeetingStoragePlan.otherRecordings(in: listed, recordingName: name) {
                 let url = directory.appendingPathComponent(other.name)
                 let seconds = url.pathExtension.lowercased() == "wav"
                     ? InterruptedLinkImportExtraction.heldWAVSeconds(at: url)
                     : declared(url)
                 if let seconds { otherSeconds[other.name] = seconds }
+                // F955: and its tracks and channels — a WAV's from its header, which ffmpeg writes before
+                // it has finished (F911's half-written WAV), anything else with AVFoundation.
+                if let header = WAVInspection.header(at: url) {
+                    otherTracks[other.name] = [RecordingMixPlan.Track(channels: Int(header.channels))]
+                } else if let tracks = await readTracks(url) {
+                    otherTracks[other.name] = tracks
+                }
             }
             return MeetingStoragePlan.DiskFacts(
                 recordingName: name, recordingExists: exists,
@@ -443,7 +494,8 @@ extension AppModel {
                     == folder?.standardizedFileURL.path,
                 hasIntegrityProblem: problem, rebuildOffered: rebuild,
                 durationSeconds: length, entries: listed, audioTrackCount: tracks,
-                otherRecordingSeconds: otherSeconds, channelCount: channels, audioTracks: audioTracks)
+                otherRecordingSeconds: otherSeconds, channelCount: channels, audioTracks: audioTracks,
+                otherRecordingTracks: otherTracks)
         }.value
     }
 }
