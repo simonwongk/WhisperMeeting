@@ -493,23 +493,52 @@ public enum GlossaryCorrector {
     /// Latin word, and not a `from` that only reads that way because it sits inside an already-`to`
     /// span, and — for a CJK `from` — not part of a longer Chinese word by `evidence`, F594). Pass the
     /// evidence the proposals were made with, or the applier can pick an occurrence the matcher
-    /// refused. Segments without a correction are unchanged; corrections are order-independent (each
-    /// targets a specific segment index).
+    /// refused. Segments without a correction are unchanged.
+    ///
+    /// **Every correction finds its place in the segment as it was reviewed (F939)**, not in the text
+    /// the corrections before it already changed, and a correction whose place overlaps one an
+    /// earlier correction in the list already took changes nothing. Resolved one after another, two
+    /// rows for one occurrence — the local model's two readings of one word, two vocabulary terms
+    /// near one mishearing — both ticked, changed that occurrence and then the next one, which no row
+    /// showed; and a row whose text an earlier row wrote ("Jon → Jonathan", "Jonathan → jon")
+    /// changed the word just written instead of its own. So the result no longer depends on the
+    /// order of corrections in different places, and of two for one place the first wins, as the
+    /// first rule does in dictation.
     public static func apply(
         _ corrections: [GlossaryCorrection],
         to segments: [TranscriptSegment],
         evidence: CJKWordEvidence = .none
     ) -> [TranscriptSegment] {
+        var edits: [Int: [(range: Range<String.Index>, to: String)]] = [:]
+        for correction in corrections where segments.indices.contains(correction.segmentIndex) {
+            let index = correction.segmentIndex
+            guard let range = place(of: correction, in: segments[index].text, evidence: evidence),
+                  !(edits[index] ?? []).contains(where: { $0.range.overlaps(range) }) else { continue }
+            edits[index, default: []].append((range, correction.to))
+        }
         var result = segments
-        for correction in corrections {
-            guard result.indices.contains(correction.segmentIndex),
-                  let range = ReplacementBoundary.firstRange(
-                    of: correction.from, notCoveredBy: correction.to,
-                    in: result[correction.segmentIndex].text, evidence: evidence
-                  ) else { continue }
-            result[correction.segmentIndex].text.replaceSubrange(range, with: correction.to)
+        for (index, segmentEdits) in edits {
+            let text = segments[index].text
+            var rebuilt = ""
+            var cursor = text.startIndex
+            for edit in segmentEdits.sorted(by: { $0.range.lowerBound < $1.range.lowerBound }) {
+                rebuilt += text[cursor..<edit.range.lowerBound]
+                rebuilt += edit.to
+                cursor = edit.range.upperBound
+            }
+            rebuilt += text[cursor...]
+            result[index].text = rebuilt
         }
         return result
+    }
+
+    /// Where `apply` changes `correction` in `text`: the first genuine occurrence of its `from`
+    /// (F444's `ReplacementBoundary`, with `evidence` for Chinese, F594), or nil when there is none.
+    /// The review sheet's sentence for a row is drawn around the same place (`context`).
+    static func place(
+        of correction: GlossaryCorrection, in text: String, evidence: CJKWordEvidence
+    ) -> Range<String.Index>? {
+        ReplacementBoundary.firstRange(of: correction.from, notCoveredBy: correction.to, in: text, evidence: evidence)
     }
 
     /// A Latin window's phrase without the punctuation stuck to its outer words (F819): "Kestrol,"

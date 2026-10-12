@@ -105,3 +105,28 @@ func referenceThreadsThroughWithoutVocabulary() async throws {
     #expect(box.vocabulary == [])
     #expect(model.alertMessage == nil)
 }
+
+/// F939 — two readings of one word from the local model become two rows for one occurrence; both
+/// ticked, the sheet's Apply changed that occurrence and then the next one, which no row showed.
+@MainActor
+@Test("Two local-model rows for one word, both ticked, change only the occurrence the rows show (F939)")
+func twoLocalRowsForOneWordChangeOnlyTheReviewedOccurrence() async throws {
+    let model = try makeModel()
+    model.isCorrectionModelInstalled = { true }
+    model.proposeTranscriptCorrections = { _, _, _ in
+        [TranscriptCorrection(from: "jon", to: "John"), TranscriptCorrection(from: "jon", to: "Jonathan")]
+    }
+    let segments = [TranscriptSegment(speaker: nil, start: 0, end: 1, text: "jon met jon")]
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    ))
+
+    let proposals = await model.proposeLocalCorrections(for: id, reference: "John")
+    #expect(proposals.count == 2)
+
+    // What the review sheet hands back with every row ticked.
+    model.applyGlossaryCorrections(proposals, to: id)
+    #expect(model.store.meeting(id: id)?.segments.first?.text == "John met jon")
+}

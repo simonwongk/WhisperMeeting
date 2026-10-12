@@ -20,17 +20,15 @@ public struct ProposalContext: Sendable, Equatable {
 }
 
 extension GlossaryCorrector {
-    /// `correction` in its sentence (F817): the place `apply` would change in `text` — the first
-    /// genuine occurrence of its `from` by the same `ReplacementBoundary`, so pass the evidence the
-    /// proposals are applied with — with up to `radius` characters either side, cut back to a space
+    /// `correction` in its sentence (F817): the place `apply` would change in `text` — `place(of:in:
+    /// evidence:)`, the one `apply` uses, so pass the evidence the proposals are applied with — with
+    /// up to `radius` characters either side, cut back to a space
     /// rather than through a word, and "…" where the text goes on. Nil when `apply` would change
     /// nothing in `text`.
     public static func context(
         of correction: GlossaryCorrection, in text: String, evidence: CJKWordEvidence = .none, radius: Int = 24
     ) -> ProposalContext? {
-        guard let range = ReplacementBoundary.firstRange(
-            of: correction.from, notCoveredBy: correction.to, in: text, evidence: evidence
-        ) else { return nil }
+        guard let range = place(of: correction, in: text, evidence: evidence) else { return nil }
         var start = text.index(range.lowerBound, offsetBy: -radius, limitedBy: text.startIndex) ?? text.startIndex
         if start > text.startIndex, !text[text.index(before: start)].isWhitespace,
            let space = text[start..<range.lowerBound].firstIndex(where: \.isWhitespace) {
