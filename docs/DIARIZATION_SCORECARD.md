@@ -326,7 +326,7 @@ Assessed for the adopted runtime, with the rejected one alongside where the comp
 |---|---|
 | **Safety** — preservation, offline-after-install, no label leak, degraded library, corrupt/newer sidecar, cancellation, temp cleanup | Met in the test suite, on both runtimes; the recording was verified byte-identical after every real run. |
 | **Quality** — per-stratum DER against a pre-registered target | **Cannot be evaluated as written** (§6): the Python Community-1 comparator the PRD names was never built. What *is* known: sherpa-onnx fails any reading of it (33–179 clusters where 1–6 are correct); FluidAudio produces a plausible count on one meeting, which is not a pass. |
-| **Value** — blinded navigation study | **Not run.** Requires human participants. |
+| **Value** — blinded navigation study | **Dropped** by the user (2026-09-24, reconfirmed 2026-10-12; F299): no reviewers to run it, so labels stay in beta. |
 | **System** — p95 RTF ≤ 0.25, no memory-pressure termination on the long-form sentinel at the lowest supported configuration, three-run determinism | **RTF met** with two orders of magnitude of headroom (0.0028). **Determinism met**, bit-identically across three runs on real audio. **Memory** is 615.5 MiB at 35 min — a fifth of sherpa-onnx's 3 201 MiB — but **untested beyond 35 minutes and untested on the floor configuration**, which the gate names explicitly. |
 | **Trust** — VoiceOver, keyboard, Dynamic Type, wording in the installed app | **Not run.** Requires manual validation. |
 

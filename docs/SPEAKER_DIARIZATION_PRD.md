@@ -300,7 +300,7 @@ Numbers are predeclared after the baseline is built and before candidate tuning.
 
 1. **Safety gate: hard 100%.** Every preservation, offline-after-install, no-label-leak, degraded-library, corrupt/newer-sidecar, cancellation, and temporary-file-cleanup test passes.
 2. **Quality gate.** Candidate meets the pre-registered target composite and no required stratum regresses by more than five absolute DER points from the Python control. The initial target is within three absolute DER points of that control on the composite; F217 may revise that rule only before the held-out output is seen.
-3. **Value gate.** Blinded internal reviewers complete predefined “who said this?” navigation tasks faster or more accurately than with an unlabeled transcript, without reporting that review burden outweighs the value.
+3. **Value gate.** Blinded internal reviewers complete predefined “who said this?” navigation tasks faster or more accurately than with an unlabeled transcript, without reporting that review burden outweighs the value. **Dropped by the user (2026-09-24, reconfirmed 2026-10-12; F299):** there are no reviewers to run it, so speaker labels stay in **beta** rather than being promoted on this gate.
 4. **System gate.** On the lowest supported Apple Silicon configuration, p95 real-time factor is at most 0.25, no memory-pressure termination occurs on the long-form sentinel, and output is stable across three runs. Profile actual backend execution; an available Core ML provider is not proof of ANE execution.
 5. **Trust gate.** Manual review validates overlap/ambiguity language, aliases, default export isolation, and VoiceOver/keyboard/Dynamic Type behavior in the installed app.
 

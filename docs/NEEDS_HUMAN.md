@@ -41,7 +41,7 @@ The letters below still stand for what needs your hands (F294, F201, F230, F428,
 
 ## Where to start
 
-Eleven entries, over the cap of five. (2026-10-12: Wave 5's sitting added as #1 and the rest renumbered; its four questions were answered the same day.) (2026-10-09: F891 answered — you said no to every app I named, and the next slow dictation showed the GPU idle; the cause was idle weights paging out, fixed by a press-down wake-up. Settled below.) (2026-10-08: Wave 4's sitting added as #12.) (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
+Ten entries, over the cap of five. (2026-10-12: the speaker-label letter answered in chat and moved to Settled.) (2026-10-12: Wave 5's sitting added as #1 and the rest renumbered; its four questions were answered the same day.) (2026-10-09: F891 answered — you said no to every app I named, and the next slow dictation showed the GPU idle; the cause was idle weights paging out, fixed by a press-down wake-up. Settled below.) (2026-10-08: Wave 4's sitting added as #12.) (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
 the line, here they are in the order I would answer them. Every one is optional and nothing rots.
 
 | | Entry | Time | Why this order |
@@ -51,12 +51,11 @@ the line, here they are in the order I would answer them. Every one is optional 
 | 3 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
 | 4 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. Step 6 (one dictation during a call) is F361's; step 7 (hold and toggle on a new build) is F731's. |
 | 5 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
-| 6 | **F299 · F347 · F349** | your call | Three speaker-label questions that need your own meetings. The smallest is one command. |
-| 7 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste — once more, with F516 installed. The log now says what macOS handed over. |
-| 8 | **F392** | ~5 min, or "no" | One download you start (490 MB). Unblocks measuring Ask's search by meaning, which ships on constants nobody has measured. |
-| 9 | **F805** | ~5 min | Shrink a throwaway import on the new build and check that it still plays. Shrink is the one new action that deletes audio, and no test can click it. |
-| 10 | **F807 · F845 · F685** | ~45 min | Wave 3's screen checks in one sitting and one silent dictation (its four questions were answered 2026-10-07). Nothing urgent; the batch is tested headlessly and reviewed. |
-| 11 | **F889 · F857** | ~40 min | Wave 4's screen checks: recovery and safety copies, two app copies, transcripts, dictation. Step 1 (the Claude key, 1 min) is worth doing first. |
+| 6 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste — once more, with F516 installed. The log now says what macOS handed over. |
+| 7 | **F392** | ~5 min | You said yes 2026-10-12: press the button (490 MB). Unblocks measuring Ask's search by meaning, which ships on constants nobody has measured. |
+| 8 | **F805** | ~5 min | Shrink a throwaway import on the new build and check that it still plays. Shrink is the one new action that deletes audio, and no test can click it. |
+| 9 | **F807 · F845 · F685** | ~45 min | Wave 3's screen checks in one sitting and one silent dictation (its four questions were answered 2026-10-07). Nothing urgent; the batch is tested headlessly and reviewed. |
+| 10 | **F889** | ~40 min | Wave 4's screen checks: recovery and safety copies, two app copies, transcripts, dictation. Step 1 (the Claude key, 1 min) is worth doing first. |
 
 ---
 
@@ -175,40 +174,6 @@ asserting.
 
 ---
 
-## F299 · F347 · F349 — Three speaker-label questions that need your own meetings
-
-**Status:** all three `blocked`. None of them had a letter before today, which is why none has
-moved. One letter rather than three, because the answers are short and this file is over its cap.
-
-**What I need from you:** a delegation, or one command — and for the third, real time.
-
-**1. F349 — one command, and it closes a real gap in the evidence.** The clustering threshold
-(0.60) was derived on AMI: four-speaker headset audio that never over-splits. The failure that
-threshold guards against — 179 clusters on a 35-minute meeting — happened on *your* mix, which AMI
-structurally cannot reproduce. So the value is calibrated on material that cannot show the failure
-it prevents. `sweep` prints cluster counts per threshold and needs no ground truth: run it over two
-of your recordings across 0.30–1.00 and we learn where the real cliff is. Say the word and I will
-give you the exact command, or do it under delegation as with the F232 probe.
-
-**2. F347 — whether the sub-second rule helps your transcripts.** Rows under a second no longer get
-a speaker name. That was decided on AMI, where 75 % of reference turns have someone else talking;
-your own meetings measure 1.2–1.9 %. The trade is still positive on the closest analogue, but the
-direction of the error is predicted to be adverse — a sub-second row in a quiet recording is usually
-a fragment of the person already speaking, where the old label was right. Twenty of your own
-sub-second rows, labelled by ear, would settle it.
-
-**3. F299 — does the labelling actually help you find things?** The product gate nobody has scored:
-a handful of find-the-moment tasks on one real meeting, timed, with labels and without. This is the
-largest of the three and the least urgent — it gates promoting speaker labels out of beta, not
-correctness.
-
-*A correction on the first two:* their tickets said your meetings are something "no session here may
-read". That was my wording and it overstates the rule — AGENTS.md bans reading your recordings **for
-testing**, and on 2026-09-18, under your delegation, a session ran the Sortformer probe over two of
-your real meetings and reported counts and timings only. These need your permission, not a wall.
-
----
-
 ## F428 — Copy on your iPhone, dictate on the Mac, then paste
 
 **Status:** `blocked`. Tried once on 2026-09-24 with F425: no more "raw transcript" (that was the test
@@ -269,8 +234,8 @@ test questions to measure them against is committed; the model is not installed 
 it there is a download into WhisperMeet's own runtime, and it also switches Ask to searching by
 meaning for you, so it is your action to start, not a test's. That is why no agent has done it.
 
-**What I need from you:** in the sidebar, open **Ask Meetings** and press **Add Search by Meaning
-(490 MB)** — or tell me "no", and F392 stays parked with nothing lost.
+**What I need from you:** you said **yes** on 2026-10-12, in chat. In the sidebar, open **Ask Meetings** and press **Add Search by
+Meaning (490 MB)**, then tell me it has finished.
 
 The download comes once from Hugging Face. After that, searching runs on this Mac and nothing about
 your meetings is uploaded (the button's own help text says the same). Once it is installed, an agent
@@ -339,7 +304,7 @@ button (F833); and both quit choices stay as they are — logout asks first, Sto
 
 ---
 
-## F889 · F857 — Wave 4: one sitting at the screen, and one optional hardware check
+## F889 — Wave 4: one sitting at the screen (its hardware check was closed 2026-10-12)
 
 **Status:** `blocked` (F889, F857). The 2026-10-07 → 10-08 batch fixed 33 tickets in the library's recovery and restore
 safety copies, two copies of the app on one library, transcripts and Ask, dictation and recording. Each was tested headlessly
@@ -347,8 +312,8 @@ and reviewed by a second agent; what only a person can see is collected here. Mo
 real one — when you are ready, tell me "set up the Wave 4 sitting" and I will prepare a scratch copy of the app you can open
 with one command.
 
-**What I need from you:** one sitting of about 40 minutes on the installed Wave 4 build (split it as you like), and step 6
-only if you own a multi-input audio interface.
+**What I need from you:** one sitting of about 40 minutes on the installed Wave 4 build (split it as you like). Step 6 is closed:
+you have no multi-input device (2026-10-12).
 
 1. **Claude key (F442) — 1 min, on your real app.** Settings ▸ Claude: if a key is saved it reads "API key saved"; quit and
    relaunch, and it still does. (The tests now never touch your Keychain; this proves the shipped app still does.)
@@ -364,11 +329,7 @@ only if you own a multi-input audio interface.
    "Jonathan" is pasted; dictate an email address containing "jon": it is left alone. In a noisy room, hold the key and say
    nothing: "Didn’t catch that", nothing pasted. (The first-download pill needs a library
    without the dictation model; I will include it in the scratch setup.)
-6. **Optional hardware (F857):** only if you own a multi-input audio interface (or a microphone that sends two or more
-   channels). Record ~30 s into its second or later input and dictate once: both should be audible and transcribed. Before this
-   batch an interleaved multi-channel microphone recorded nothing at all (F875). With one live input on an N-input interface the
-   level is about 1/N — please note the level, not just whether it is audible. If you have no such device, say so and I close
-   F857 as not planned.
+6. **Answered 2026-10-12 — no such device; F857 closed.** ~~**Optional hardware (F857):** only if you own a multi-input audio interface (or a microphone that sends two or more    channels). Record ~30 s into its second or later input and dictate once: both should be audible and transcribed. Before this    batch an interleaved multi-channel microphone recorded nothing at all (F875). With one live input on an N-input interface the    level is about 1/N — please note the level, not just whether it is audible. If you have no such device, say so and I close    F857 as not planned.~~
 
 ---
 
@@ -429,6 +390,44 @@ The exact steps for each are in that ticket's entry in `docs/TICKET_LOG.md`.
 ---
 
 ## Settled — nothing needed from you
+
+**F299 · F347 · F349 — answered 2026-10-12, in chat.** F349: "Yes, counts only" — a session runs the cluster-count sweep over two of
+your meetings, read-only, printing counts per setting and never any words (F349 in progress). F347 and F299: "Drop both for now" — short
+rows stay unnamed and speaker labels stay in beta; the speaker-analysis spec's value gate and the scorecard's Value row now say the gate was
+dropped (both closed; reopen either any time). The letter as it stood is kept below.
+
+### The F299 · F347 · F349 letter, as asked
+
+
+**Status:** all three `blocked`. None of them had a letter before today, which is why none has
+moved. One letter rather than three, because the answers are short and this file is over its cap.
+
+**What I need from you:** a delegation, or one command — and for the third, real time.
+
+**1. F349 — one command, and it closes a real gap in the evidence.** The clustering threshold
+(0.60) was derived on AMI: four-speaker headset audio that never over-splits. The failure that
+threshold guards against — 179 clusters on a 35-minute meeting — happened on *your* mix, which AMI
+structurally cannot reproduce. So the value is calibrated on material that cannot show the failure
+it prevents. `sweep` prints cluster counts per threshold and needs no ground truth: run it over two
+of your recordings across 0.30–1.00 and we learn where the real cliff is. Say the word and I will
+give you the exact command, or do it under delegation as with the F232 probe.
+
+**2. F347 — whether the sub-second rule helps your transcripts.** Rows under a second no longer get
+a speaker name. That was decided on AMI, where 75 % of reference turns have someone else talking;
+your own meetings measure 1.2–1.9 %. The trade is still positive on the closest analogue, but the
+direction of the error is predicted to be adverse — a sub-second row in a quiet recording is usually
+a fragment of the person already speaking, where the old label was right. Twenty of your own
+sub-second rows, labelled by ear, would settle it.
+
+**3. F299 — does the labelling actually help you find things?** The product gate nobody has scored:
+a handful of find-the-moment tasks on one real meeting, timed, with labels and without. This is the
+largest of the three and the least urgent — it gates promoting speaker labels out of beta, not
+correctness.
+
+*A correction on the first two:* their tickets said your meetings are something "no session here may
+read". That was my wording and it overstates the rule — AGENTS.md bans reading your recordings **for
+testing**, and on 2026-09-18, under your delegation, a session ran the Sortformer probe over two of
+your real meetings and reported counts and timings only. These need your permission, not a wall.
 
 **F891 — answered 2026-10-09: "no".** None of the apps I could see were running at the morning's
 slow minutes, and the first slow dictation on the new build (2026-10-08 19:40, 4.0 s → 6.93 s)
