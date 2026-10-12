@@ -578,8 +578,16 @@ public enum GlossaryCorrector {
     static func place(
         of correction: GlossaryCorrection, in text: String, evidence: CJKWordEvidence
     ) -> Range<String.Index>? {
+        place(of: correction, in: SegmentedText(text, segmenter: evidence.segmenter), evidence: evidence)
+    }
+
+    /// `place(of:in:evidence:)` in a line already segmented, so several rows of one line share its
+    /// segmentation (F952, `contexts`).
+    static func place(
+        of correction: GlossaryCorrection, in segmented: SegmentedText, evidence: CJKWordEvidence
+    ) -> Range<String.Index>? {
+        let text = segmented.text
         let boundary = ReplacementBoundary(heard: correction.from, notCoveredBy: correction.to, evidence: evidence)
-        let segmented = SegmentedText(text, segmenter: evidence.segmenter)
         guard let offset = correction.characterOffset else { return boundary.firstRange(in: segmented) }
         return boundary.genuineRanges(in: segmented).first { text.distance(from: text.startIndex, to: $0.lowerBound) == offset }
     }

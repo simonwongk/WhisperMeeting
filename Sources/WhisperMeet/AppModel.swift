@@ -6296,16 +6296,22 @@ final class AppModel: ObservableObject {
         )
     }
 
-    /// The sentence a review row is about (F817): its line's words around the place applying it
-    /// would change, found with the same evidence `applyGlossaryCorrections` applies with — so a
-    /// sound-alike Chinese row, which can be another word or another person's name, can be checked
-    /// from the row. Nil when the meeting or the line is gone, or applying the row changes nothing.
-    /// Cheap enough for the sheet to ask per row as it draws: one search in one line.
-    func proposalContext(_ proposal: GlossaryCorrection, in id: UUID) -> ProposalContext? {
-        guard let segments = store.meeting(id: id)?.segments, segments.indices.contains(proposal.segmentIndex) else {
-            return nil
-        }
-        return GlossaryCorrector.context(of: proposal, in: segments[proposal.segmentIndex].text, evidence: cjkWordEvidence)
+    /// The sentences a review sheet's rows are about (F817), one per row: its line's words around
+    /// the place applying it would change, found with the same evidence `applyGlossaryCorrections`
+    /// applies with — so a sound-alike Chinese row, which can be another word or another person's
+    /// name, can be checked from the row. Nil for a row whose meeting or line is gone, or that
+    /// changes nothing.
+    ///
+    /// One call when the sheet opens, worked out off the main actor (F952). The sheet used to ask per
+    /// row in each row's body, so every redraw — every tick — ran a Chinese row's NLTokenizer pass
+    /// and a scan of the whole vocabulary on the main actor: 0.249 s per pass over 50 rows at the
+    /// 5,000-term cap (the Wave 5 review of F817, R7).
+    func proposalContexts(_ proposals: [GlossaryCorrection], in id: UUID) async -> [ProposalContext?] {
+        guard let segments = store.meeting(id: id)?.segments else { return proposals.map { _ in nil } }
+        let evidence = cjkWordEvidence
+        return await Task.detached(priority: .userInitiated) {
+            GlossaryCorrector.contexts(of: proposals, in: segments, evidence: evidence)
+        }.value
     }
 
     /// Where a Chinese word begins and ends, for every matcher that must not rewrite part of one

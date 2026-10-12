@@ -100,6 +100,40 @@ func proposalContextIsTheChangedPlaceInItsSentence() {
     #expect(GlossaryCorrector.context(of: latin, in: "nothing to change here") == nil)
 }
 
+@Test("A sheet's sentences worked out together are each row's own, with the line's evidence shared (F952)")
+func proposalContextsAreEachRowsContext() {
+    // 会议 inside the known term 会议纪要 is not a word of its own, and the segmenter keeps 会议厅
+    // whole, so the row's place is the third 会议 — with the whole vocabulary as known terms, as the
+    // app passes it.
+    // Typed separately: the CI runner's Swift 6.1 is weaker at inferring a mixed expression.
+    let filler: [String] = (0..<500).map { "术语\($0)号" }
+    let knownTerms: [String] = ["会议纪要", "Kestrel"] + filler
+    let evidence = CJKWordEvidence(
+        segmenter: dictionarySegmenter(["整理", "会议纪要", "会议厅", "会议", "明天", "开"]), knownTerms: knownTerms
+    )
+    let segments = [
+        TranscriptSegment(speaker: nil, start: 0, end: 1, text: "整理会议纪要，在会议厅，明天开会议"),
+        TranscriptSegment(speaker: nil, start: 1, end: 2, text: "Zoë and Jon. Jon left."),
+        TranscriptSegment(speaker: nil, start: 2, end: 3, text: "the Kestrol build"),
+    ]
+    let rows = [
+        GlossaryCorrection(segmentIndex: 2, from: "Kestrol", to: "Kestrel"),
+        GlossaryCorrection(segmentIndex: 0, from: "会议", to: "会议室"),
+        GlossaryCorrection(segmentIndex: 1, from: "Jon", to: "Jonathan", characterOffset: 13),
+        GlossaryCorrection(segmentIndex: 7, from: "Kestrol", to: "Kestrel"),   // a line that is gone
+        GlossaryCorrection(segmentIndex: 2, from: "nowhere", to: "Kestrel"),   // nothing to change
+    ]
+    let together = GlossaryCorrector.contexts(of: rows, in: segments, evidence: evidence)
+    let oneByOne: [ProposalContext?] = rows.map { row in
+        segments.indices.contains(row.segmentIndex)
+            ? GlossaryCorrector.context(of: row, in: segments[row.segmentIndex].text, evidence: evidence) : nil
+    }
+    #expect(together == oneByOne)
+    #expect(together[1] == ProposalContext(before: "整理会议纪要，在会议厅，明天开", match: "会议", after: ""))
+    #expect(together[2] == ProposalContext(before: "Zoë and Jon. ", match: "Jon", after: " left."))
+    #expect(together[3] == nil && together[4] == nil)
+}
+
 @Test("A Latin term written against Chinese proposes only the Latin word (F536)")
 func latinTermGluedToChinese() {
     let segments = [seg("这个Kubernets集群要升级")]

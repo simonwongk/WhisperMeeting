@@ -288,10 +288,33 @@ func reviewRowShowsItsSentence() async throws {
     let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
     #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "公事", to: "公式")])
     // The row is about the second 公事 — where apply, with the same evidence, changes it — and its
-    // sentence says so; the first 公事 in the line is not the one this row changes.
-    #expect(model.proposalContext(proposals[0], in: id) == ProposalContext(before: "公事公办，这是", match: "公事", after: ""))
-    // A row for a line that is gone has no sentence.
-    #expect(model.proposalContext(GlossaryCorrection(segmentIndex: 5, from: "公事", to: "公式"), in: id) == nil)
+    // sentence says so; the first 公事 in the line is not the one this row changes. A row for a
+    // line that is gone has no sentence. (One call for the whole sheet since F952.)
+    let gone = GlossaryCorrection(segmentIndex: 5, from: "公事", to: "公式")
+    #expect(await model.proposalContexts(proposals + [gone], in: id)
+        == [ProposalContext(before: "公事公办，这是", match: "公事", after: ""), nil])
+}
+
+@MainActor
+@Test("The sheet's sentences come from one off-main pass over the meeting's lines with the app's evidence (F952)")
+func reviewSentencesAreWorkedOutTogether() async throws {
+    let (model, root) = try makeModel("sentences-together")
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.cjkWordSegmenter = dictionarySegmenterForApp(["公事公办", "这", "是", "公事", "明天", "的", "改到", "下午"])
+    model.store.addVocabulary(["公式", "会议"])
+    let id = addMeeting(model, lines: ["公事公办，这是公事", "明天的会意改到下午", "Kestrol build"])
+    let rows = [
+        GlossaryCorrection(segmentIndex: 1, from: "会意", to: "会议"),
+        GlossaryCorrection(segmentIndex: 0, from: "公事", to: "公式"),
+        GlossaryCorrection(segmentIndex: 2, from: "Kestrol", to: "Kestrel"),
+    ]
+    #expect(await model.proposalContexts(rows, in: id) == [
+        ProposalContext(before: "明天的", match: "会意", after: "改到下午"),
+        ProposalContext(before: "公事公办，这是", match: "公事", after: ""),
+        ProposalContext(before: "", match: "Kestrol", after: " build"),
+    ])
+    // A meeting that is gone has no sentences, one nil per row.
+    #expect(await model.proposalContexts(rows, in: UUID()) == [nil, nil, nil])
 }
 
 @Test("The review sheet's Select All goes through the review's rule, and each row shows its sentence (F817)")
@@ -306,10 +329,24 @@ func reviewSheetUsesTheSelectAllRuleAndShowsSentences() throws {
     // With only sound-alike rows Select All has nothing to tick, so it is disabled.
     let disabledWithNothingToTick = source.contains(".disabled(review.selectableAll.isEmpty && selected.isEmpty)")
     #expect(disabledWithNothingToTick)
-    let passesTheSentence = source.contains("context: { model.proposalContext($0, in: meetingID) }")
-    #expect(passesTheSentence)
-    let rowShowsIt = source.contains("if let context = context(proposal)")
+    let passesTheSentences = source.contains("contexts: { await model.proposalContexts($0, in: meetingID) }")
+    #expect(passesTheSentences)
+    let rowShowsIt = source.contains("let context = sentences[index]")
     #expect(rowShowsIt)
+}
+
+@Test("The review sheet works its rows' sentences out once when it opens, and a row's body only reads its own (F952)")
+func reviewSheetReadsPrecomputedSentences() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    // Each row's body asked AppModel for its sentence on every redraw — every tick — and a Chinese
+    // row's search runs NLTokenizer over its line and scans the whole vocabulary: 0.249 s per pass
+    // over 50 rows at the 5,000-term cap (the Wave 5 review of F817, R7).
+    let rowAsksEachRedraw = source.contains("context(proposal)")
+    #expect(!rowAsksEachRedraw)
+    let workedOutInTheTask = source.contains("sentences = await contexts(proposals)")
+    #expect(workedOutInTheTask)
+    let rowReadsItsOwn = source.contains("if sentences.indices.contains(index), let context = sentences[index]")
+    #expect(rowReadsItsOwn)
 }
 
 @Test("Correct Toward Vocabulary goes through the background pass and its status line has Cancel (F536)")

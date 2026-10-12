@@ -3238,7 +3238,7 @@ private struct TranscriptDetailView: View {
             ), onDismiss: { proposalReviews.advance() }) { review in
                 GlossarySuggestionSheet(
                     review: review, protectedTerms: store.vocabulary,
-                    context: { model.proposalContext($0, in: meetingID) }
+                    contexts: { await model.proposalContexts($0, in: meetingID) }
                 ) { accepted in
                     // F831: Edit ▸ Undo puts the lines back, as it does for a line removal (F423).
                     guard let applied = model.applyGlossaryCorrections(accepted, to: meetingID) else { return }
@@ -4711,9 +4711,9 @@ private struct GlossarySuggestionSheet: View {
     /// and marked, because a model's rename of a term the user taught the app must not land on
     /// one click. `GlossaryReviewDefaults` is the rule; this view only renders it.
     let protectedTerms: [String]
-    /// A row's sentence: the words around the place applying it would change (F817), so a row can
-    /// be checked where it is — a Chinese match by sound can be another word or another person.
-    let context: (GlossaryCorrection) -> ProposalContext?
+    /// Every row's sentence: the words around the place applying it would change (F817), so a row
+    /// can be checked where it is — a Chinese match by sound can be another word or another person.
+    let contexts: ([GlossaryCorrection]) async -> [ProposalContext?]
     let onApply: ([GlossaryCorrection]) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selected: Set<Int> = []
@@ -4721,18 +4721,23 @@ private struct GlossarySuggestionSheet: View {
     /// main actor (F536). This was asked per row on every render and in `init`, which SwiftUI
     /// re-runs whenever the parent redraws: 2–12 s per pass over 50 proposals against 5,000 terms.
     @State private var touching: Set<Int>?
+    /// The rows' sentences, worked out once when the sheet opens, beside `touching` (F952). Each
+    /// row's body asked for its own on every redraw — every tick — and a Chinese row's costs an
+    /// NLTokenizer pass and a scan of the whole vocabulary: 0.249 s per pass over 50 rows at the
+    /// 5,000-term cap. Empty until they arrive; a row draws without its sentence until then.
+    @State private var sentences: [ProposalContext?] = []
 
     private var proposals: [GlossaryCorrection] { review.proposals }
 
     init(
         review: ProposalReview,
         protectedTerms: [String] = [],
-        context: @escaping (GlossaryCorrection) -> ProposalContext? = { _ in nil },
+        contexts: @escaping ([GlossaryCorrection]) async -> [ProposalContext?] = { $0.map { _ in nil } },
         onApply: @escaping ([GlossaryCorrection]) -> Void
     ) {
         self.review = review
         self.protectedTerms = protectedTerms
-        self.context = context
+        self.contexts = contexts
         self.onApply = onApply
     }
 
@@ -4767,7 +4772,7 @@ private struct GlossarySuggestionSheet: View {
                                 Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
                                 Text(proposal.to).fontWeight(.medium)
                             }
-                            if let context = context(proposal) {
+                            if sentences.indices.contains(index), let context = sentences[index] {
                                 Text(Self.sentence(context))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -4820,6 +4825,8 @@ private struct GlossarySuggestionSheet: View {
             }.value
             touching = found
             selected = review.preselected(touching: found)
+            // F952: every row's sentence once, off the main actor, after the ticks are known.
+            sentences = await contexts(proposals)
         }
     }
 }

@@ -443,11 +443,16 @@ final class ReplacementBoundary {
 
     private func enclosingTerms() -> [String] {
         if let enclosingTermsCache { return enclosingTermsCache }
-        let terms = evidence.knownTerms.filter { term in
-            term.count > heard.count && Self.hasCJK(term) && term.contains(heard)
-        }
+        let terms = Self.termsThatCouldEnclose(heard, among: evidence.knownTerms)
         enclosingTermsCache = terms
         return terms
+    }
+
+    /// The known terms that could enclose a CJK occurrence of `heard`: longer, Chinese, and
+    /// containing it. Narrowing a caller's known terms to these first changes no answer, so rows
+    /// sharing a `heard` can share one scan of the vocabulary (F952, `GlossaryCorrector.contexts`).
+    static func termsThatCouldEnclose(_ heard: String, among knownTerms: [String]) -> [String] {
+        knownTerms.filter { term in term.count > heard.count && hasCJK(term) && term.contains(heard) }
     }
 
     /// Same ranges `ProtectedTerms.hasCJK` checks (F245) — duplicated rather than shared, because

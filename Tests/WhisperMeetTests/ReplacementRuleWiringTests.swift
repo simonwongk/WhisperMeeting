@@ -112,7 +112,7 @@ func ruleCorrectionsLeaveAMidSentenceCapitalAlone() throws {
 
 @MainActor
 @Test("Improve proposes a sentence's first word after the same name mid-sentence, shows its own sentence, and applies it there (F950)")
-func ruleCorrectionsReachASentenceStartAfterTheSameName() throws {
+func ruleCorrectionsReachASentenceStartAfterTheSameName() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("ReplacementRuleWiringTests-samename-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
@@ -129,8 +129,8 @@ func ruleCorrectionsReachASentenceStartAfterTheSameName() throws {
     let proposals = model.replacementRuleCorrections(for: id)
     #expect(proposals == [GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan", characterOffset: 13)])
     // The row's sentence is about the second "Jon", the one it changes.
-    #expect(model.proposalContext(try #require(proposals.first), in: id)
-        == ProposalContext(before: "Zoë and Jon. ", match: "Jon", after: " left."))
+    #expect(await model.proposalContexts(proposals, in: id)
+        == [ProposalContext(before: "Zoë and Jon. ", match: "Jon", after: " left.")])
 
     model.applyGlossaryCorrections(proposals, to: id)
     #expect(model.store.meeting(id: id)?.segments.first?.text == "Zoë and Jon. Jonathan left.")

@@ -27,7 +27,7 @@ struct ProposalReview: Identifiable, Equatable {
     /// be another real word or another person's name — the Wave 5 review of F817 measured 15 wrong
     /// rows in 40 everyday sentences (经历 for 经理, 上限 for 上线, 张薇 for 张伟). So they arrive
     /// unticked, Select All leaves them (`selectableAll`), and each row shows its sentence (the
-    /// sheet's `context`). Applying can be undone since F831, but a tick that renames a person in a
+    /// sheet's `sentences`). Applying can be undone since F831, but a tick that renames a person in a
     /// long transcript may not be noticed to undo.
     var uncheckedByDefault: Set<Int> {
         guard source == .vocabulary else { return [] }
