@@ -113,9 +113,11 @@ private func writeSlowExitHelper(in directory: URL) throws -> SlowExitHelper {
         release: directory.appendingPathComponent("release"),
         exited: directory.appendingPathComponent("helper-exited")
     )
-    // `[ -d directory ]` ends the wait if the test's directory is cleaned up with the helper still
-    // parked, so a failing run cannot leave it polling. The trap body is idempotent on purpose: a
-    // further TERM during the wait may re-enter it, and re-entering must only keep waiting.
+    // `[ -d directory ]` ends either wait if the test's directory is cleaned up with the helper still
+    // running, so a failing run cannot leave it polling: the trap's wait, and (F883) the main loop
+    // too, because a test that throws before `evict()` or `retire()` never sends the TERM the trap
+    // waits for. The trap body is idempotent on purpose: a further TERM during the wait may re-enter
+    // it, and re-entering must only keep waiting.
     let text = """
     printf '%s' "$$" > "\(helper.pidFile.path)"
     trap 'touch "\(helper.termReceived.path)"; \
@@ -123,10 +125,40 @@ private func writeSlowExitHelper(in directory: URL) throws -> SlowExitHelper {
     printf . >> "\(helper.parked.path)"; sleep 0.05; done; \
     touch "\(helper.exited.path)"; exit 0' TERM
     printf '{"ready":true}\\n'
-    while :; do sleep 0.05; done
+    while [ -d "\(directory.path)" ]; do sleep 0.05; done
     """
     try text.write(to: helper.script, atomically: true, encoding: .utf8)
     return helper
+}
+
+@Test("The slow-exit stand-in ends on its own once the test's folder is gone, so a failing test leaves no poller (F883)")
+func slowExitHelperEndsWhenItsDirectoryIsRemoved() async throws {
+    // The engine has no `deinit` that stops its helper, so a test that throws before `evict()` or
+    // `retire()` never sends the TERM the stand-in's trap waits for. Its main loop therefore has to
+    // end on the same condition the trap's loop does: the test's directory being removed.
+    let tmp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("WarmEngineHelperExit-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+    let helper = try writeSlowExitHelper(in: tmp)
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+    process.arguments = [helper.script.path]
+    process.standardOutput = Pipe() // the ready line has somewhere to go
+    process.standardError = FileHandle.nullDevice
+    try process.run()
+    let pid = process.processIdentifier
+    // Never leave the stand-in behind, whichever way this test ends: KILL, not TERM, because a TERM
+    // is exactly what a failing run does not send.
+    defer {
+        Darwin.kill(pid, SIGKILL)
+        try? FileManager.default.removeItem(at: tmp)
+    }
+    try await waitUntil("the stand-in to record its pid") { recordedPID(helper.pidFile) == pid }
+
+    try FileManager.default.removeItem(at: tmp)
+    try await waitUntil("the stand-in to exit once its folder was removed") { !process.isRunning }
+    #expect(Darwin.kill(pid, 0) != 0, "the stand-in outlived its folder")
 }
 
 @Test("shutdown() interrupts in-flight warm-up instead of waiting for the process to finish")
