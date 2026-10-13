@@ -221,14 +221,15 @@ func applySkipsEveryRowOnAChangedLineOnly() throws {
     let id = meeting(model, lines: ["ask jon and bill", "jon met jon"])
 
     let rows = model.replacementRuleCorrections(for: id)
-    #expect(rows.count == 3)
+    // Two rows on each line (every occurrence is a row since F967).
+    #expect(rows.count == 4)
     // Line 0 changes after the review was proposed; neither of its rows has a stored place, and
     // each would still find its word there.
     model.applyGlossaryCorrections([GlossaryCorrection(segmentIndex: 0, from: "ask", to: "Ask")], to: id)
 
     let applied = model.applyGlossaryCorrections(rows, to: id)
     #expect(applied != nil)
-    #expect(model.store.meeting(id: id)?.segments.map(\.text) == ["Ask jon and bill", "Jonathan met jon"])
+    #expect(model.store.meeting(id: id)?.segments.map(\.text) == ["Ask jon and bill", "Jonathan met Jonathan"])
     #expect(model.alertMessage == AppModel.correctionsOnChangedLinesMessage(2))
     #expect(AppModel.correctionsOnChangedLinesMessage(2).contains("2 corrections"))
 }

@@ -116,16 +116,23 @@ func capitalisedWordIsMatchedOnlyAtASentenceStart() {
     #expect(jason.improved == "I asked Jason about the JSON file.")
     // At the start of a sentence every word has a capital, so the capital cannot tell the person
     // from the format there, and the rule fixes it: the review's own probe, unchanged by design.
-    // One proposal per segment, so the lower-case "jason" waits for the next Apply.
+    // Both occurrences are rows since F967 (one per rule per segment until then, so the lower-case
+    // "jason" waited for the next Apply).
     let jasonFirst = paths("jason", "JSON", "Jason said the jason file is broken.")
     #expect(jasonFirst.pasted == "JSON said the JSON file is broken.")
-    #expect(jasonFirst.proposed == [GlossaryCorrection(segmentIndex: 0, from: "Jason", to: "JSON")])
-    #expect(jasonFirst.improved == "JSON said the jason file is broken.")
+    #expect(jasonFirst.proposed == [
+        GlossaryCorrection(segmentIndex: 0, from: "Jason", to: "JSON"),
+        GlossaryCorrection(segmentIndex: 0, from: "jason", to: "JSON"),
+    ])
+    #expect(jasonFirst.improved == "JSON said the JSON file is broken.")
     // "Plan A." ends a sentence with a capital that does not start one.
     let plan = paths("a", "the", "A plan for a team. Plan A.")
     #expect(plan.pasted == "The plan for the team. Plan A.")
-    #expect(plan.proposed == [GlossaryCorrection(segmentIndex: 0, from: "A", to: "The")])
-    #expect(plan.improved == "The plan for a team. Plan A.")
+    #expect(plan.proposed == [
+        GlossaryCorrection(segmentIndex: 0, from: "A", to: "The"),
+        GlossaryCorrection(segmentIndex: 0, from: "a", to: "the"),
+    ])
+    #expect(plan.improved == "The plan for the team. Plan A.")
     // U-boat is mid-sentence. The "U" of "U.S." starts the text, but it is a letter of an
     // abbreviation, not a sentence's first word: dictation leaves it alone, and since F938 so does
     // the Improve sheet, which proposed "U → You" (ticked, as rule rows are) and wrote "You.S.".
@@ -276,11 +283,16 @@ func identicalProposalsFromTwoRulesAreOneRow() {
     let rules = [ReplacementRule(heard: "jon", preferred: "Jonathan"), ReplacementRule(heard: "Jon", preferred: "Jonathan")]
     let segments = [seg("Jon and Jon said"), seg("Ask Jon.")]
     let proposed = ReplacementRuleMatcher.corrections(rules: rules, segments: segments)
+    // The sentence-initial "Jon" is one row (the first rule's); the mid-sentence "Jon" is no
+    // occurrence of the lower-case rule, and the second rule's own row for it carries its place —
+    // every occurrence is a row since F967, where until then a segment got one row per rule.
     #expect(proposed == [
         GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan"),
+        GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan", characterOffset: 8),
         GlossaryCorrection(segmentIndex: 1, from: "Jon", to: "Jonathan"),
     ])
-    #expect(GlossaryCorrector.apply(proposed, to: segments).map(\.text) == ["Jonathan and Jon said", "Ask Jonathan."])
+    #expect(GlossaryCorrector.apply(proposed, to: segments).map(\.text) == ["Jonathan and Jonathan said", "Ask Jonathan."])
+    #expect(GlossaryCorrector.apply([proposed[0], proposed[2]], to: segments).map(\.text) == ["Jonathan and Jon said", "Ask Jonathan."])
 }
 
 @Test("Two rules aimed at one occurrence give one row, the first rule's, so Apply changes only the occurrence shown (F858)")
@@ -292,8 +304,15 @@ func oneRowPerOccurrenceAcrossRules() {
     let rules = [ReplacementRule(heard: "bill", preferred: "invoice"), ReplacementRule(heard: "Bill", preferred: "invoice")]
     let segments = [seg("Bill paid. Ask Bill.")]
     let proposed = ReplacementRuleMatcher.corrections(rules: rules, segments: segments)
-    #expect(proposed == [GlossaryCorrection(segmentIndex: 0, from: "Bill", to: "Invoice")])
-    #expect(GlossaryCorrector.apply(proposed, to: segments)[0].text == "Invoice paid. Ask Bill.")
+    // The second rule, written with a capital, also reaches the mid-sentence "Bill", which is a row
+    // of its own since F967 (until then a segment got one row per rule, so it waited); the two rows
+    // never aim at one occurrence.
+    #expect(proposed == [
+        GlossaryCorrection(segmentIndex: 0, from: "Bill", to: "Invoice"),
+        GlossaryCorrection(segmentIndex: 0, from: "Bill", to: "invoice", characterOffset: 15),
+    ])
+    #expect(GlossaryCorrector.apply(proposed, to: segments)[0].text == "Invoice paid. Ask invoice.")
+    #expect(GlossaryCorrector.apply([proposed[0]], to: segments)[0].text == "Invoice paid. Ask Bill.")
     // A later rule's row for a different occurrence in the same segment is still proposed.
     let other = [ReplacementRule(heard: "bill", preferred: "invoice"), ReplacementRule(heard: "acme", preferred: "Acme")]
     #expect(ReplacementRuleMatcher.corrections(rules: other, segments: [seg("Bill acme")])
@@ -333,4 +352,42 @@ func decomposedAccentContinuesTheWord() {
     // A mark after a character that is no Latin letter keeps it an edge: a space with an accent on
     // it is still a space, and a Cyrillic letter with one is still another script.
     #expect(ReplacementRuleMatcher.applied(rules, to: "Й\u{301}jon and jon") == "Й\u{301}Jonathan and Jonathan")
+}
+
+@Test("Every occurrence of a rule in a segment gets its own row, each at its place, so one Apply does what dictation does (F967)")
+func everyOccurrenceInASegmentGetsARow() {
+    let rules = [ReplacementRule(heard: "jon", preferred: "Jonathan")]
+    // One row per rule per segment was F444's design, so "Jon met jon" needed a second Apply for
+    // the second "jon". Since F950 a row can name its place, so each occurrence gets a row.
+    let met = [seg("Jon met jon")]
+    let metRows = ReplacementRuleMatcher.corrections(rules: rules, segments: met)
+    #expect(metRows == [
+        GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan"),
+        GlossaryCorrection(segmentIndex: 0, from: "jon", to: "Jonathan"),
+    ])
+    #expect(GlossaryCorrector.apply(metRows, to: met)[0].text == "Jonathan met Jonathan")
+    // The name "Jon" mid-sentence is no occurrence of a lower-case rule (F858); the "jon" and the
+    // sentence's first "Jon" after it are two rows, the second carrying its place (F950), and
+    // ticking either one applies just that one.
+    let three = [seg("Ask Jon. Then jon. Jon left.")]
+    let rows = ReplacementRuleMatcher.corrections(rules: rules, segments: three)
+    let expectedRows = [
+        GlossaryCorrection(segmentIndex: 0, from: "jon", to: "Jonathan"),
+        GlossaryCorrection(segmentIndex: 0, from: "Jon", to: "Jonathan", characterOffset: 19),
+    ]
+    #expect(rows == expectedRows)
+    #expect(GlossaryCorrector.apply(rows, to: three)[0].text == ReplacementRuleMatcher.applied(rules, to: three[0].text))
+    #expect(GlossaryCorrector.apply([expectedRows[1]], to: three)[0].text == "Ask Jon. Then jon. Jonathan left.")
+    #expect(GlossaryCorrector.apply([expectedRows[0]], to: three)[0].text == "Ask Jon. Then Jonathan. Jon left.")
+    // An occurrence an earlier rule already proposed is still one row, the first rule's; the later
+    // rule's other occurrences in the segment are rows of their own.
+    let two = [ReplacementRule(heard: "bill", preferred: "invoice"), ReplacementRule(heard: "Bill", preferred: "invoice")]
+    let paid = [seg("Bill paid. Ask Bill.")]
+    let paidRows = ReplacementRuleMatcher.corrections(rules: two, segments: paid)
+    #expect(paidRows == [
+        GlossaryCorrection(segmentIndex: 0, from: "Bill", to: "Invoice"),
+        GlossaryCorrection(segmentIndex: 0, from: "Bill", to: "invoice", characterOffset: 15),
+    ])
+    #expect(GlossaryCorrector.apply(paidRows, to: paid)[0].text == ReplacementRuleMatcher.applied(two, to: paid[0].text))
+    #expect(GlossaryCorrector.apply(paidRows, to: paid)[0].text == "Invoice paid. Ask invoice.")
 }

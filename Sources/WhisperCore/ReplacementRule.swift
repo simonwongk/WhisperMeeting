@@ -28,18 +28,20 @@ public struct ReplacementRule: Codable, Sendable, Equatable, Hashable {
 /// Turns exact replacement rules into reviewable `GlossaryCorrection`s over a transcript's segments
 /// (F179), so rule-based fixes flow through the identical F82 review sheet + `GlossaryCorrector.apply`
 /// path (which never opens the audio). Boundary-aware match (F444, see `ReplacementBoundary` below)
-/// — one correction per segment that contains a genuine occurrence of `heard`, or of `heard` with a
-/// capital first character where it starts a sentence (F858); no-op and empty rules are dropped.
+/// — one correction per genuine occurrence of `heard`, or of `heard` with a capital first character
+/// where it starts a sentence (F858), in every segment (F967); no-op and empty rules are dropped.
 public enum ReplacementRuleMatcher {
-    /// Rule-major, then segment order, as when this mapped the rules through F165's
-    /// `TranscriptCorrection.glossaryCorrections`. A proposal's `from` is the text as it stands in
-    /// the segment ("Jon", for a rule written "jon") and its `to` carries that capital, so
+    /// Rule-major, then segment order, then text order, as when this mapped the rules through
+    /// F165's `TranscriptCorrection.glossaryCorrections`. A proposal's `from` is the text as it
+    /// stands in the segment ("Jon", for a rule written "jon") and its `to` carries that capital, so
     /// `GlossaryCorrector.apply`'s exact search finds it. It must be an occurrence that search
     /// finds, or a ticked proposal could change a different occurrence than the one reviewed (F444);
     /// where it is not the first one the search finds, the proposal carries its place
     /// (`characterOffset`, F950) — a sentence's "Jon" after the name "Jon" mid-sentence ("Zoë and
     /// Jon. Jon left."), which `apply` reached only by the name until then, so Improve never
-    /// proposed what dictation fixed.
+    /// proposed what dictation fixed. Every occurrence in a segment is a row (F967): until then a
+    /// segment got one row per rule, F444's design from when a row could name only its text, so
+    /// "Jon met jon" needed a second Apply for the second one.
     ///
     /// For the same reason an occurrence gets one row however many rules reach it — the first rule's
     /// in list order, as in dictation, which applies the rules in that order. The store keeps
@@ -73,18 +75,20 @@ public enum ReplacementRuleMatcher {
             )
             for index in segments.indices {
                 let text = segmented[index].text
+                // Every occurrence in the segment is a row of its own (F967): one row per rule per
+                // segment was F444's design, when a row could only name its text and so only the
+                // first occurrence; since F950 a row names its place, so "Jon met jon" gets both
+                // rows in one Apply, as dictation fixes both at once.
                 for range in boundary.genuineRanges(in: segmented[index]) {
                     let from = String(text[range])
                     let to = boundary.replacement(for: from)
                     let applier = ReplacementBoundary(heard: from, notCoveredBy: to, evidence: evidence)
-                    guard let position = applier.genuineRanges(in: segmented[index]).firstIndex(of: range) else { continue }
-                    if !proposed[index].contains(where: { $0.overlaps(range) }) {
-                        proposed[index].append(range)
-                        // Not the first occurrence `apply` would find: the row names its place (F950).
-                        let offset = position == 0 ? nil : text.distance(from: text.startIndex, to: range.lowerBound)
-                        result.append(GlossaryCorrection(segmentIndex: index, from: from, to: to, characterOffset: offset))
-                    }
-                    break
+                    guard let position = applier.genuineRanges(in: segmented[index]).firstIndex(of: range),
+                          !proposed[index].contains(where: { $0.overlaps(range) }) else { continue }
+                    proposed[index].append(range)
+                    // Not the first occurrence `apply` would find: the row names its place (F950).
+                    let offset = position == 0 ? nil : text.distance(from: text.startIndex, to: range.lowerBound)
+                    result.append(GlossaryCorrection(segmentIndex: index, from: from, to: to, characterOffset: offset))
                 }
             }
         }
@@ -95,7 +99,7 @@ public enum ReplacementRuleMatcher {
     /// review step.
     ///
     /// Rules run in list order, each over the text the previous ones left. Within one rule, every
-    /// genuine occurrence is replaced — not only the first, as one Improve proposal does per segment —
+    /// genuine occurrence is replaced — as every occurrence is a row of the Improve sheet (F967) —
     /// because a dictation is one piece of text and the user cannot pick occurrences afterwards.
     /// "Genuine" is the same `ReplacementBoundary` the Improve sheet's matcher and applier use: not a
     /// fragment of a longer Latin word ("Jon" in "Jones"), not inside an occurrence of `preferred`

@@ -98,7 +98,11 @@ func latinHeardIsWholeEvenGluedToCJK() {
     let corrections = ReplacementRuleMatcher.corrections(
         rules: [ReplacementRule(heard: "Kestrel", preferred: "Falcon")], segments: segments
     )
-    #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "Kestrel", to: "Falcon")])
+    // Both occurrences are whole words, and each is a row since F967 (the second at its place).
+    #expect(corrections == [
+        GlossaryCorrection(segmentIndex: 0, from: "Kestrel", to: "Falcon"),
+        GlossaryCorrection(segmentIndex: 0, from: "Kestrel", to: "Falcon", characterOffset: 17),
+    ])
 }
 
 @Test("A CJK rule is not proposed where `heard` occurs only inside `preferred` (F444, CJK has no word boundary)")

@@ -57,8 +57,14 @@ func twoRulesForOneHeardWordChangeOnlyTheReviewedOccurrence() {
     let rules = [ReplacementRule(heard: "jon", preferred: "Jonathan"), ReplacementRule(heard: "jon", preferred: "John")]
     let segments = [line("jon met jon")]
     let proposed = ReplacementRuleMatcher.corrections(rules: rules, segments: segments)
-    #expect(proposed == [GlossaryCorrection(segmentIndex: 0, from: "jon", to: "Jonathan")])
-    #expect(GlossaryCorrector.apply(proposed, to: segments)[0].text == "Jonathan met jon")
+    // Each occurrence is one row, the first rule's (since F967 every occurrence in the segment is a
+    // row; until then only the first was, and the second "jon" waited for another Apply).
+    #expect(proposed == [
+        GlossaryCorrection(segmentIndex: 0, from: "jon", to: "Jonathan"),
+        GlossaryCorrection(segmentIndex: 0, from: "jon", to: "Jonathan", characterOffset: 8),
+    ])
+    #expect(GlossaryCorrector.apply(proposed, to: segments)[0].text == "Jonathan met Jonathan")
+    #expect(GlossaryCorrector.apply([proposed[0]], to: segments)[0].text == "Jonathan met jon")
 }
 
 @Test("Two rows for one occurrence from the local model or the vocabulary change it once, never a second occurrence (F939)")
