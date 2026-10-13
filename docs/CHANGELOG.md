@@ -9,6 +9,37 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
+## Maintenance cycle — Wave 6: 28 tickets closed, 2026-10-12
+
+Five lanes, each test-first in its own worktree and reviewed by a second agent; Shrink (the step that deletes audio) was reviewed twice. The
+full trail is in the ticket log under each ID. The user's answers in chat on 2026-10-12 decided F942 (mix all tracks; keep refusing Shrink for
+now), F932 (name the track), the disk case (keep "stop"), and that dictation timings and mixed-transcript notes stay off screen.
+
+**What changed for the user**
+- **Recording (F928, F929, F931, F932).** Start is held while a failed Stop rebuilds the meeting; quitting waits for a save but gives up after 30 s
+  without progress (time asleep not counted); a microphone whose audio cannot be saved says so, naming the track without "stop" when the rest is
+  still recording.
+- **Link imports (F893–F895, F945–F948).** Quit stops yt-dlp and ffmpeg; each window's sheet stops only its own import; the sheet says "Fetching
+  captions…"; recovery keeps a half-written WAV unless the download is measured complete, works on volumes without file locking, and measures
+  VBR MP3s correctly; a recovered WebM import can be shrunk.
+- **Shrink and mixing (F941, F942, F949, F955).** Link imports shrink again. A recording with several tracks or more than two channels is mixed
+  into one for transcription, so both sides of a call are heard. Shrink keeps refusing those recordings until its check of a mixed copy is proven
+  (F980): the second review showed two ways a mixed copy could pass while missing a track. Shrink's delete step and an interrupted Shrink's
+  resume now remove only what was measured.
+- **Dictation (F878, F892, F897, F898, F900).** A stop during the helper's start is immediate; each dictation keeps its timings for diagnosis
+  (not shown); the model download's leftovers and lock are handled; a partial Intel checkpoint is not "ready".
+- **Text tools (F938–F940, F950–F952, F971).** "Mr. Bill" and "U.S." no longer start sentences for replacement rules; decomposed accents are
+  part of a word; long vocabulary terms are corrected whole; a correction whose line changed after review is skipped and said; the review sheet
+  is faster.
+
+**How it was checked.** The suite went from 3055 to 3211 tests; the full gate passed on `206c33a`. Reviews found MUST-FIXes in Shrink/mixing
+(twice), link-import recovery and a correction-placement hole, all fixed before the push. 23 new tickets were filed (F959–F981), most low;
+F978/F980 (mixed-copy audit), F971 (fixed in the wave) and F959 are medium.
+
+**What is not claimed.**
+- Nothing was clicked through on screen; the sitting is F981 in `NEEDS_HUMAN.md`.
+- 5.1/quad recordings still cannot be shrunk (F953, with F980).
+
 ## Maintenance cycle — Wave 5: 55 tickets closed, 2026-10-08 to 2026-10-12
 
 A batch of eleven lanes, each worked test-first in its own worktree, each reviewed by a second agent that reverted
