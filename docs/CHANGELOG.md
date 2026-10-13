@@ -39,6 +39,7 @@ F978/F980 (mixed-copy audit), F971 (fixed in the wave) and F959 are medium.
 **What is not claimed.**
 - Nothing was clicked through on screen; the sitting is F981 in `NEEDS_HUMAN.md`.
 - 5.1/quad recordings still cannot be shrunk (F953, with F980).
+- Installed to `/Applications` on 2026-10-12, after the user quit the open app.
 
 ## Maintenance cycle — Wave 5: 55 tickets closed, 2026-10-08 to 2026-10-12
 
