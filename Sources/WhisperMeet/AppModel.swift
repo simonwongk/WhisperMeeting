@@ -4341,9 +4341,14 @@ final class AppModel: ObservableObject {
                     return id
                 }
             } catch {
+                // F969: the title goes with the recording it was typed for, on this exit as on the
+                // saving ones (F477). The folder's sidecar holds it for the launch that rebuilds the
+                // folder; kept here, it named the next meeting, unseen when Start came from the menu bar.
+                recordingTitle = ""
                 report("The recording could not be finalized automatically. Its folder was preserved at \(directory.path). Finishing error: \(recordingError.localizedDescription) Recovery error: \(error.localizedDescription)")
                 return nil
             }
+            recordingTitle = ""
             report("No usable audio could be rebuilt, but the recording folder was left untouched at \(directory.path). \(recordingError.localizedDescription)")
             return nil
         }
