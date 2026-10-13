@@ -86,6 +86,53 @@ func theTestProcessIsRecognised() {
     #expect(TestProcess.isRunning)
 }
 
+// MARK: - F882: the shipped app is never a test, whatever its launcher's environment says
+
+private let xcTestVariables = [
+    "XCTestConfigurationFilePath": "/tmp/Session-1.xctestconfiguration",
+    "XCTestBundlePath": "/tmp/WhisperMeetPackageTests.xctest",
+]
+
+@Test("An app bundle reads as the shipped app even when its launcher passed XCTest's variables on (F882)")
+func theAppBundleIsNeverATestProcess() {
+    // `open -W -n WhisperMeet.app` from a test's shell hands the app that shell's environment; before
+    // F882 the variables alone made it a test, and saving or reading the Claude key stopped silently.
+    let app = URL(fileURLWithPath: "/Applications/WhisperMeet.app")
+    let executable = "/Applications/WhisperMeet.app/Contents/MacOS/WhisperMeet"
+    #expect(!TestProcess.isTestProcess(executablePath: executable, bundleURL: app, environment: xcTestVariables))
+    #expect(!TestProcess.isTestProcess(executablePath: executable, bundleURL: app, environment: [:]))
+    // A scratch bundle built by Scripts/build-app.sh is an app bundle too.
+    let scratch = URL(fileURLWithPath: "/Users/someone/Whisper/.build/WhisperMeet.app")
+    #expect(!TestProcess.isTestProcess(
+        executablePath: scratch.appendingPathComponent("Contents/MacOS/WhisperMeet").path,
+        bundleURL: scratch, environment: xcTestVariables
+    ))
+}
+
+@Test("The test runners read as tests by their executable name, with or without XCTest's variables (F882)")
+func theTestRunnersAreRecognisedByName() {
+    // Neither runner lives in a bundle: `Bundle.main.bundleURL` is the executable's directory.
+    let helper = "/Library/Developer/CommandLineTools/usr/libexec/swift/pm/swiftpm-testing-helper"
+    let helperDirectory = URL(fileURLWithPath: helper).deletingLastPathComponent()
+    #expect(TestProcess.isTestProcess(executablePath: helper, bundleURL: helperDirectory, environment: [:]))
+    let xctest = "/Applications/Xcode.app/Contents/Developer/usr/bin/xctest"
+    let xctestDirectory = URL(fileURLWithPath: xctest).deletingLastPathComponent()
+    #expect(TestProcess.isTestProcess(executablePath: xctest, bundleURL: xctestDirectory, environment: xcTestVariables))
+    #expect(TestProcess.isTestProcess(executablePath: xctest, bundleURL: xctestDirectory, environment: [:]))
+    // An unbundled executable of another name is a test only through the variables: `swift run`'s
+    // debug binary with no variables is not one.
+    let debugBinary = "/Users/someone/Whisper/.build/debug/WhisperMeet"
+    let debugDirectory = URL(fileURLWithPath: debugBinary).deletingLastPathComponent()
+    #expect(!TestProcess.isTestProcess(executablePath: debugBinary, bundleURL: debugDirectory, environment: [:]))
+    #expect(TestProcess.isTestProcess(executablePath: debugBinary, bundleURL: debugDirectory, environment: xcTestVariables))
+}
+
+@Test("This runner is not a bundle, so the F882 app-bundle refusal cannot be what recognises it")
+func thisRunnerIsNotAnAppBundle() {
+    // The other guards rest on `isRunning`; this says the new refusal is not in their path.
+    #expect(Bundle.main.bundleURL.pathExtension != "app", "\(Bundle.main.bundleURL.path)")
+}
+
 @MainActor
 @Test("A model built without a key store does not read the login Keychain (F442)")
 func aDefaultModelNeverReadsTheRealKeychain() throws {

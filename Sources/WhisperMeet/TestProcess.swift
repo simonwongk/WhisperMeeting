@@ -17,15 +17,28 @@ import Foundation
 /// says so through the seam (`ClaudeKeyStore.inMemory`, `AppModel.crashReportsSince`).
 ///
 /// **Narrow on purpose.** A false positive here would stop the shipped app saving a Claude key, so the
-/// signals are only ones a user's app launch cannot have: the SwiftPM test runner's or `xctest`'s own
-/// executable name, or the variables XCTest sets. The app's executable is `WhisperMeet`.
+/// signals are the SwiftPM test runner's or `xctest`'s own executable name, or the variables XCTest
+/// sets — and a process running from an `.app` bundle is never one, whatever its environment says
+/// (F882): `open` hands an app its caller's environment, XCTest's variables included, so a bundle
+/// launched from a test's shell carried `XCTestBundlePath` and read as a test. The app's executable is
+/// `WhisperMeet`, inside `WhisperMeet.app`; no test runner is a bundle.
 enum TestProcess {
-    static let isRunning: Bool = {
-        let executable = URL(fileURLWithPath: CommandLine.arguments.first ?? "").lastPathComponent
+    static let isRunning: Bool = isTestProcess(
+        executablePath: CommandLine.arguments.first ?? "",
+        bundleURL: Bundle.main.bundleURL,
+        environment: ProcessInfo.processInfo.environment
+    )
+
+    /// The classification `isRunning` is made from, over the process's facts so a test can give it
+    /// another process's (F882).
+    static func isTestProcess(executablePath: String, bundleURL: URL, environment: [String: String]) -> Bool {
+        // First, and whatever the rest says: a process running from an `.app` bundle is the shipped
+        // app (or a scratch copy of it), never a runner. Its environment is its launcher's, not its own.
+        if bundleURL.pathExtension == "app" { return false }
+        let executable = URL(fileURLWithPath: executablePath).lastPathComponent
         if executable == "swiftpm-testing-helper" || executable == "xctest" { return true }
-        let environment = ProcessInfo.processInfo.environment
         return environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil
-    }()
+    }
 
     private static let lock = NSLock()
     private static var refusals: [String] = []
