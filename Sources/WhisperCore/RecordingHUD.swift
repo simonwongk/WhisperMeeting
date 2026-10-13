@@ -45,9 +45,21 @@ public enum RecordingHUD {
         writeFailureCause: RecordingWriteFailureCause?,
         unsavedTrack: RecordingChannel?
     ) -> String? {
-        warnings.min(by: { rank($0) < rank($1) }).map {
+        leadingWarning(in: warnings).map {
             message($0, writeFailureCause: writeFailureCause, unsavedTrack: unsavedTrack)
         }
+    }
+
+    /// The warning a surface leads with: the worst by `rank`, and the first of a tie (F959).
+    ///
+    /// Public, and the one answer for every surface. `warnings` is in the order
+    /// `RecordingHealthMonitor.snapshot` appends — missing system audio before failing writes,
+    /// clipping before low storage — and the record screen's panel used to read `.first` of it,
+    /// so with no system audio yet and the microphone's writes failing it led with "No system audio
+    /// has been detected yet…" under a headline saying the recording needed attention, while the
+    /// HUD, the banner, the menu bar and the announcement all led with the write failure.
+    public static func leadingWarning(in warnings: [RecordingHealthWarning]) -> RecordingHealthWarning? {
+        warnings.min(by: { rank($0) < rank($1) })
     }
 
     /// Severity rank (lower = worse). Consistent with `RecordingHealthSnapshot.overallStatus`, which

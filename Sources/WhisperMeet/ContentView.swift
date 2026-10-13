@@ -851,7 +851,10 @@ private struct RecordMeetingView: View {
             // `captureRestartNotice`, which knows the state this does not.
             return "Audio capture stopped on both channels. This happens when a display is disconnected or the lid is closed."
         }
-        if let warning = health.warnings.first {
+        // The worst by rank, as the HUD, the banner, the menu bar and the announcement lead (F959).
+        // `.first` was the monitor's append order, which puts missing system audio before failing
+        // writes, so this panel said to play meeting audio while the microphone's audio was lost.
+        if let warning = RecordingHUD.leadingWarning(in: health.warnings) {
             return warningMessage(warning, writeFailureCause: health.writeFailureCause, unsavedTrack: health.unsavedTrack)
         }
         return "Both channels are being captured and saved to this Mac."
