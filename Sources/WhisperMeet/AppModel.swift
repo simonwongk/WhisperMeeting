@@ -3160,9 +3160,32 @@ final class AppModel: ObservableObject {
         // and a job queued behind Quick Dictation (F470) has no running job to be caught above. The
         // card's own control is "Remove", so that is the word.
         if hasQueuedTranscriptions {
-            return "Wait for the queued transcription to finish, or remove it from the queue, before restoring the library. Its result would be written into the meeting you are restoring."
+            // F843: by name, so the user can find the page that holds Remove.
+            return Self.queuedTranscriptionRestoreRefusal(titles: transcription.pending.map { id in
+                store.meeting(id: id)?.title ?? ""
+            })
         }
         return nil
+    }
+
+    /// The refusal of a restore over queued transcriptions, naming the meetings that are queued
+    /// (F843). "The queued transcription" sent the user to find it; the queued card, with its
+    /// Remove, is on the meeting's own page, so the meeting is named by its live title. Up to three
+    /// are named in full — a batch Transcribe of a whole library can queue dozens, and an alert is
+    /// not the place to list them. `nonisolated` and static: text over values, so the wording is
+    /// testable without the main actor.
+    nonisolated static func queuedTranscriptionRestoreRefusal(titles: [String]) -> String {
+        let named = titles.map { title -> String in
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "“\(trimmed.isEmpty ? "Untitled meeting" : trimmed)”"
+        }
+        if named.count == 1 {
+            return "Wait for the queued transcription of \(named[0]) to finish, or remove it from the queue on that meeting's page, before restoring the library. Its result would be written into the meeting you are restoring."
+        }
+        let shown = named.count > 3
+            ? named.prefix(3).joined(separator: ", ") + " and \(named.count - 3) more"
+            : named.joined(separator: ", ")
+        return "Wait for the \(named.count) queued transcriptions (\(shown)) to finish, or remove them from the queue on each meeting's page, before restoring the library. Their results would be written into the meetings you are restoring."
     }
 
     /// Whether the Settings restore controls should show a restore in progress. The store holds

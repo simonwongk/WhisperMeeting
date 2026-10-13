@@ -164,6 +164,49 @@ func restoreRefusedWhileATranscriptionIsQueued() async throws {
     try await drain(model, latch)
 }
 
+@Test("The refusal over a queued transcription names the meeting that is queued (F843)")
+@MainActor
+func restoreRefusalNamesTheQueuedMeeting() async throws {
+    // F843: "the queued transcription" sent the user to find it. The queued card is on the meeting's
+    // own page, so the refusal names the meeting, by its live title.
+    let latch = Latch()
+    let (root, model, generation, id) = try makeFixture("queued-named", latch: latch)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var dictating = true
+    model.configureDictationGuard { dictating }
+    model.beginTranscription(id: id)
+    try #require(model.isQueuedForTranscription(id))
+
+    await model.requestLibraryRestore(from: generation)
+
+    #expect(model.pendingLibraryRestore == nil)
+    #expect(model.alertMessage?.contains("“Renamed since”") == true,
+            "the refusal does not say which meeting is queued: \(model.alertMessage ?? "no message")")
+    #expect(model.alertMessage?.contains("queued") == true && model.alertMessage?.contains("remove") == true)
+
+    dictating = false
+    model.resumeTranscriptionQueue()
+    try await drain(model, latch)
+}
+
+@Test("The queued-transcription refusal names one meeting, a few, or the first few of many (F843)")
+func queuedRefusalWording() {
+    let one = AppModel.queuedTranscriptionRestoreRefusal(titles: ["Board call"])
+    #expect(one.contains("the queued transcription of “Board call”"), "\(one)")
+    #expect(one.contains("remove it from the queue"), "\(one)")
+    #expect(one.contains("before restoring the library"), "\(one)")
+
+    let two = AppModel.queuedTranscriptionRestoreRefusal(titles: ["Board call", "Weekly sync"])
+    #expect(two.contains("2 queued transcriptions (“Board call”, “Weekly sync”)"), "\(two)")
+    #expect(two.contains("remove them from the queue"), "\(two)")
+
+    let many = AppModel.queuedTranscriptionRestoreRefusal(titles: ["A", "B", "C", "D", "E"])
+    #expect(many.contains("5 queued transcriptions (“A”, “B”, “C” and 2 more)"), "\(many)")
+
+    let untitled = AppModel.queuedTranscriptionRestoreRefusal(titles: [""])
+    #expect(untitled.contains("“Untitled meeting”"), "\(untitled)")
+}
+
 @Test("A restore confirmed after a transcription started is refused, and changes nothing (F506)")
 @MainActor
 func restoreRefusedAtConfirmationWhenATranscriptionStarted() async throws {
