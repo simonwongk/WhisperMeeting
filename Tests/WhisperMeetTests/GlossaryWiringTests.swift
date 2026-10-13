@@ -99,7 +99,7 @@ func glossaryCorrectionLeavesACorrectTwoWordTermAlone() async throws {
 }
 
 @MainActor
-@Test("Correct Toward Vocabulary offers no row that applying would leave unchanged, such as a correct four-word name (F820)")
+@Test("Correct Toward Vocabulary offers no row that applying would leave unchanged, such as a correct four-word name, and a window across a tab as it stands (F820, F914)")
 func glossaryCorrectionOffersNoRowThatChangesNothing() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("GlossaryWiringTests-F820-noop-\(UUID().uuidString)")
@@ -119,5 +119,9 @@ func glossaryCorrectionOffersNoRowThatChangesNothing() async throws {
     model.store.addVocabulary(["Bank of New York", "Kubernetes"])
 
     let proposals = try #require(await model.proposeGlossaryCorrections(for: id))
-    #expect(proposals.isEmpty)
+    // The correct four-word name gets no row; the words across a tab are proposed as they stand
+    // (until F914 they were joined with one space, which apply never found, so no row either).
+    #expect(proposals == [GlossaryCorrection(segmentIndex: 1, from: "cooper\tnetties", to: "Kubernetes", proposedLine: "We deployed cooper\tnetties today.")])
+    model.applyGlossaryCorrections(proposals, to: id)
+    #expect(model.store.meeting(id: id)?.segments.map(\.text) == ["The Bank of New York said yes.", "We deployed Kubernetes today."])
 }

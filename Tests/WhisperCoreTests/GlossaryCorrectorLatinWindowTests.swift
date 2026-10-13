@@ -24,14 +24,42 @@ func latinProposalKeepsAttachedPunctuation() {
     #expect(applied == ["the Kestrel, release", "(Kestrel) shipped", "we deployed Kubernetes."])
 }
 
-@Test("A trimmed proposal is never applied to an earlier word it only appears inside (F819, self-review)")
+@Test("A trimmed proposal is applied to the window it was trimmed from, not to an earlier word it only appears inside (F819, F914)")
 func trimmedProposalIsAppliedWhereItWasFound() {
     // The window is "Kestrol." at the end; "Kestrol" alone first occurs inside "Kestrol-ish", which
-    // `apply` would have changed instead. The untrimmed phrase is proposed, as before F819.
+    // `apply` would have changed instead, so until F914 the untrimmed "Kestrol." was proposed and
+    // the full stop went with it. The row now carries the window's place, and the full stop stays.
     let segments = [seg("the Kestrol-ish build and the Kestrol.")]
     let corrections = GlossaryCorrector.corrections(vocabulary: ["Kestrel"], segments: segments)
-    #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol.", to: "Kestrel")])
-    #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == "the Kestrol-ish build and the Kestrel")
+    #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel", characterOffset: 30)])
+    #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == "the Kestrol-ish build and the Kestrel.")
+}
+
+@Test("A Latin proposal is applied to the window it scored, never to an earlier occurrence of its text, and names the text as it stands (F914)")
+func latinProposalIsAppliedToTheWindowItScored() {
+    // "Kestrol" inside "Kestrol/Falcon" is a whole word to `apply` (a slash is a word edge) but a
+    // poor window here (14 letters against 7); the best window is the later "Kestrol", and a row
+    // naming only its text changed the first. The row carries its place, and its sentence says so.
+    let segments = [seg("the Kestrol/Falcon build and the Kestrol release")]
+    let corrections = GlossaryCorrector.corrections(vocabulary: ["Kestrel"], segments: segments)
+    #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel", characterOffset: 33)])
+    #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == "the Kestrol/Falcon build and the Kestrel release")
+    #expect(GlossaryCorrector.context(of: corrections[0], in: segments[0].text)
+        == ProposalContext(before: "…build and the ", match: "Kestrol", after: " release"))
+    // A window across a tab or a double space is proposed as it stands, so `apply` finds it; until
+    // F914 its words were joined with one space, which `apply` never found (F820 then dropped it).
+    for text in ["we deployed cooper\tnetties today", "we deployed cooper  netties today"] {
+        let joined = [seg(text)]
+        let rows = GlossaryCorrector.corrections(vocabulary: ["Kubernetes"], segments: joined)
+        #expect(rows.map(\.from) == [String(text.dropFirst(12).dropLast(6))], "\(text)")
+        #expect(GlossaryCorrector.apply(rows, to: joined)[0].text == "we deployed Kubernetes today", "\(text)")
+    }
+    // The review's T8: the window across a tab, trimmed of its brackets, applies inside them; the
+    // later "Kestrol Release-ish" is a different text and is left alone.
+    let bracketed = [seg("(Kestrol\tRelease) ok, Kestrol Release-ish")]
+    let bracketedRows = GlossaryCorrector.corrections(vocabulary: ["Kestrel Release"], segments: bracketed)
+    #expect(bracketedRows == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol\tRelease", to: "Kestrel Release")])
+    #expect(GlossaryCorrector.apply(bracketedRows, to: bracketed)[0].text == "(Kestrel Release) ok, Kestrol Release-ish")
 }
 
 @Test("A term with its own outer punctuation keeps it once: .NET, Acme Inc., Yahoo!, @kestrel (F819)")
@@ -79,16 +107,16 @@ func onlyTheTermsOwnMarksGoWithTheWord() {
     #expect(GlossaryCorrector.trimmingAttachedPunctuation("Kestrol_,", keepingTheEdgesOf: "Kestrel") == "Kestrol_")
 }
 
-@Test("A window whose untrimmed text is nowhere in the segment is never applied to other words (F819)")
+@Test("A window is never applied to other words its text appears inside (F819, F914)")
 func untrimmedWindowNotFoundIsNeverMisapplied() {
-    // The window "(Kestrol⟨TAB⟩Release)" is proposed with a space between its words, so its text is
-    // nowhere in the segment; its trimmed text is, inside "Kestrol Release-ish", and a tick changed
-    // those words. Before F819 the row changed nothing; now a row that changes nothing is not
-    // proposed at all (F820).
+    // The window "(Kestrol⟨TAB⟩Release)" used to be proposed with a space between its words, so its
+    // text was nowhere in the segment; its trimmed text was, inside "Kestrol Release-ish", and a tick
+    // changed those words. Since F914 the window is proposed as it stands and applied where it was
+    // scored: inside the brackets, and nowhere else.
     let segments = [seg("(Kestrol\tRelease) ok, Kestrol Release-ish")]
     let corrections = GlossaryCorrector.corrections(vocabulary: ["Kestrel Release"], segments: segments)
-    #expect(corrections.isEmpty)
-    #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == "(Kestrol\tRelease) ok, Kestrol Release-ish")
+    #expect(corrections.map(\.from) == ["Kestrol\tRelease"])
+    #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == "(Kestrel Release) ok, Kestrol Release-ish")
 }
 
 @Test("An underscore is part of the word, so trimming stops at it and apply can still find the word (F819)")
@@ -103,17 +131,16 @@ func underscoreIsNeverTrimmed() {
     #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == "the Kestrel build")
 }
 
-@Test("A row that applying would leave unchanged is not proposed: a correct term of four or more words, words joined across a tab (F820)")
+@Test("A row that applying would leave unchanged is not proposed: a correct term of four or more words (F820)")
 func noOpRowsAreNotProposed() {
     // Windows went up to three words, so a correct four-word term's best window lay inside it
     // ("Bank of New" in "Bank of New York"); apply never changes text inside the term, so the row
     // did nothing (since F940 a four-word term is compared with four-word windows and is present
-    // here; the guard still stands). Words joined across a tab or a double space are proposed with
-    // one space, which apply never finds.
+    // here; the guard still stands). Words joined across a tab or a double space used to be
+    // proposed with one space, which apply never found; since F914 they are proposed as they stand
+    // (`latinProposalIsAppliedToTheWindowItScored`).
     #expect(GlossaryCorrector.corrections(vocabulary: ["Bank of New York"], segments: [seg("the Bank of New York said yes")]).isEmpty)
     #expect(GlossaryCorrector.corrections(vocabulary: ["Bank of New York Mellon"], segments: [seg("we bank with Bank of New York Mellon today")]).isEmpty)
-    #expect(GlossaryCorrector.corrections(vocabulary: ["Kubernetes"], segments: [seg("we deployed cooper\tnetties today")]).isEmpty)
-    #expect(GlossaryCorrector.corrections(vocabulary: ["Kubernetes"], segments: [seg("we deployed cooper  netties today")]).isEmpty)
     // The same words with one space are a working row, as before.
     #expect(GlossaryCorrector.corrections(vocabulary: ["Kubernetes"], segments: [seg("we deployed cooper netties today")])
         == [GlossaryCorrection(segmentIndex: 0, from: "cooper netties", to: "Kubernetes")])

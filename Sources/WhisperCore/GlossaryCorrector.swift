@@ -9,7 +9,9 @@ public struct GlossaryCorrection: Sendable, Equatable {
     /// only where that is not the first genuine occurrence of `from`, which is where every row
     /// without one is applied (F950). Apply Replacement Rules sets it for a sentence's first word
     /// that follows the same word mid-sentence ("Zoë and Jon. Jon left." with "jon → jonathan"):
-    /// a row naming only "Jon" would change the name. Never persisted: a row lives for one review.
+    /// a row naming only "Jon" would change the name. Correct Toward Vocabulary sets it for a Latin
+    /// window whose text first occurs earlier as a whole word of a worse window ("the Kestrol/Falcon
+    /// build and the Kestrol release", F914). Never persisted: a row lives for one review.
     public let characterOffset: Int?
     /// The text of the row's line when it was proposed (F971), or nil for a row that names none.
     /// `GlossaryCorrector.apply` skips a row whose line no longer reads so, and the review sheet
@@ -40,8 +42,9 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// a proposal no longer takes the punctuation stuck to its outer words with it (F819, "Kestrol," is
 /// proposed as "Kestrol"), a term equal to a window of several words is already present (F820,
 /// "Priya Raman said" proposes nothing for "Priya Raman"), a row `apply` would leave unchanged
-/// is not proposed at all (F820's review), and a term of four or more words is compared with
-/// windows up to its own length (F940). A term containing Chinese is compared
+/// is not proposed at all (F820's review), a term of four or more words is compared with
+/// windows up to its own length (F940), and a proposal names the window's text as it stands and
+/// is applied to that window (F914, `characterOffset`). A term containing Chinese is compared
 /// with windows of exactly its own length, slid character by character along each run of letters
 /// and digits: Chinese
 /// has no spaces, so the old whitespace split made a whole sentence one "word" — a short segment was
@@ -122,7 +125,7 @@ public enum GlossaryCorrector {
         let tokens = latinTokens(of: text)
         // F65's own guard: a segment with no words proposes nothing.
         guard !tokens.isEmpty else { return [] }
-        let latin = LatinWindows(tokens: tokens, table: prepared.table, largest: prepared.largestLatinWindow)
+        let latin = LatinWindows(tokens: tokens, in: text, table: prepared.table, largest: prepared.largestLatinWindow)
         let chinese = prepared.hasCJKTerms ? CJKRuns(text: text, table: prepared.table) : nil
         let segmented = SegmentedText(text, segmenter: evidence.segmenter)
         // Only a known term present in this segment can enclose one of its windows, so the F594
@@ -142,19 +145,26 @@ public enum GlossaryCorrector {
         var sounds: [Character: String] = [:]
         var results: [GlossaryCorrection] = []
         for term in prepared.terms where !term.ids.isEmpty {
-            let phrase: String?
             if term.isCJK {
-                guard let chinese else { continue }
-                phrase = bestCJKWindow(for: term, in: chinese, text: text, segmented: segmented,
-                                       evidence: segmentEvidence, sounds: &sounds)
-            } else {
-                phrase = bestLatinWindow(for: term, in: latin, text: text, scratch: &scratch)
-            }
-            if let phrase {
+                guard let chinese,
+                      let phrase = bestCJKWindow(for: term, in: chinese, text: text, segmented: segmented,
+                                                 evidence: segmentEvidence, sounds: &sounds) else { continue }
                 results.append(GlossaryCorrection(segmentIndex: segmentIndex, from: phrase, to: term.term))
+            } else if let placed = bestLatinWindow(for: term, in: latin, text: text, scratch: &scratch) {
+                results.append(GlossaryCorrection(
+                    segmentIndex: segmentIndex, from: placed.phrase, to: term.term, characterOffset: placed.offset
+                ))
             }
         }
         return results
+    }
+
+    /// A Latin proposal: its text as it stands in the segment, and where `apply` is to change it
+    /// (F914) — nil where that is the first genuine occurrence of the text, as `apply` resolves a
+    /// row without one (F950).
+    private struct Placement {
+        let phrase: String
+        let offset: Int?
     }
 
     /// F65's search, which picks the same window for text without Chinese: the first 1–3-token
@@ -162,15 +172,15 @@ public enum GlossaryCorrector {
     /// threshold, not equal to the term, unless the
     /// term already stands as a window — one token or, since F820, several: F65 asked only whether
     /// it was one token, so a correct "Priya Raman said" scored 10/14 against "Priya Raman" and was
-    /// proposed as it, deleting "said". The phrase returned is the window's without the punctuation
-    /// stuck to its outer words, less what the term's own spelling begins or ends with (F819),
-    /// unless `apply` would then change something the untrimmed phrase did not — see
-    /// `applicablePhrase`.
+    /// proposed as it, deleting "said". The phrase returned is the window's text as it stands in
+    /// the segment (F914) without the punctuation stuck to its outer words, less what the term's
+    /// own spelling begins or ends with (F819), and the row is applied to that window — see
+    /// `placedPhrase`.
     ///
     /// And nothing is proposed that `apply` would leave unchanged (F820, the Wave 5 review's T10):
-    /// words joined across a tab or a double space are proposed with one space, which `apply` never
-    /// finds, and a row whose text lies inside the correct term changes nothing — `apply` never
-    /// changes text inside the term.
+    /// a row whose text lies inside the correct term changes nothing — `apply` never changes text
+    /// inside the term. (Words joined across a tab or a double space were proposed with one space,
+    /// which `apply` never found, until F914 made the phrase the text as it stands.)
     ///
     /// **A term of four or more words is compared with windows up to its own length (F940)**; every
     /// other term with windows of up to three words, as F65 compared every term. With three, the best
@@ -179,7 +189,7 @@ public enum GlossaryCorrector {
     /// yes", and "Bank of New York Melon" "Bank of Bank of New York Mellon".
     private static func bestLatinWindow(
         for term: PreparedTerm, in windows: LatinWindows, text: String, scratch: inout LCSScratch
-    ) -> String? {
+    ) -> Placement? {
         let largest = max(maxWindow, term.wordCount)
         if let smallest = windows.smallestWindowSpelling[term.normalized], smallest <= largest { return nil }
         var best: (similarity: Double, window: LatinWindows.Window)?
@@ -196,27 +206,33 @@ public enum GlossaryCorrector {
             }
         }
         guard let window = best?.window else { return nil }
-        let phrase = applicablePhrase(window, term: term.term, in: text)
-        guard ReplacementBoundary.occurs(phrase, notCoveredBy: term.term, in: text) else { return nil }
-        return phrase
+        return placedPhrase(window, term: term.term, in: text)
     }
 
-    /// The window's phrase trimmed for `term` (F819), unless `GlossaryCorrector.apply`, which changes
-    /// the first genuine occurrence of a proposal's text, would then change something the untrimmed
-    /// phrase did not. In "the Kestrol-ish build and the Kestrol." the window is "Kestrol.", and
-    /// "Kestrol" first occurs in "Kestrol-ish". In "(Kestrol⟨TAB⟩Release)" the window's words are
-    /// joined with a space, so the untrimmed text is nowhere in the segment, while "Kestrol Release"
-    /// is — inside "Kestrol Release-ish" (the Wave 5 review, T8). Either way the untrimmed phrase is
-    /// returned, exactly as before F819: a row that changes what it always changed — or nothing,
-    /// which `bestLatinWindow` then does not propose. Only a trimmed window pays the searches.
-    private static func applicablePhrase(_ window: LatinWindows.Window, term: String, in text: String) -> String {
-        let trimmed = trimmingAttachedPunctuation(window.phrase, keepingTheEdgesOf: term)
-        guard trimmed != window.phrase,
-              let untrimmed = ReplacementBoundary.firstRange(of: window.phrase, notCoveredBy: term, in: text),
-              let found = ReplacementBoundary.firstRange(of: trimmed, notCoveredBy: term, in: text),
-              untrimmed.lowerBound <= found.lowerBound, found.upperBound <= untrimmed.upperBound
-        else { return window.phrase }
-        return trimmed
+    /// The window's phrase trimmed for `term` (F819), placed where it stands (F914): the row is
+    /// applied to the window that was scored, never to an earlier occurrence of its text. `apply`
+    /// changes the first genuine occurrence of a row's text unless the row names its place
+    /// (`characterOffset`, F950), so the place is named wherever the window is not that first
+    /// occurrence — in "the Kestrol-ish build and the Kestrol." the window is "Kestrol." and
+    /// "Kestrol" first occurs, a whole word to `apply`, in "Kestrol-ish" (until F914 the untrimmed
+    /// "Kestrol." was proposed instead, and the full stop went with it). A trimmed phrase that is
+    /// no genuine occurrence where it stands ("Kestrol" inside "Kestrol_": an underscore is part of
+    /// the word) gives way to the untrimmed one, as before; and a window that is no genuine
+    /// occurrence even untrimmed — inside the correct term, so covered by it — is no row (F820).
+    private static func placedPhrase(_ window: LatinWindows.Window, term: String, in text: String) -> Placement? {
+        let segmented = SegmentedText(text, segmenter: nil)
+        func placement(of phrase: String, at range: Range<String.Index>) -> Placement? {
+            let ranges = ReplacementBoundary(heard: phrase, notCoveredBy: term).genuineRanges(in: segmented)
+            guard let position = ranges.firstIndex(of: range) else { return nil }
+            return Placement(phrase: phrase, offset: position == 0 ? nil : text.distance(from: text.startIndex, to: range.lowerBound))
+        }
+        let kept = trimmedBounds(of: window.phrase, keepingTheEdgesOf: term)
+        if kept != 0..<window.phrase.count {
+            let start = text.index(window.range.lowerBound, offsetBy: kept.lowerBound)
+            let end = text.index(window.range.lowerBound, offsetBy: kept.upperBound)
+            if let placed = placement(of: String(text[start..<end]), at: start..<end) { return placed }
+        }
+        return placement(of: window.phrase, at: window.range)
     }
 
     /// The best window of exactly the term's length in any run of letters and digits (F536), or nil
@@ -287,40 +303,45 @@ public enum GlossaryCorrector {
     /// ("这个Kubernets集群") yields "Kubernets" rather than the whole run.
     private struct Token {
         let text: String
-        /// Whether this token continues the previous one with no whitespace between them.
-        let joinsPrevious: Bool
+        /// Where the token stands in its segment's text (F914): a window's phrase is the text from
+        /// its first token's start to its last token's end, separators and all.
+        let range: Range<String.Index>
         let isCJK: Bool
     }
 
     private static func latinTokens(of text: String) -> [Token] {
         var tokens: [Token] = []
-        for word in text.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }) {
-            var piece = ""
-            var pieceIsCJK = false
-            var first = true
-            for character in word {
+        var start: String.Index?
+        var pieceIsCJK = false
+        func close(at end: String.Index) {
+            if let begin = start { tokens.append(Token(text: String(text[begin..<end]), range: begin..<end, isCJK: pieceIsCJK)) }
+            start = nil
+        }
+        var index = text.startIndex
+        while index < text.endIndex {
+            let character = text[index]
+            if character == " " || character == "\n" || character == "\t" {
+                close(at: index)
+            } else {
                 let isCJK = ReplacementBoundary.hasCJK(String(character))
-                if !piece.isEmpty, isCJK != pieceIsCJK {
-                    tokens.append(Token(text: piece, joinsPrevious: !first, isCJK: pieceIsCJK))
-                    first = false
-                    piece = ""
-                }
-                piece.append(character)
+                if start != nil, isCJK != pieceIsCJK { close(at: index) }
+                if start == nil { start = index }
                 pieceIsCJK = isCJK
             }
-            if !piece.isEmpty {
-                tokens.append(Token(text: piece, joinsPrevious: !first, isCJK: pieceIsCJK))
-            }
+            index = text.index(after: index)
         }
+        close(at: text.endIndex)
         return tokens
     }
 
     private struct LatinWindows {
         struct Window {
             let ids: [Int32]
-            /// The words as F65 joined them, punctuation and all; trimmed for a term only once it
-            /// is the best window for that term (F819, `applicablePhrase`).
+            /// The window's text as it stands in the segment, punctuation and separators and all
+            /// (F914; until then the words joined with one space, as F65 joined them); trimmed for
+            /// a term only once it is the best window for that term (F819, `placedPhrase`).
             let phrase: String
+            let range: Range<String.Index>
             let containsCJK: Bool
         }
 
@@ -333,7 +354,7 @@ public enum GlossaryCorrector {
         /// `ends[size]` is where the windows of `size` tokens end in `all`.
         private let ends: [Int]
 
-        init(tokens: [Token], table: CharacterTable, largest: Int) {
+        init(tokens: [Token], in text: String, table: CharacterTable, largest: Int) {
             let normalized = tokens.map { GlossaryCorrector.normalize($0.text) }
             var smallestWindowSpelling: [String: Int] = [:]
             var windows: [Window] = []
@@ -342,16 +363,14 @@ public enum GlossaryCorrector {
                 if size <= tokens.count {
                     for start in 0...(tokens.count - size) {
                         let slice = start..<(start + size)
-                        var phrase = tokens[start].text
-                        for index in (start + 1)..<(start + size) {
-                            phrase += (tokens[index].joinsPrevious ? "" : " ") + tokens[index].text
-                        }
+                        let range = tokens[start].range.lowerBound..<tokens[start + size - 1].range.upperBound
                         // Joined as strings first, as F65 did, so the character count is the same.
                         let joined = normalized[slice].joined()
                         if smallestWindowSpelling[joined] == nil { smallestWindowSpelling[joined] = size }
                         windows.append(Window(
                             ids: table.ids(joined),
-                            phrase: phrase,
+                            phrase: String(text[range]),
+                            range: range,
                             containsCJK: tokens[slice].contains(where: \.isCJK)
                         ))
                     }
@@ -624,8 +643,15 @@ public enum GlossaryCorrector {
     /// the word at all. Punctuation inside the phrase ("Kestrol, release") stays.
     static func trimmingAttachedPunctuation(_ phrase: String, keepingTheEdgesOf term: String = "") -> String {
         let characters = Array(phrase)
+        return String(characters[trimmedBounds(of: phrase, keepingTheEdgesOf: term)])
+    }
+
+    /// The `Character` offsets `trimmingAttachedPunctuation` keeps of `phrase` — the whole phrase
+    /// when nothing is trimmed — so a window's trimmed text can be placed in its segment (F914).
+    static func trimmedBounds(of phrase: String, keepingTheEdgesOf term: String) -> Range<Int> {
+        let characters = Array(phrase)
         guard let first = characters.firstIndex(where: isPartOfAWord),
-              let last = characters.lastIndex(where: isPartOfAWord) else { return phrase }
+              let last = characters.lastIndex(where: isPartOfAWord) else { return 0..<characters.count }
         let termLeading = Array(term.prefix(while: { !isPartOfAWord($0) }))
         let termTrailing = Array(term.reversed().prefix(while: { !isPartOfAWord($0) }).reversed())
         var leading = min(first, termLeading.count)
@@ -636,7 +662,7 @@ public enum GlossaryCorrector {
         while trailing > 0, !characters[(last + 1)...(last + trailing)].elementsEqual(termTrailing.prefix(trailing)) {
             trailing -= 1
         }
-        return String(characters[(first - leading)...(last + trailing)])
+        return (first - leading)..<(last + trailing + 1)
     }
 
     private static func isPartOfAWord(_ character: Character) -> Bool {
