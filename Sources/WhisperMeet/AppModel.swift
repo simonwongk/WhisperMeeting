@@ -477,7 +477,8 @@ final class AppModel: ObservableObject {
         return (windows, app.isActive)
     }
 
-    /// Says a recording is at risk, once per problem (F294), where the user can see it (F528).
+    /// Says a recording is at risk, once per problem (F294) — once more when the write-failure
+    /// warning's advice changes (F960) — where the user can see it (F528).
     ///
     /// This used to go through `postWindowlessAlert`, which holds back whenever a readable window
     /// exists on the premise that the window's alert shows the message — but an announcement was

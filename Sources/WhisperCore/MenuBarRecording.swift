@@ -139,8 +139,17 @@ public enum MenuBarRecording {
 /// a minute. Each at-risk problem is announced once per recording — including when it clears and
 /// returns, because a flapping stream would otherwise do the same thing more slowly. Cautions
 /// (clipping, quiet system audio) are never announced: they degrade a recording, they do not lose it.
+///
+/// "Problem" is the sentence said, not the warning case (F960). One warning, `.captureWritesFailing`,
+/// is worded from the snapshot — the disk advice or not (F888), one named track or "stop" (F932) —
+/// and the notification is the only surface a user behind another app has, so when that advice
+/// changes it is said once more: "the rest is still recording" must not stand after the other track
+/// fails too, nor "stop the recording" after system audio arrives and the microphone alone is lost.
+/// Each sentence is still said once in a recording, so advice that flaps between two states is
+/// bounded to one notification of each, and a change that keeps the sentence says nothing.
 public struct RecordingRiskAnnouncer: Sendable {
-    private var announced: Set<RecordingHealthWarning> = []
+    /// The lines already said, as `RecordingHUD.message` words them.
+    private var announced: Set<String> = []
 
     public init() {}
 
@@ -165,13 +174,16 @@ public struct RecordingRiskAnnouncer: Sendable {
             announced.removeAll()
             rearmWhenClear = false
         }
-        let fresh = snapshot.warnings.filter { $0.isAtRisk && !announced.contains($0) }
-        guard let worst = fresh.min(by: { RecordingHUD.rank($0) < RecordingHUD.rank($1) }) else { return nil }
+        let fresh = snapshot.warnings.filter(\.isAtRisk).map { warning in
+            (warning: warning, line: RecordingHUD.message(
+                warning, writeFailureCause: snapshot.writeFailureCause, unsavedTrack: snapshot.unsavedTrack
+            ))
+        }.filter { !announced.contains($0.line) }
+        guard let worst = fresh.min(by: { RecordingHUD.rank($0.warning) < RecordingHUD.rank($1.warning) }) else {
+            return nil
+        }
         // Only the one announced is marked, so a second problem hidden behind it still gets its turn.
-        announced.insert(worst)
-        let line = RecordingHUD.message(
-            worst, writeFailureCause: snapshot.writeFailureCause, unsavedTrack: snapshot.unsavedTrack
-        )
-        return "Recording needs attention: \(line)."
+        announced.insert(worst.line)
+        return "Recording needs attention: \(worst.line)."
     }
 }
