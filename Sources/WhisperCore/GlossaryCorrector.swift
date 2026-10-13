@@ -43,8 +43,9 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// proposed as "Kestrol"), a term equal to a window of several words is already present (F820,
 /// "Priya Raman said" proposes nothing for "Priya Raman"), a row `apply` would leave unchanged
 /// is not proposed at all (F820's review), a term of four or more words is compared with
-/// windows up to its own length (F940), and a proposal names the window's text as it stands and
-/// is applied to that window (F914, `characterOffset`). A term containing Chinese is compared
+/// windows up to its own length (F940), a proposal names the window's text as it stands and
+/// is applied to that window (F914, `characterOffset`), and a dash ends a word as a space does
+/// while a possessive 's is outside the window (F915). A term containing Chinese is compared
 /// with windows of exactly its own length, slid character by character along each run of letters
 /// and digits: Chinese
 /// has no spaces, so the old whitespace split made a whole sentence one "word" — a short segment was
@@ -226,13 +227,30 @@ public enum GlossaryCorrector {
             guard let position = ranges.firstIndex(of: range) else { return nil }
             return Placement(phrase: phrase, offset: position == 0 ? nil : text.distance(from: text.startIndex, to: range.lowerBound))
         }
-        let kept = trimmedBounds(of: window.phrase, keepingTheEdgesOf: term)
-        if kept != 0..<window.phrase.count {
+        var kept = trimmedBounds(of: window.phrase, keepingTheEdgesOf: term)
+        // A possessive 's at the end is outside the window too (F915), unless the term's own
+        // spelling ends so (McDonald's): "Kestrel's" normalized to "kestrels", so the term was not
+        // present, the window scored 7/8 and the row deleted the 's. With the 's off, a correct
+        // term is covered by itself and no row is made — never the untrimmed window back.
+        let characters = Array(window.phrase)
+        let possessive = kept.count > 2 && characters[kept.upperBound - 1].lowercased() == "s"
+            && apostrophes.contains(characters[kept.upperBound - 2]) && !endsWithAPossessive(term)
+        if possessive { kept = kept.lowerBound..<(kept.upperBound - 2) }
+        if kept != 0..<characters.count {
             let start = text.index(window.range.lowerBound, offsetBy: kept.lowerBound)
             let end = text.index(window.range.lowerBound, offsetBy: kept.upperBound)
             if let placed = placement(of: String(text[start..<end]), at: start..<end) { return placed }
+            if possessive { return nil }
         }
         return placement(of: window.phrase, at: window.range)
+    }
+
+    private static let apostrophes: Set<Character> = ["'", "\u{2019}"]
+
+    private static func endsWithAPossessive(_ term: String) -> Bool {
+        let characters = Array(term)
+        return characters.count > 2 && characters[characters.count - 1].lowercased() == "s"
+            && apostrophes.contains(characters[characters.count - 2])
     }
 
     /// The best window of exactly the term's length in any run of letters and digits (F536), or nil
@@ -309,6 +327,17 @@ public enum GlossaryCorrector {
         let isCJK: Bool
     }
 
+    /// A Latin term's words, split as a segment's are, so a term and a window of it count alike.
+    static func latinTokenCount(of term: String) -> Int {
+        latinTokens(of: term).count
+    }
+
+    /// A hyphen, an en dash or an em dash ends a word as a space does (F915): "Kestrol—the" was one
+    /// window, so its row deleted "—the", and "Kestrol-ish" scored as one word of ten letters. A
+    /// window of several words keeps the dash between them in its phrase (F914), so "why-fi" is
+    /// still proposed whole for "Wi-Fi".
+    private static let dashes: Set<Character> = ["-", "\u{2010}", "\u{2011}", "\u{2012}", "\u{2013}", "\u{2014}", "\u{2015}"]
+
     private static func latinTokens(of text: String) -> [Token] {
         var tokens: [Token] = []
         var start: String.Index?
@@ -320,7 +349,7 @@ public enum GlossaryCorrector {
         var index = text.startIndex
         while index < text.endIndex {
             let character = text[index]
-            if character == " " || character == "\n" || character == "\t" {
+            if character == " " || character == "\n" || character == "\t" || dashes.contains(character) {
                 close(at: index)
             } else {
                 let isCJK = ReplacementBoundary.hasCJK(String(character))
@@ -443,7 +472,8 @@ public enum GlossaryCorrector {
         let isCJK: Bool
         /// `normalized`'s characters, position for position with `ids`, for the homophone check.
         let characters: [Character]
-        /// The term's words, split as a segment's are: a window of up to this many is compared (F940).
+        /// The term's words, split as a segment's are (at a space or a dash, F915): a window of up
+        /// to this many is compared (F940).
         let wordCount: Int
     }
 
@@ -466,7 +496,7 @@ public enum GlossaryCorrector {
                 PreparedTerm(
                     term: term, normalized: normalized, ids: table.ids(normalized),
                     isCJK: ReplacementBoundary.hasCJK(term), characters: Array(normalized),
-                    wordCount: term.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).count
+                    wordCount: GlossaryCorrector.latinTokenCount(of: term)
                 )
             }
             hasCJKTerms = terms.contains(where: \.isCJK)

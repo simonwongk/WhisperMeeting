@@ -23,6 +23,9 @@ import Testing
 //   window's place where that is not the first genuine occurrence of its text, a trimmed phrase that
 //   is no genuine occurrence where it stands gives way to the untrimmed one, and a window that is
 //   none even untrimmed is no row. (This replaces F819's in-place rule, kept for `f914` off.)
+// - F915: a hyphen, an en dash or an em dash ends a word as a space does (for a term's words too),
+//   and a possessive 's at the end of the phrase is outside it unless the term's own spelling ends
+//   so — trimmed after F819's marks, and with it off the window is no row rather than untrimmed.
 
 private struct Amendments {
     var f819 = true
@@ -32,6 +35,7 @@ private struct Amendments {
     var f820NoOp = true
     var f940 = true
     var f914 = true
+    var f915 = true
 }
 
 /// One of a segment's words, with where it stands (F914).
@@ -49,7 +53,7 @@ private enum PreF536GlossaryCorrector {
     ) -> [GlossaryCorrection] {
         var results: [GlossaryCorrection] = []
         for (index, segment) in segments.enumerated() {
-            let words = words(of: segment.text)
+            let words = Self.words(of: segment.text, splittingAtDashes: amended.f915)
             guard !words.isEmpty else { continue }
             let normalizedWords = words.map { normalize($0.text) }
 
@@ -60,7 +64,7 @@ private enum PreF536GlossaryCorrector {
 
                 var best: (similarity: Double, slice: Range<Int>)?
                 var presentAsAWindow = false // amended
-                let termWords = term.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).count // amended
+                let termWords = Self.words(of: term, splittingAtDashes: amended.f915).count // amended
                 let largest = amended.f940 ? max(maxWindow, termWords) : maxWindow // amended
                 for size in 1...largest where size <= words.count { // amended (was 1...maxWindow)
                     for start in 0...(words.count - size) {
@@ -81,10 +85,16 @@ private enum PreF536GlossaryCorrector {
                     var phrase = untrimmed
                     var kept = 0..<untrimmed.count // amended
                     if amended.f819 { (phrase, kept) = trimmedF819(untrimmed, for: term, byIdentity: amended.f819ByIdentity) } // amended
+                    var possessive = false // amended
+                    if amended.f915, endsWithAPossessive(phrase), !endsWithAPossessive(term) { // amended
+                        phrase = String(phrase.dropLast(2)) // amended
+                        kept = kept.lowerBound..<(kept.upperBound - 2) // amended
+                        possessive = true // amended
+                    } // amended
                     var offset: Int? // amended
                     if amended.f914 { // amended
                         guard let placed = placedF914(phrase, kept: kept, untrimmed: untrimmed, window: window, // amended
-                                                      term: term, in: segment.text) else { continue } // amended
+                                                      term: term, in: segment.text, orNothing: possessive) else { continue } // amended
                         (phrase, offset) = placed // amended
                     } else if amended.f819InPlace, phrase != untrimmed, // amended
                               !appliesInPlace(phrase, of: untrimmed, term: term, in: segment.text) { // amended
@@ -99,13 +109,15 @@ private enum PreF536GlossaryCorrector {
         return results
     }
 
-    /// F65's split: a space, a line break or a tab ends a word; each word with where it stands.
-    static func words(of text: String) -> [OracleWord] {
+    /// F65's split: a space, a line break or a tab ends a word — and with F915 a hyphen, an en dash
+    /// or an em dash too; each word with where it stands.
+    static func words(of text: String, splittingAtDashes: Bool) -> [OracleWord] {
+        let dashes: Set<Character> = ["-", "\u{2010}", "\u{2011}", "\u{2012}", "\u{2013}", "\u{2014}", "\u{2015}"]
         var words: [OracleWord] = []
         var start: String.Index?
         var index = text.startIndex
         while index < text.endIndex {
-            if text[index] == " " || text[index] == "\n" || text[index] == "\t" {
+            if text[index] == " " || text[index] == "\n" || text[index] == "\t" || (splittingAtDashes && dashes.contains(text[index])) {
                 if let begin = start { words.append(OracleWord(text: String(text[begin..<index]), range: begin..<index)) }
                 start = nil
             } else if start == nil {
@@ -163,12 +175,14 @@ private enum PreF536GlossaryCorrector {
     }
 
     /// F914: the phrase placed at its window — the trimmed phrase where it stands, if `apply` reads
-    /// a genuine occurrence there; else the untrimmed window; else nothing — with the window's
-    /// offset where it is not the first genuine occurrence `apply` would otherwise take. Where
-    /// `apply` reads an occurrence is `ReplacementBoundary`'s by definition (F444), so that is asked
-    /// here rather than written a second time.
+    /// a genuine occurrence there; else the untrimmed window (or nothing, `orNothing`, where a
+    /// possessive was trimmed, F915: the term with an 's is the term); else nothing — with the
+    /// window's offset where it is not the first genuine occurrence `apply` would otherwise take.
+    /// Where `apply` reads an occurrence is `ReplacementBoundary`'s by definition (F444), so that is
+    /// asked here rather than written a second time.
     static func placedF914(
-        _ trimmed: String, kept: Range<Int>, untrimmed: String, window: Range<String.Index>, term: String, in text: String
+        _ trimmed: String, kept: Range<Int>, untrimmed: String, window: Range<String.Index>, term: String, in text: String,
+        orNothing: Bool
     ) -> (String, Int?)? {
         func placed(_ phrase: String, at range: Range<String.Index>) -> (String, Int?)? {
             let ranges = ReplacementBoundary(heard: phrase, notCoveredBy: term).genuineRanges(in: SegmentedText(text, segmenter: nil))
@@ -179,8 +193,16 @@ private enum PreF536GlossaryCorrector {
             let start = text.index(window.lowerBound, offsetBy: kept.lowerBound)
             let end = text.index(window.lowerBound, offsetBy: kept.upperBound)
             if let placed = placed(trimmed, at: start..<end) { return placed }
+            if orNothing { return nil }
         }
         return placed(untrimmed, at: window)
+    }
+
+    /// F915: whether `text` ends in an apostrophe (straight or curly) and an s.
+    static func endsWithAPossessive(_ text: String) -> Bool {
+        let characters = Array(text)
+        guard characters.count > 2 else { return false }
+        return ["'", "\u{2019}"].contains(characters[characters.count - 2]) && characters[characters.count - 1].lowercased() == "s"
     }
 
     /// F820 no-op: whether applying `proposal` alone leaves `segment`'s text as it was — asked of
@@ -294,6 +316,7 @@ func englishSuggestionsMatchThePreF536Oracle() {
         "the Bank of New Yolk said yes.", "the Bonk of New York said yes.", "we bank with Bank of New York Melon.",
         "the Bank of New York said yes.", "the Bank\tof New York review.",
         "the Kestrol/Falcon build and the Kestrol release.", "the Kestrol-ish build and the Kestrol.",
+        "Kestrel's release is ready.", "the Kestrol's build is late.", "Kestrol—the build is late.",
     ]
     let segments = syntheticTranscript(generated, &random) + fixedLines.enumerated().map {
         TranscriptSegment(speaker: nil, start: Double(60 + $0.offset), end: Double(61 + $0.offset), text: $0.element)
@@ -327,6 +350,10 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withoutF914.f914 = false
     #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF914) != expected,
             "no window in the corpus stands across a separator or after an earlier occurrence of its text, so F914's amendment is untested here")
+    var withoutF915 = Amendments()
+    withoutF915.f915 = false
+    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF915) != expected,
+            "no window in the corpus has a possessive or a dash, so F915's amendment is untested here")
     // With F914 off too: a placed row is a genuine occurrence where it stands, so with F914 on no
     // row changes nothing and the no-op rule is a consequence rather than a step of its own.
     var withNoOpOnly = Amendments()

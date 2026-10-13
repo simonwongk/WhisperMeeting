@@ -26,13 +26,20 @@ func latinProposalKeepsAttachedPunctuation() {
 
 @Test("A trimmed proposal is applied to the window it was trimmed from, not to an earlier word it only appears inside (F819, F914)")
 func trimmedProposalIsAppliedWhereItWasFound() {
-    // The window is "Kestrol." at the end; "Kestrol" alone first occurs inside "Kestrol-ish", which
-    // `apply` would have changed instead, so until F914 the untrimmed "Kestrol." was proposed and
-    // the full stop went with it. The row now carries the window's place, and the full stop stays.
-    let segments = [seg("the Kestrol-ish build and the Kestrol.")]
+    // The window is "Kestrol." at the end; "Kestrol" alone first occurs inside "Kestrol/Falcon",
+    // a whole word to `apply` (a slash is a word edge) that `apply` would have changed instead, so
+    // until F914 the untrimmed "Kestrol." was proposed and the full stop went with it. The row now
+    // carries the window's place, and the full stop stays.
+    let segments = [seg("the Kestrol/Falcon build and the Kestrol.")]
     let corrections = GlossaryCorrector.corrections(vocabulary: ["Kestrel"], segments: segments)
-    #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel", characterOffset: 30)])
-    #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == "the Kestrol-ish build and the Kestrel.")
+    #expect(corrections == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel", characterOffset: 33)])
+    #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == "the Kestrol/Falcon build and the Kestrel.")
+    // Glued by a hyphen instead, the first "Kestrol" is a window of its own (F915), scores the same
+    // as the last and comes first, so it is the one proposed — and "-ish" stays.
+    let hyphenated = [seg("the Kestrol-ish build and the Kestrol.")]
+    let hyphenatedRows = GlossaryCorrector.corrections(vocabulary: ["Kestrel"], segments: hyphenated)
+    #expect(hyphenatedRows == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel")])
+    #expect(GlossaryCorrector.apply(hyphenatedRows, to: hyphenated)[0].text == "the Kestrel-ish build and the Kestrol.")
 }
 
 @Test("A Latin proposal is applied to the window it scored, never to an earlier occurrence of its text, and names the text as it stands (F914)")
@@ -169,6 +176,42 @@ func longTermMishearingIsProposedWhole() {
     #expect(row("Kubernetes", "we deployed cooper netties today").applied == "we deployed Kubernetes today")
     // A term of four or more words spelled across a tab is still present, at any length.
     #expect(row("Bank of New York", "the Bank\tof New York said yes").proposed.isEmpty)
+}
+
+@Test("A possessive 's and a dash-glued word beside a term are outside the window, so applying deletes neither (F915)")
+func possessiveAndDashGluedWordsAreOutsideTheWindow() {
+    func rows(_ term: String, _ text: String) -> [GlossaryCorrection] {
+        GlossaryCorrector.corrections(vocabulary: [term], segments: [seg(text)])
+    }
+    func check(_ term: String, _ text: String, from: String, applied: String) {
+        let segments = [seg(text)]
+        let corrections = GlossaryCorrector.corrections(vocabulary: [term], segments: segments)
+        #expect(corrections.map(\.from) == [from], "\(term) in \(text)")
+        #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == applied, "\(term) in \(text)")
+    }
+    // The possessive (the Wave 5 review of F819): "Kestrel's" normalized to "kestrels", so the
+    // term was not present and the window scored 7/8; the row deleted the 's.
+    #expect(rows("Kestrel", "Kestrel's release is ready").isEmpty)
+    #expect(rows("Priya Raman", "Priya Raman's report is in").isEmpty)
+    #expect(rows("Kestrel", "Kestrel’s release is ready").isEmpty)
+    // A misheard term keeps its 's, straight or curly.
+    check("Kestrel", "the Kestrol's build", from: "Kestrol", applied: "the Kestrel's build")
+    check("Kestrel", "the Kestrol’s build", from: "Kestrol", applied: "the Kestrel’s build")
+    check("Priya Raman", "Pria Ramen's report", from: "Pria Ramen", applied: "Priya Raman's report")
+    // A term whose own spelling ends in 's keeps the window's: McDonald's.
+    check("McDonald's", "lunch at MacDonald's today", from: "MacDonald's", applied: "lunch at McDonald's today")
+    check("McDonald's", "lunch at MacDonald today", from: "MacDonald", applied: "lunch at McDonald's today")
+    // A dash-glued word (the review's T9): "Kestrol—the" was one window, and the row deleted "—the".
+    check("Kestrel", "Kestrol—the build", from: "Kestrol", applied: "Kestrel—the build")
+    check("Kestrel", "Kestrol–the build", from: "Kestrol", applied: "Kestrel–the build")
+    check("Kestrel", "the Kestrol-ish build", from: "Kestrol", applied: "the Kestrel-ish build")
+    check("Kestrel Release", "ok, Kestrol Release-ish", from: "Kestrol Release", applied: "ok, Kestrel Release-ish")
+    // A hyphenated term is present spelled with its hyphen, without it, or with a space.
+    #expect(rows("Wi-Fi", "the wi-fi is down").isEmpty)
+    #expect(rows("Wi-Fi", "the wifi is down").isEmpty)
+    #expect(rows("Wi-Fi", "the wi fi is down").isEmpty)
+    // And a mishearing across the hyphen is still one window, proposed whole with its hyphen.
+    check("Wi-Fi", "the why-fi is down", from: "why-fi", applied: "the Wi-Fi is down")
 }
 
 @Test("A multi-word term already in the segment proposes nothing, whatever follows it (F820)")
