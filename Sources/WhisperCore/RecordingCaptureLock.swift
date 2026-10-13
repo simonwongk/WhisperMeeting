@@ -32,6 +32,16 @@ import Foundation
 public enum RecordingCaptureLock {
     public static let filename = "capture.lock"
 
+    /// Whether the folder holds a lock file at all, held or free (F936). A capture creates it before
+    /// its first sample and removes it only once its meeting is indexed (`AppModel.stopRecording`,
+    /// the orphan sweep), so a FINISHED folder that still has one was never indexed by its writer:
+    /// the writer is alive and about to index it, or died or was held back (a lost save, F667)
+    /// first. Either way it is not a meeting an index lost, which is what the launch's empty-index
+    /// check is for. Takes no lock, so it is safe during `MeetingStore.init`.
+    public static func lockFileExists(in directory: URL) -> Bool {
+        FileManager.default.fileExists(atPath: directory.appendingPathComponent(filename).path)
+    }
+
     /// An open, flocked descriptor. The lock lives in the open file description, so the handle
     /// must outlive the capture; closing it releases the lock, which is the point.
     public final class Handle: @unchecked Sendable {

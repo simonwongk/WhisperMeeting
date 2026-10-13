@@ -3900,6 +3900,20 @@ final class MeetingStore: ObservableObject {
     /// treat a folder as a lost meeting while the other treats it as something to rebuild.
     ///
     /// `explained` (F909): folders named by these meeting ids are not counted.
+    ///
+    /// Nor is a finished folder that still holds its `capture.lock` (F936). The capture removes
+    /// that file only once its meeting is indexed (F297), so a finished folder with the file was
+    /// never indexed by its writer — a crash or power loss between Stop's finalize and its index
+    /// save, or a Stop the banner is holding (F667) when the app quit — and the orphan sweep adopts
+    /// it; counted, it made a library whose last meeting had been deleted open read-only, with a
+    /// restore that brings that meeting back as the way out. A folder with no lock file — an older
+    /// build's, or one whose meeting was indexed and then wiped — counts as before. The one shape
+    /// this misreads is a crash after the index save and before the file's removal, followed by a
+    /// wipe: that meeting is then adopted by the sweep from its folder rather than flagged, which
+    /// loses its index entry's title, tags and transcript (its notes sidecar survives, F198) and
+    /// never audio. I chose that over the ticket's alternative of leaving the check as it was,
+    /// because the window is the microseconds between `upsert` and the lock's release, and the
+    /// read-only library it prevented has no honest way out.
     private func finalizedRecordingFolderCount(excluding explained: Set<UUID> = []) -> Int {
         let recordings = rootDirectory.appendingPathComponent("Recordings", isDirectory: true)
         let urls = (try? FileManager.default.contentsOfDirectory(
@@ -3908,7 +3922,8 @@ final class MeetingStore: ObservableObject {
             options: [.skipsHiddenFiles]
         )) ?? []
         return urls.filter {
-            guard let id = UUID(uuidString: $0.lastPathComponent), !explained.contains(id) else { return false }
+            guard let id = UUID(uuidString: $0.lastPathComponent), !explained.contains(id),
+                  !RecordingCaptureLock.lockFileExists(in: $0) else { return false }
             return InterruptedRecordingRecovery.finalizedRecording(in: $0) != nil
         }.count
     }

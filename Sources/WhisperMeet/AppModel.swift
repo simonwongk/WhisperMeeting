@@ -4271,8 +4271,11 @@ final class AppModel: ObservableObject {
             recordingHealth = nil
             recordingMeter.reset()
             refreshRecordingPreflight()
-            // Indexed, so the folder no longer needs vouching for (F297).
-            releaseCaptureLock(removingFile: true)
+            // Indexed, so the folder no longer needs vouching for (F297) — unless the save lost
+            // twice and the banner is holding the meeting out of the list (F667): then the file
+            // stays, as the failed-finalize path below keeps it, so a quit before the answer leaves
+            // a folder the next launch can tell from a wiped meeting's (F936).
+            releaseCaptureLock(removingFile: store.meeting(id: id) != nil)
 
             refreshRuntime()
             let engineInstalled = isSelectedEngineInstalled
