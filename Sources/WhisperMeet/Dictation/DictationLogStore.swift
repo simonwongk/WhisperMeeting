@@ -91,6 +91,11 @@ import WhisperCore
                 log = loaded.value
                 health = loaded.health
                 token = loaded.token
+            } else {
+                // No history on disk yet: the first save expects none (F905, as F864 did for the
+                // meeting index), so another copy's first save made meanwhile is a lost race that
+                // is re-read below, not a file this copy's first dictation replaces.
+                token = .absent
             }
         } catch {
             // `health` alone, since F195: `loadErrorMessage` reads the reason back out of it.
@@ -108,11 +113,11 @@ import WhisperCore
         timings: DictationTimings = DictationTimings()
     ) {
         guard health.allowsMutation else { return }
-        log = log.adding(DictationLogEntry(
+        let entry = DictationLogEntry(
             id: UUID(), date: Date(), text: text, outcome: outcome,
             rawText: rawText, refinement: refinement, timings: timings
-        ))
-        persist()
+        )
+        persist({ $0.adding(entry) }, afterALostRace: .makeAgain)
     }
 
     /// Erases the whole history — not just the primary file (F456).
@@ -140,13 +145,20 @@ import WhisperCore
     @discardableResult
     func clear() -> Bool {
         guard health.allowsMutation else { return false }
-        log = log.cleared()
-        persist()
-        let firstSaveFailed = saveErrorMessage != nil
+        // A save that loses to another copy shows what that copy saved and reports the failure
+        // below (F905): the history has a dictation the person has not seen, so the erase is theirs
+        // to ask for again — and the token is fresh, so asking again works.
+        persist({ $0.cleared() }, afterALostRace: .showWhatIsOnDisk)
+        guard saveErrorMessage == nil else {
+            // Nothing was cleared. Not a second save: with the token fresh after a lost race it
+            // would land, and erase the dictation the other copy just saved (F905).
+            historyEraseFailureMessage =
+                "Dictations were not cleared, because the history could not be saved. Try Clear All again."
+            return false
+        }
         betweenClearSavesForTesting?()
-        persist()
-        let secondSaveFailed = saveErrorMessage != nil
-        guard !firstSaveFailed, !secondSaveFailed else {
+        persist({ $0.cleared() }, afterALostRace: .showWhatIsOnDisk)
+        guard saveErrorMessage == nil else {
             historyEraseFailureMessage =
                 "Dictations were cleared, but an earlier copy may still be on disk because a save failed. Try Clear All again."
             return false
@@ -168,7 +180,25 @@ import WhisperCore
     /// Touches `saveErrorMessage` only (F195). The load notice is derived from `health` and has no
     /// setter, so the erasure this method used to be capable of is gone by construction rather than
     /// by an invariant spanning two modules — see `loadErrorMessage` for what that invariant was.
-    private func persist() {
+    ///
+    /// What a save that lost to another copy of the app does next (F905).
+    private enum LostRaceResponse {
+        /// Re-read the history and make the change again on what the other copy saved — a dictation
+        /// is added to it (`MeetingStore.commitListChange`'s shape, F663).
+        case makeAgain
+        /// Re-read the history and show it, saying the save did not land: Clear All over a history
+        /// the other copy has just added to is the person's to ask for again, not this store's to
+        /// finish for them — a failure defers, it does not destroy (F456).
+        case showWhatIsOnDisk
+    }
+
+    /// Makes `change` to the log and saves it. A save that loses to another copy of the app (F905)
+    /// re-reads the history — so the token is fresh and the next save is compared against what is
+    /// on disk — and then does what `afterALostRace` says. Before this the lost race was only
+    /// reported: the token stayed stale, so every later dictation failed the same compare-and-swap
+    /// until a relaunch, and lived only in memory. One retry: a second loss is said.
+    private func persist(_ change: (DictationLog) -> DictationLog, afterALostRace: LostRaceResponse) {
+        log = change(log)
         do {
             let outcome = try store.save(log, expecting: token)
             token = outcome.token
@@ -179,6 +209,34 @@ import WhisperCore
             // readable, and conflating them would turn a transient save failure into a permanent
             // read-only library.
             saveErrorMessage = error.localizedDescription
+            guard WriteConflictReport(error).isRace else { return }
+            // The re-read IS a load, so its verdict is `health`'s to keep: a history the other copy
+            // left undecodable is shown read-only, and the change waits in memory as any refused one.
+            let reread: BackupJSONStore<DictationLog>.LoadResult?
+            do {
+                reread = try store.load()
+            } catch {
+                health = .unavailable(error.localizedDescription)
+                return
+            }
+            if let reread {
+                health = reread.health
+                token = reread.token
+                log = reread.value
+                guard health.allowsMutation else { return }
+            } else {
+                token = .absent
+                log = DictationLog()
+            }
+            guard afterALostRace == .makeAgain else { return }
+            log = change(log)
+            do {
+                let outcome = try store.save(log, expecting: token)
+                token = outcome.token
+                saveErrorMessage = nil
+            } catch {
+                saveErrorMessage = error.localizedDescription
+            }
         }
     }
 }
