@@ -1441,11 +1441,14 @@ final class MeetingStore: ObservableObject {
         guard writeConflict?.isRace == true else { return }
         meetings[index] = recordBefore
         conflictOffer = offerBefore
-        beginConflictRecovery()
         // What the recovery said when it had nothing left to ask — the other copy's commit, a meeting
         // back in the list, a note (F884). The save below sets the message to its own: nothing on
-        // success, so a banner that resolved itself here used to go away with nothing said.
-        let said = storageErrorMessage == restingStorageMessage ? nil : storageErrorMessage
+        // success, so a banner that resolved itself here used to go away with nothing said. Kept as
+        // its parts and rendered again at the end (F934): the save below can lose too, and the
+        // recovery that follows re-reads the library, so a meeting the first recovery had put back
+        // may be gone by the time anything is shown — replaying its sentence said "“X” is in your
+        // list again." about a meeting the other copy had just deleted.
+        let said = beginConflictRecovery()
         let offerWithoutTheResult = conflictOffer
         applyToOfferedCopies(of: id, mutation)
         // Nothing more is written when the re-read left the library refusing changes — the result
@@ -1464,7 +1467,34 @@ final class MeetingStore: ObservableObject {
             heldResults.append(HeldResult(id: id, apply: mutation))
             beginConflictRecovery()
         }
-        if let said { keepSaying(said) }
+        if let said { keepSaying(said.sentence(over: meetings)) }
+    }
+
+    /// What a recovery said when it had nothing left to ask (F884), as its parts rather than its
+    /// sentence (F934), so a caller that shows it later can render it over the list as it is then.
+    /// A rendered string cannot be re-checked: `saveResult` replayed one after a second lost save,
+    /// and it named a meeting the other copy had deleted between the two re-reads — the shape F887
+    /// fixed for the banner, re-entered through the alert.
+    private struct RecoveryWords {
+        /// The store's report of the lost race (which conflict file holds the losing body).
+        let report: String
+        /// The meetings the recovery put back in the list (F667), as records: named only while the
+        /// list still has them, under the title it has there (F887).
+        let keptNew: [MeetingRecord]
+        /// What the caller needed said beyond the records — a delete that did not happen (F642).
+        let notes: [String]
+        /// An ordinary failure's own words, when putting the meetings back failed that way.
+        let failure: String?
+
+        func sentence(over meetings: [MeetingRecord]) -> String {
+            var said = [report]
+            // The report says "these changes were not applied"; a meeting put back was (F667).
+            let kept = keptNew.compactMap { kept in meetings.first { $0.id == kept.id } }.map(\.title)
+            if !kept.isEmpty { said.append(ConflictOffer.backInTheList(kept)) }
+            said += notes
+            if let failure { said.append(failure) }
+            return said.joined(separator: " ")
+        }
     }
 
     /// Puts `said` back in front of whatever the message is now (F884): over the resting value a
@@ -1845,8 +1875,12 @@ final class MeetingStore: ObservableObject {
     /// Since F642 every synchronous mutator's lost race comes here too. `note` is what the caller
     /// needs said that the snapshot cannot say — a delete that did not happen — and is appended to
     /// the offer's message, or, when there is nothing to offer, becomes the alert.
-    private func beginConflictRecovery(note: String? = nil, savingNewMeetings: Bool = true) {
-        guard let report = writeConflict else { return }
+    ///
+    /// Returns what it put in the alert, as parts, when it had nothing to ask and something to say;
+    /// nil when it raised the banner or had nothing to say (F934, `RecoveryWords`).
+    @discardableResult
+    private func beginConflictRecovery(note: String? = nil, savingNewMeetings: Bool = true) -> RecoveryWords? {
+        guard let report = writeConflict else { return nil }
         let outstanding = conflictOffer
         let losing = meetings
         // Every saved copy of each id, not one. A hand-edited index can hold one id twice, and since
@@ -1918,8 +1952,7 @@ final class MeetingStore: ObservableObject {
                 keptNew += added
                 added = []
             } else if writeConflict?.isRace == true {
-                beginConflictRecovery(savingNewMeetings: false)
-                return
+                return beginConflictRecovery(savingNewMeetings: false)
             } else {
                 // An ordinary failure (a full disk): they stay listed and unsaved, as any change
                 // whose save failed does, and the next save carries them. The failure's own message
@@ -1937,19 +1970,19 @@ final class MeetingStore: ObservableObject {
             // Nothing to offer back, so no banner: the one thing left to say goes in the alert,
             // once — the token is fresh now, so no later save repeats it.
             conflictOffer = nil
-            guard !notes.isEmpty else { return }
-            var said = [report.message]
-            // The report says "these changes were not applied"; a meeting put back above was (F667).
-            if !keptNew.isEmpty { said.append(ConflictOffer.backInTheList(keptNew.map(\.title))) }
-            said += notes
+            guard !notes.isEmpty else { return nil }
             // And an ordinary failure putting it back keeps its own words beside these.
-            if let failure = writeConflict, !failure.isRace, let shown = storageErrorMessage {
-                said.append(shown)
-            }
-            storageErrorMessage = said.joined(separator: " ")
-            return
+            var failure: String?
+            if let report = writeConflict, !report.isRace, let shown = storageErrorMessage { failure = shown }
+            // The parts, not the sentence (F934): `keptNew` is already only what the re-read still has,
+            // so rendered now this is the sentence it always was; a caller that shows it after a later
+            // re-read renders it over that one.
+            let words = RecoveryWords(report: report.message, keptNew: keptNew, notes: notes, failure: failure)
+            storageErrorMessage = words.sentence(over: meetings)
+            return words
         }
         conflictOffer = offer
+        return nil
     }
 
     /// Puts `records` into `meetings`, each into its own slot: the first copy of its id not already
