@@ -9,7 +9,8 @@ func transcribesWithLocalWhisper() async throws {
 
     let client = LocalWhisperClient(
         executableURL: fixture.executableURL,
-        modelDirectory: fixture.modelDirectory
+        modelDirectory: fixture.modelDirectory,
+        scratchDirectory: fixture.scratchDirectory
     )
     let result = try await client.transcribe(
         recordingAt: fixture.audioURL,
@@ -53,7 +54,8 @@ func everyPinnedMeetingLanguageIsStoredAsACode() async throws {
         defer { fixture.remove() }
         let client = LocalWhisperClient(
             executableURL: fixture.executableURL,
-            modelDirectory: fixture.modelDirectory
+            modelDirectory: fixture.modelDirectory,
+            scratchDirectory: fixture.scratchDirectory
         )
         let result = try await client.transcribe(
             recordingAt: fixture.audioURL,
@@ -72,7 +74,8 @@ func usesAutomaticLanguageWithTurbo() async throws {
     defer { fixture.remove() }
     let client = LocalWhisperClient(
         executableURL: fixture.executableURL,
-        modelDirectory: fixture.modelDirectory
+        modelDirectory: fixture.modelDirectory,
+        scratchDirectory: fixture.scratchDirectory
     )
 
     _ = try await client.transcribe(
@@ -99,7 +102,8 @@ func reportsMissingRuntime() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
     let client = LocalWhisperClient(
         executableURL: directory.appendingPathComponent("missing-whisper"),
-        modelDirectory: directory.appendingPathComponent("Models")
+        modelDirectory: directory.appendingPathComponent("Models"),
+        scratchDirectory: directory.appendingPathComponent("Scratch", isDirectory: true)
     )
 
     await #expect(throws: LocalWhisperError.runtimeNotInstalled) {
@@ -122,7 +126,9 @@ func reportsProcessFailure() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
     let client = LocalWhisperClient(
         executableURL: executableURL,
-        modelDirectory: directory.appendingPathComponent("Models")
+        modelDirectory: directory.appendingPathComponent("Models"),
+        // F937: the run folder and its sweep stay inside this test's own directory.
+        scratchDirectory: directory.appendingPathComponent("Scratch", isDirectory: true)
     )
 
     await #expect(throws: LocalWhisperError.processFailed("model could not load")) {
@@ -156,7 +162,9 @@ func capsMissingOutputLogInProcessFailedMessage() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
     let client = LocalWhisperClient(
         executableURL: executableURL,
-        modelDirectory: directory.appendingPathComponent("Models")
+        modelDirectory: directory.appendingPathComponent("Models"),
+        // F937: the run folder and its sweep stay inside this test's own directory.
+        scratchDirectory: directory.appendingPathComponent("Scratch", isDirectory: true)
     )
 
     do {
@@ -183,7 +191,9 @@ func cancelsLocalProcess() async throws {
     defer { try? FileManager.default.removeItem(at: directory) }
     let client = LocalWhisperClient(
         executableURL: executableURL,
-        modelDirectory: directory.appendingPathComponent("Models")
+        modelDirectory: directory.appendingPathComponent("Models"),
+        // F937: the run folder and its sweep stay inside this test's own directory.
+        scratchDirectory: directory.appendingPathComponent("Scratch", isDirectory: true)
     )
     let task = Task {
         try await client.transcribe(recordingAt: audioURL)
@@ -230,7 +240,9 @@ func cancelKillsDecoderGrandchild() async throws {
 
     let client = LocalWhisperClient(
         executableURL: executableURL,
-        modelDirectory: directory.appendingPathComponent("Models")
+        modelDirectory: directory.appendingPathComponent("Models"),
+        // F937: the run folder and its sweep stay inside this test's own directory.
+        scratchDirectory: directory.appendingPathComponent("Scratch", isDirectory: true)
     )
     let task = Task { try await client.transcribe(recordingAt: audioURL) }
 
@@ -350,6 +362,9 @@ private struct LocalWhisperFixture {
     let audioURL: URL
     let modelDirectory: URL
     let argumentsURL: URL
+    /// Where the client's run folders go (F937): under this fixture, never the real `$TMPDIR`, whose
+    /// dead-pid run folders every run sweeps.
+    let scratchDirectory: URL
 
     init() throws {
         directory = FileManager.default.temporaryDirectory
@@ -357,6 +372,7 @@ private struct LocalWhisperFixture {
         executableURL = directory.appendingPathComponent("whisper")
         audioURL = directory.appendingPathComponent("meeting.wav")
         modelDirectory = directory.appendingPathComponent("Models", isDirectory: true)
+        scratchDirectory = directory.appendingPathComponent("Scratch", isDirectory: true)
         argumentsURL = audioURL.appendingPathExtension("arguments")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try Data("audio".utf8).write(to: audioURL)

@@ -49,7 +49,10 @@ private func batchEngine(whisper: URL, in directory: URL) throws -> (BatchWhispe
     let clip = directory.appendingPathComponent("clip.wav")
     try Data("not really audio".utf8).write(to: clip)
     let engine = BatchWhisperDictationEngine(
-        client: LocalWhisperClient(executableURL: whisper, modelDirectory: directory.appendingPathComponent("models")),
+        client: LocalWhisperClient(
+            executableURL: whisper, modelDirectory: directory.appendingPathComponent("models"),
+            scratchDirectory: directory.appendingPathComponent("scratch") // F937: not the real $TMPDIR
+        ),
         model: .turbo
     )
     return (engine, clip)

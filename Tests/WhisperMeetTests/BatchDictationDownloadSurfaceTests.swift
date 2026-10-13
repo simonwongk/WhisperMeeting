@@ -46,7 +46,10 @@ func theBatchEnginesCheckpointDownloadIsShownThenTheDictationIsDelivered() async
     """.write(to: whisper, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: whisper.path)
     let batch = BatchWhisperDictationEngine(
-        client: LocalWhisperClient(executableURL: whisper, modelDirectory: scratch.appendingPathComponent("models")),
+        client: LocalWhisperClient(
+            executableURL: whisper, modelDirectory: scratch.appendingPathComponent("models"),
+            scratchDirectory: scratch.appendingPathComponent("runs") // F937: not the real $TMPDIR
+        ),
         model: .turbo
     )
     let rig = try DownloadSurfaceRig(engine: FallbackDictationEngine(primary: CannotRunHereEngine(), fallback: batch))

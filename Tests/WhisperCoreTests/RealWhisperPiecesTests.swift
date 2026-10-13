@@ -87,7 +87,8 @@ func realWhisperSplitsAndJoinsLikeOnePass() async throws {
     func run(_ policy: WhisperPiecePolicy) async throws -> (TranscriptionResult, String, TimeInterval) {
         try? FileManager.default.removeItem(at: log)
         let client = LocalWhisperClient(
-            executableURL: wrapper, modelDirectory: LocalWhisperRuntime.modelDirectory(), piecePolicy: policy
+            executableURL: wrapper, modelDirectory: LocalWhisperRuntime.modelDirectory(), piecePolicy: policy,
+            scratchDirectory: directory.appendingPathComponent("scratch") // F937: not the real $TMPDIR
         )
         let started = Date()
         let result = try await client.transcribe(

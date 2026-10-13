@@ -29,7 +29,9 @@ import Testing
 private func makeClient() -> LocalWhisperClient {
     LocalWhisperClient(
         executableURL: URL(fileURLWithPath: "/tmp/whisper-does-not-need-to-exist"),
-        modelDirectory: URL(fileURLWithPath: "/tmp/models")
+        modelDirectory: URL(fileURLWithPath: "/tmp/models"),
+        // Never transcribes, so nothing is made here; named so the F937 scan need not know that.
+        scratchDirectory: URL(fileURLWithPath: "/tmp/scratch-does-not-need-to-exist")
     )
 }
 
