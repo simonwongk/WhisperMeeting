@@ -147,15 +147,34 @@ public enum RecordingMixPlan {
                          gap: Swift.max(0, firstFrame - end))
     }
 
-    // MARK: - Showing that a copy holds every track (F942, review R2)
+    // MARK: - Showing that a copy holds every track (F942 review R2; F980)
 
     /// The most channels, over all tracks, whose presence in a mixed copy Shrink checks one by one: the
     /// check fits the copy against every channel at once, and its cost grows with their square.
     public static let mostCheckedChannels = 16
 
+    /// The most frames a track, read for the audit, may be out of step with the copy either way: 16, a
+    /// millisecond at 16 kHz. AVAssetReader does not read an ffmpeg-made file the same way twice (second
+    /// review of F942, C3). Measured on files from ffmpeg 8.1.2 (F980, `gates/01-drift-probe.log`): two
+    /// reads of one track differ by up to 11 frames within 6 s and by at most 8 over three minutes, each
+    /// track on its own — so the copy, made from one read, is out of step with the audit's read by a
+    /// different amount per track, up to 22 frames between the two tracks of a three-minute file. The
+    /// audit aligns each track to the copy within this many frames, slice by slice (`alignment`), before it
+    /// fits; a copy further out of step is not shown to be in time with the recording, and is refused.
+    public static let alignmentFrames = 16
+
+    /// How long each window of the audit is, and the stretch each track is aligned to the copy over: a
+    /// second, not the plain path's five (`MeetingStoragePlan.levelWindowSeconds`). Two reasons. The drift
+    /// moves by a few frames a second (measured), so one lag per five seconds would leave part of a window
+    /// out of step. And whether a track can be measured in the copy is judged against the copy's energy
+    /// over the window (`measurableShare`), so a window dilutes a short sound by its share of the window: a
+    /// tenth of a second of one voice 12 dB under another reads as 29 dB under over five seconds and 22 dB
+    /// over one. What the fit can tell depends on the sound's own frames, not the window's length.
+    public static let auditWindowSeconds: TimeInterval = 1
+
     /// One pass over a recording's tracks, read the way the mixer reads them (16 kHz, every channel apart),
-    /// in step with a mono copy of it, measured per `MeetingStoragePlan.levelWindowSeconds` window. The app
-    /// gathers it (`RecordingMixer.audit`); `firstFinding` judges it.
+    /// in step with a mono copy of it, measured per `auditWindowSeconds` window with each track aligned to
+    /// the copy in each. The app gathers it (`RecordingMixer.audit`); `firstFinding` judges it.
     public struct Audit: Sendable, Equatable {
         /// How many channels each track has, the tracks in order.
         public var trackChannels: [Int]
@@ -172,9 +191,10 @@ public enum RecordingMixPlan {
         public struct Window: Sendable, Equatable {
             /// Frames of the copy in the window.
             public var frames: Double
-            /// Σ xᵢxⱼ over every channel of every track (the tracks in order), row by row.
+            /// Σ xᵢxⱼ over every channel of every track (the tracks in order), row by row, each track's
+            /// channels at the lag that aligns the track with the copy.
             public var gram: [Double]
-            /// Σ xᵢc, each channel against the copy `c`.
+            /// Σ xᵢc, each channel against the copy `c`, at the same lags.
             public var projection: [Double]
             /// Σ c².
             public var copySquares: Double
@@ -188,136 +208,262 @@ public enum RecordingMixPlan {
         }
     }
 
+    /// Per track, the lag within ±`alignmentFrames` at which the copy follows it best in one window: the
+    /// lag where the sum of its channels' projections onto the copy, `projectionsByLag[channel][lag +
+    /// alignmentFrames]`, is largest; the smaller lag on a tie, and 0 for a track that projects nothing
+    /// positive. The channels of one track are decoded together, so they share a lag; the choice uses the
+    /// whole track's sound, never one quiet channel's, so a channel the copy lacks cannot pick itself a
+    /// flattering lag. A track in opposite polarity to the copy can: shifted until it looks a little like
+    /// the copy, its cancellation no longer shows in the aligned sums — but then those sums hold far more
+    /// sound than the copy, and the copy's level refuses it (`copyMissingSound`); where the aligned tracks
+    /// still cancel, `tracksCancel` does. Either way the original is kept.
+    public static func alignment(projectionsByLag: [[Double]], trackChannels: [Int]) -> [Int] {
+        let span = 2 * alignmentFrames + 1
+        var first = 0
+        return trackChannels.map { count in
+            defer { first += count }
+            var best = (lag: 0, value: 0.0)
+            for index in 0..<span {
+                let lag = index - alignmentFrames
+                var value = 0.0
+                for channel in first..<(first + count) where channel < projectionsByLag.count && index < projectionsByLag[channel].count {
+                    value += projectionsByLag[channel][index]
+                }
+                guard value.isFinite else { continue }
+                if value > best.value || (value == best.value && value > 0 && abs(lag) < abs(best.lag)) { best = (lag, value) }
+            }
+            return best.lag
+        }
+    }
+
     /// What `firstFinding` found wrong, with the window (`levelWindowSeconds` each) where it found it.
-    /// Tracks and channels are numbered from 0, channels over all the tracks in order.
+    /// Tracks and channels are numbered from 0, channels over all the tracks in order. Each is a reason the
+    /// copy is not shown to hold every track and channel; Shrink then keeps the original.
     public enum Finding: Sendable, Equatable {
         /// A channel the recording has (decoded as it is, at its own rate) came back much quieter, or
         /// not at all, when read for the mix.
         case channelNotRead(window: Int, channel: Int)
+        /// A measurement in this window is not a number: a channel of the recording holds NaN or
+        /// infinity (D2), or, with `channel` nil, the copy does. Not sound, so not shown to be in a copy.
+        case notANumber(window: Int, channel: Int?)
+        /// A window whose sums do not match the recording's channel count: not measured, so not judged.
+        case unreadableWindow(window: Int)
         /// A track's channels cancel when combined into its own signal: one channel in opposite polarity
         /// to another (the review's R2). The mix cannot hold that track's sound.
         case trackCancels(window: Int, track: Int)
+        /// The tracks cancel one another when summed: a whole track in opposite polarity to another. The
+        /// mix holds a fraction of their sound, or none.
+        case tracksCancel(window: Int)
         /// The copy is much quieter than the mix it was made from in a stretch: the encode lost it.
         case copyMissingSound(window: Int)
+        /// The copy's waveform does not follow the mix's in a stretch, or is much louder than it: what the
+        /// copy holds there is not the recording.
+        case copyUnlikeMix(window: Int)
         /// The copy does not carry a track's own signal: lost by the mixer, or by the encode.
         case trackMissing(window: Int, track: Int)
+        /// A track sounds in this stretch but is too quiet beside the others for its presence in the copy to
+        /// be measured (F978): not shown, so not deleted.
+        case trackMasked(window: Int, track: Int)
         /// The copy does not carry a channel that sounds apart from the others: lost from its track.
         case channelMissing(window: Int, channel: Int)
-        /// A track that sounds was never a large enough part of the copy to be measured in it, so its
-        /// presence cannot be shown, and Shrink fails closed.
-        case trackNeverMeasured(track: Int)
+        /// A channel sounds apart from the others in this stretch but is too quiet beside them to be
+        /// measured in the copy (F978): not shown, so not deleted.
+        case channelMasked(window: Int, channel: Int)
         /// More channels than `mostCheckedChannels`: not checked, so not shrunk.
         case tooManyChannels(count: Int)
     }
 
+    /// What counts as sounding: at least this share of the level the same track or channel has over the
+    /// whole recording (a tenth, 20 dB), and above `MeetingStoragePlan.silenceLevel`. Relative to its own
+    /// level and not the recording's, because a quiet track under a tenth of the recording's level was judged
+    /// nowhere, and the real mixer cancelled it where it sounded alone (second review of F942, D1); relative
+    /// to its own level and not an absolute floor, because a microphone's room tone, 30 dB under its voice,
+    /// is not sound a copy must be shown to hold.
+    public static let audibleShare = 0.1
+
     /// How much of a track's own sound its combined signal must keep: a quarter of what channels that
     /// neither add nor cancel would give, measured as `Σᵢⱼ xᵢxⱼ / Σᵢ xᵢ²` over its channels — 1 for channels
     /// that do not correlate (two sides of a call on left and right, a silent channel), the channel count
-    /// for identical ones, 0 for two in opposite polarity. Below a quarter, combining lost most of it.
+    /// for identical ones, 0 for two in opposite polarity. Below a quarter, combining lost most of it. The
+    /// same bound judges the tracks' sum against the tracks (`tracksCancel`).
     public static let minimumOwnMix = 0.25
 
-    /// A track, or a channel, is measured in the copy only in a window where its expected share of the copy
-    /// comes within this factor of the copy's energy (24 dB): quieter, the encode's noise and its masking of
-    /// quiet sound under loud (which is how AAC saves bits) can swamp it. Measured through the real mix and
-    /// encode (round 2 probes, `gates/r2-audit-probe.log` and `r2-audit-probe2.log`): speech and tones in
-    /// the copy fit at 0.82 to 0.95 of what the mix gives them, also 15 and 23 dB under another track, and a
-    /// track the mixer dropped fits within 0.015 of 0 at every level measured. White noise does not survive
-    /// AAC as a waveform (0.009 to 0.89 at 15 dB down), so a noisy track that is measured can be judged
-    /// missing — a refusal, the safe direction.
+    /// A track, or a channel, is measured in the copy only in a window where its own share of the copy —
+    /// the part the other tracks and channels do not also hold, at the level the mix gives it — comes within
+    /// this factor of the copy's energy (24 dB). Measured through the real mix and a 32 kbps AAC encode on
+    /// speech under speech (F980, `gates/01-drift-probe.log`): 20 dB under, a present track fits at 0.94 to
+    /// 1.00 and a dropped one within 0.14 of 0; 24 dB under, 0.92 to 1.16 against at most 0.24; 30 dB under,
+    /// a dropped track once fitted at 0.57, which `minimumFit` cannot tell from present. So a track that
+    /// sounds but is quieter than this beside the others is not measured, and the window is refused
+    /// (`trackMasked`): the copy cannot be shown to hold it there.
     public static let measurableShare = 1.0 / 256
 
-    /// The least a measured track's fit may be, as a share of what the mix gives it. Tighter than the
-    /// level band's quarter because a fit is not a level: a copy keeping one channel of a track whose other
-    /// channels hear the same voice 15 dB down (a panel's microphones, in phase or 4 ms late) still fits the
-    /// track at about half, where the real encode keeps speech and tones at 0.82 to 0.95 (round 2 probe).
-    public static let minimumTrackFit = 0.6
+    /// The least a measured track's, channel's or mix's fit may be, as a share of what the mix gives it.
+    /// Tighter than the level band's quarter because a fit is not a level: a copy keeping one channel of a
+    /// track whose other channels hear the same voice 15 dB down (a panel's microphones, in phase or 4 ms
+    /// late) still fits the track at about half, where the real encode keeps speech and tones at 0.82 to
+    /// 1.00 (round 2 probe; the measurement under `measurableShare`).
+    public static let minimumFit = 0.6
 
-    /// A channel is fitted on its own only where at least this share of its sound is its own — not also in
-    /// the other channels (the same voice, bleeding into a neighbour's microphone) — or its fit is not
-    /// determined. Its fit must then reach the level band's lower bound of what the mix gives it.
+    /// A track or a channel is fitted on its own only where at least this share of its energy is its own —
+    /// not also in the others (the same voice on two tracks, or bleeding into a neighbour's microphone) — or
+    /// its coefficient is not determined, and the encode's noise decided it (second review of F942, C4:
+    /// identical tracks, OBS's master beside its stems). Sound it shares with the others is proven as the
+    /// sum it is heard in, by the fit of the whole mix (`copyUnlikeMix`).
     public static let minimumDistinctShare = 0.25
 
-    /// Windows shorter than this many seconds (the recording's last, cut short) are not judged: too few
-    /// frames to fit, and the length check covers the copy's end.
-    public static let minimumWindowSeconds = 0.5
-
-    /// The first thing that shows the copy may not hold every track of the recording, or nil when
-    /// nothing does (F942, review R2 and M8). The checks, each per window:
+    /// The first thing that shows the copy may not hold every track and channel of the recording, or nil
+    /// when nothing does (F942 review R2 and M8; F980). Every window is judged, the recording's last partial
+    /// one and a recording shorter than a window included. The checks, each per window:
     ///
-    /// - every channel `nativeChannelWindows` heard in the recording was read for the mix at no less
-    ///   than a quarter of its level (`channelNotRead`);
+    /// - nothing measured is NaN or infinite, in the recording's own decode, the audit's reading or the
+    ///   copy (`notANumber`);
+    /// - every channel the recording's own decode hears was read for the mix at no less than a quarter of
+    ///   its level (`channelNotRead`);
     /// - every track that sounds keeps `minimumOwnMix` of its sound when its channels are combined
-    ///   (`trackCancels`);
-    /// - the copy keeps at least a quarter of the mix's level (`copyMissingSound`);
-    /// - a least-squares fit of the copy onto the tracks' own signals gives every measurable track that
-    ///   sounds at least `minimumTrackFit` of the mix's gain (`trackMissing`) — waveforms, not levels, so
-    ///   a track lost under another one sounding at the same time is seen;
-    /// - a fit onto every channel gives every measurable channel that sounds apart from the others at
-    ///   least a quarter of what the mix gives it (`channelMissing`) — so is a channel lost beside others
-    ///   sounding at the same time, which no level and no fit of the whole track can see;
-    /// - and every track that sounds was measured in at least one window (`trackNeverMeasured`).
+    ///   (`trackCancels`), and the tracks keep as much when summed (`tracksCancel`);
+    /// - the copy keeps the mix's level within `MeetingStoragePlan.levelRatioBand` (`copyMissingSound`,
+    ///   `copyUnlikeMix`) and follows its waveform at `minimumFit` of the mix's gain (`copyUnlikeMix`);
+    /// - a least-squares fit of the copy onto the tracks' own signals gives every track that sounds and
+    ///   whose sound is its own at least `minimumFit` of the gain where it is measurable (`trackMissing`),
+    ///   and refuses the window where it is not (`trackMasked`) — waveforms, not levels, so a track lost
+    ///   under another one sounding at the same time is seen;
+    /// - the same, channel by channel (`channelMissing`, `channelMasked`), so a channel lost beside others
+    ///   sounding at once is seen, which no fit of the whole track can show.
     ///
-    /// "Sounds" means at least a tenth of `nativeLevel`, the recording's level over every channel, and
-    /// above `MeetingStoragePlan.silenceLevel`, as for the other checks. A copy is the mix's gain times the
-    /// sum of the tracks' own signals, each its channels combined by `channelWeight`, so each channel is
-    /// expected in it at `gain × channelWeight`.
+    /// "Sounds" is `audibleShare` of the same track's or channel's level over the whole recording, above
+    /// `MeetingStoragePlan.silenceLevel`. A copy is the mix's gain times the sum of the tracks' own signals,
+    /// each its channels combined by `channelWeight`, so each channel is expected in it at `gain ×
+    /// channelWeight`. `nativeLevel` is the recording's level over every channel from its own decode;
+    /// not a number, it refuses.
     public static func firstFinding(_ audit: Audit, nativeChannelWindows: [[Double]], nativeLevel: Double) -> Finding? {
         let channels = audit.trackChannels.reduce(0, +)
         if channels > mostCheckedChannels { return .tooManyChannels(count: channels) }
-        let audible = Swift.max(MeetingStoragePlan.silenceLevel, nativeLevel / 10)
-        let floor = MeetingStoragePlan.levelRatioBand.lowerBound
         let tracks = audit.trackChannels.count
         var trackOf: [Int] = []
         for (track, count) in audit.trackChannels.enumerated() { trackOf += repeatElement(track, count: count) }
         let weightOf = (0..<channels).map { channelWeight(channels: audit.trackChannels[trackOf[$0]]) }
-        var sounded = [Bool](repeating: false, count: tracks)
-        var measured = [Bool](repeating: false, count: tracks)
-        let shortest = Swift.max(1, minimumWindowSeconds * audit.sampleRate)
-        for (index, window) in audit.windows.enumerated() where window.frames >= shortest {
-            guard window.gram.count == channels * channels, window.projection.count == channels else { continue }
-            func rms(_ squares: Double) -> Double { (Swift.max(0, squares) / window.frames).squareRoot() }
-            func g(_ i: Int, _ j: Int) -> Double { window.gram[i * channels + j] }
-            // The reading kept every channel the recording has.
-            for channel in 0..<channels where channel < nativeChannelWindows.count && index < nativeChannelWindows[channel].count {
-                let native = nativeChannelWindows[channel][index]
-                guard native.isFinite, native >= audible else { continue }
-                guard rms(g(channel, channel)) >= native * floor else { return .channelNotRead(window: index, channel: channel) }
+        let band = MeetingStoragePlan.levelRatioBand
+        func floor(_ level: Double) -> Double { Swift.max(MeetingStoragePlan.silenceLevel, level * audibleShare) }
+
+        // Nothing that is not a number is sound, and nothing can be shown about it.
+        for (channel, levels) in nativeChannelWindows.enumerated() {
+            if let window = levels.firstIndex(where: { !$0.isFinite }) { return .notANumber(window: window, channel: channel) }
+        }
+        guard nativeLevel.isFinite else { return .notANumber(window: 0, channel: nil) }
+        for (index, window) in audit.windows.enumerated() {
+            guard window.frames.isFinite, window.gram.count == channels * channels, window.projection.count == channels else {
+                return .unreadableWindow(window: index)
             }
-            // The tracks' own signals: their Gram matrix and their fit against the copy.
-            var trackGram = [Double](repeating: 0, count: tracks * tracks)
-            var trackProjection = [Double](repeating: 0, count: tracks)
-            var trackChannelEnergy = [Double](repeating: 0, count: tracks)
-            var trackSum = [Double](repeating: 0, count: tracks)
+            guard window.copySquares.isFinite else { return .notANumber(window: index, channel: nil) }
+            for channel in 0..<channels where !window.gram[channel * channels + channel].isFinite || !window.projection[channel].isFinite {
+                return .notANumber(window: index, channel: channel)
+            }
+            if let bad = window.gram.firstIndex(where: { !$0.isFinite }) { return .notANumber(window: index, channel: bad / channels) }
+        }
+
+        // The tracks' own signals in one window: their Gram matrix and projection, each track's channel
+        // energy, and the energy of its channels' sum.
+        struct TrackSums {
+            var gram: [Double], projection: [Double], channelEnergy: [Double], sum: [Double]
+        }
+        func trackSums(_ window: Audit.Window) -> TrackSums {
+            var sums = TrackSums(gram: [Double](repeating: 0, count: tracks * tracks), projection: [Double](repeating: 0, count: tracks),
+                                 channelEnergy: [Double](repeating: 0, count: tracks), sum: [Double](repeating: 0, count: tracks))
             for i in 0..<channels {
-                trackProjection[trackOf[i]] += weightOf[i] * window.projection[i]
-                trackChannelEnergy[trackOf[i]] += g(i, i)
+                sums.projection[trackOf[i]] += weightOf[i] * window.projection[i]
+                sums.channelEnergy[trackOf[i]] += window.gram[i * channels + i]
                 for j in 0..<channels {
-                    trackGram[trackOf[i] * tracks + trackOf[j]] += weightOf[i] * weightOf[j] * g(i, j)
-                    if trackOf[i] == trackOf[j] { trackSum[trackOf[i]] += g(i, j) }
+                    let g = window.gram[i * channels + j]
+                    sums.gram[trackOf[i] * tracks + trackOf[j]] += weightOf[i] * weightOf[j] * g
+                    if trackOf[i] == trackOf[j] { sums.sum[trackOf[i]] += g }
                 }
             }
-            // Each track that sounds keeps its sound when its channels are combined.
-            var soundsHere = [Bool](repeating: false, count: tracks)
+            return sums
+        }
+
+        // Each track's, channel's and the mix's level over the whole recording, which "sounds" is relative to.
+        var totalFrames = 0.0
+        var channelEnergy = [Double](repeating: 0, count: channels)
+        var trackSignalEnergy = [Double](repeating: 0, count: tracks)
+        var trackChannelEnergy = [Double](repeating: 0, count: tracks)
+        var tracksSumEnergy = 0.0, mixEnergy = 0.0
+        for window in audit.windows {
+            totalFrames += window.frames
+            for channel in 0..<channels { channelEnergy[channel] += window.gram[channel * channels + channel] }
+            let sums = trackSums(window)
             for track in 0..<tracks {
-                let energy = trackChannelEnergy[track]
-                guard rms(energy / Double(audit.trackChannels[track])) >= audible else { continue }
-                soundsHere[track] = true
-                sounded[track] = true
-                let ownMix = trackSum[track] / energy
+                trackSignalEnergy[track] += sums.gram[track * tracks + track]
+                trackChannelEnergy[track] += sums.channelEnergy[track]
+                tracksSumEnergy += sums.gram[track * tracks + track]
+            }
+            mixEnergy += sums.gram.reduce(0, +)
+        }
+        func overall(_ energy: Double, _ count: Double = 1) -> Double { totalFrames > 0 ? (Swift.max(0, energy) / (totalFrames * count)).squareRoot() : 0 }
+        let channelFloor = channelEnergy.map { floor(overall($0)) }
+        let trackSignalFloor = trackSignalEnergy.map { floor(overall($0)) }
+        let trackChannelFloor = (0..<tracks).map { floor(overall(trackChannelEnergy[$0], Double(audit.trackChannels[$0]))) }
+        let tracksSumFloor = floor(overall(tracksSumEnergy))
+        let mixFloor = floor(gain * overall(mixEnergy))
+        let nativeFloor = nativeChannelWindows.map { levels -> Double in
+            floor(levels.isEmpty ? 0 : (levels.reduce(0) { $0 + $1 * $1 } / Double(levels.count)).squareRoot())
+        }
+
+        // The reading kept every channel the recording has: the recording's own decode measures each
+        // channel per `MeetingStoragePlan.levelWindowSeconds`, so the audit's windows are summed per that
+        // stretch to compare, and a finding names the stretch's first audit window.
+        let perNative = Swift.max(1, Int((MeetingStoragePlan.levelWindowSeconds / auditWindowSeconds).rounded()))
+        var readEnergy: [[Double]] = [], readFrames: [Double] = []
+        for (index, window) in audit.windows.enumerated() {
+            let group = index / perNative
+            while readEnergy.count <= group { readEnergy.append([Double](repeating: 0, count: channels)); readFrames.append(0) }
+            readFrames[group] += window.frames
+            for channel in 0..<channels { readEnergy[group][channel] += window.gram[channel * channels + channel] }
+        }
+        for (group, frames) in readFrames.enumerated() where frames > 0 {
+            for channel in 0..<channels where channel < nativeChannelWindows.count && group < nativeChannelWindows[channel].count {
+                let native = nativeChannelWindows[channel][group]
+                guard native >= nativeFloor[channel] else { continue }
+                guard (readEnergy[group][channel] / frames).squareRoot() >= native * band.lowerBound else {
+                    return .channelNotRead(window: group * perNative, channel: channel)
+                }
+            }
+        }
+
+        for (index, window) in audit.windows.enumerated() where window.frames > 0 {
+            func rms(_ squares: Double) -> Double { (Swift.max(0, squares) / window.frames).squareRoot() }
+            func g(_ i: Int, _ j: Int) -> Double { window.gram[i * channels + j] }
+            let sums = trackSums(window)
+            // Each track that sounds keeps its sound when its channels are combined.
+            for track in 0..<tracks {
+                let energy = sums.channelEnergy[track]
+                guard rms(energy / Double(audit.trackChannels[track])) >= trackChannelFloor[track] else { continue }
+                let ownMix = sums.sum[track] / energy
                 guard ownMix.isFinite, ownMix >= minimumOwnMix else { return .trackCancels(window: index, track: track) }
             }
-            // The copy keeps the mix's level.
-            let mixSquares = gain * gain * trackGram.reduce(0, +)
-            if rms(mixSquares) >= audible, !(rms(window.copySquares) >= rms(mixSquares) * floor) {
-                return .copyMissingSound(window: index)
+            // And the tracks keep theirs when summed.
+            let mixHere = sums.gram.reduce(0, +)
+            let tracksSumHere = (0..<tracks).reduce(0.0) { $0 + sums.gram[$1 * tracks + $1] }
+            if rms(tracksSumHere) >= tracksSumFloor, !(mixHere >= tracksSumHere * minimumOwnMix) {
+                return .tracksCancel(window: index)
             }
-            // Each measurable track is in the copy.
-            let trackFit = leastSquares(gram: trackGram, projection: trackProjection, size: tracks).solution
-            for track in 0..<tracks where soundsHere[track] {
-                let share = gain * gain * trackGram[track * tracks + track]
-                guard share > 0, share >= window.copySquares * measurableShare else { continue }
-                measured[track] = true
-                guard trackFit[track].isFinite, trackFit[track] >= gain * minimumTrackFit else {
+            // The copy keeps the mix's level, and follows its waveform.
+            let mixSquares = gain * gain * mixHere
+            if rms(mixSquares) >= mixFloor {
+                let ratio = rms(window.copySquares) / rms(mixSquares)
+                guard ratio >= band.lowerBound else { return .copyMissingSound(window: index) }
+                let mixFit = (0..<channels).reduce(0.0) { $0 + weightOf[$1] * window.projection[$1] } / mixHere
+                guard ratio <= band.upperBound, mixFit.isFinite, mixFit >= gain * minimumFit else { return .copyUnlikeMix(window: index) }
+            }
+            // Each track that sounds, and whose sound is its own, is in the copy where it can be measured.
+            let trackFit = leastSquares(gram: sums.gram, projection: sums.projection, size: tracks)
+            for track in 0..<tracks {
+                let energy = sums.gram[track * tracks + track]
+                guard rms(energy) >= trackSignalFloor[track] else { continue }
+                let own = trackFit.ownEnergy[track]
+                guard own >= energy * minimumDistinctShare else { continue }
+                guard gain * gain * own >= window.copySquares * measurableShare else { return .trackMasked(window: index, track: track) }
+                guard trackFit.solution[track].isFinite, trackFit.solution[track] >= gain * minimumFit else {
                     return .trackMissing(window: index, track: track)
                 }
             }
@@ -325,19 +471,17 @@ public enum RecordingMixPlan {
             let channelFit = leastSquares(gram: window.gram, projection: window.projection, size: channels)
             for channel in 0..<channels {
                 let energy = g(channel, channel)
-                guard energy > 0, rms(energy) >= audible else { continue }
+                guard rms(energy) >= channelFloor[channel] else { continue }
                 let own = channelFit.ownEnergy[channel]
+                guard own >= energy * minimumDistinctShare else { continue }
                 let expected = gain * weightOf[channel]
-                guard own >= energy * minimumDistinctShare, expected * expected * own >= window.copySquares * measurableShare else {
-                    continue
+                guard expected * expected * own >= window.copySquares * measurableShare else {
+                    return .channelMasked(window: index, channel: channel)
                 }
-                guard channelFit.solution[channel].isFinite, channelFit.solution[channel] >= expected * floor else {
+                guard channelFit.solution[channel].isFinite, channelFit.solution[channel] >= expected * minimumFit else {
                     return .channelMissing(window: index, channel: channel)
                 }
             }
-        }
-        if let track = (0..<tracks).first(where: { sounded[$0] && !measured[$0] }) {
-            return .trackNeverMeasured(track: track)
         }
         return nil
     }

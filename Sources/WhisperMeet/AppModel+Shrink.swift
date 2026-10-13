@@ -414,20 +414,32 @@ extension AppModel {
 
         /// What a finding says, about `subject` — "the recording", or a leftover's name — and the copy.
         static func sentence(_ finding: RecordingMixPlan.Finding, subject: String) -> String {
-            let at = { (window: Int) in TranscriptFormatter.clock(Double(window) * MeetingStoragePlan.levelWindowSeconds) }
+            let at = { (window: Int) in TranscriptFormatter.clock(Double(window) * RecordingMixPlan.auditWindowSeconds) }
             switch finding {
             case let .channelNotRead(window, channel):
                 return "channel \(channel + 1) of \(subject) could not be read to check the copy, at about \(at(window))"
+            case let .notANumber(window, channel?):
+                return "channel \(channel + 1) of \(subject) holds values that are not numbers at about \(at(window)), so the copy can't be checked against it"
+            case let .notANumber(window, nil):
+                return "the compressed copy holds values that are not numbers at about \(at(window)), so it can't be checked against \(subject)"
+            case let .unreadableWindow(window):
+                return "\(subject) could not be measured at about \(at(window)) to check the copy"
             case let .trackCancels(window, track):
                 return "audio track \(track + 1) of \(subject) cancels itself when its channels are mixed into one, at about \(at(window))"
+            case let .tracksCancel(window):
+                return "the audio tracks of \(subject) cancel each other when mixed into one, at about \(at(window))"
             case let .copyMissingSound(window):
                 return "the compressed copy is missing sound \(subject) has at about \(at(window))"
+            case let .copyUnlikeMix(window):
+                return "the compressed copy does not follow the sound of \(subject) at about \(at(window))"
             case let .trackMissing(window, track):
                 return "the compressed copy is missing audio track \(track + 1) of \(subject) at about \(at(window))"
+            case let .trackMasked(window, track):
+                return "audio track \(track + 1) of \(subject) is too quiet beside the others at about \(at(window)) to show that the compressed copy holds it there"
             case let .channelMissing(window, channel):
                 return "the compressed copy is missing channel \(channel + 1) of \(subject) at about \(at(window))"
-            case let .trackNeverMeasured(track):
-                return "audio track \(track + 1) of \(subject) is never loud enough beside the others to show that the compressed copy holds it"
+            case let .channelMasked(window, channel):
+                return "channel \(channel + 1) of \(subject) is too quiet beside the others at about \(at(window)) to show that the compressed copy holds it there"
             case let .tooManyChannels(count):
                 return "\(subject) has \(count) channels, more than Shrink checks one by one in a mixed copy"
             }

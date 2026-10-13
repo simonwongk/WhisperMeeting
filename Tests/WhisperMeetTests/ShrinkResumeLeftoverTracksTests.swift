@@ -111,7 +111,9 @@ func shrinkResumeKeepsAFourChannelLeftoverItsCopyLacks() async throws {
 
     let alert = f.model.alertMessage ?? "nil"
     #expect(f.exists("recording.wav"), "\(alert)")
-    #expect(alert.contains("nothing was removed") && alert.contains("0:05"), "\(alert)")
+    // The copy is channel 1 whole, four times the level of the four channels averaged, so since F980 the
+    // audit refuses it at 0:00 as not the mix, before speaker 2's absence at 0:05 is reached.
+    #expect(alert.contains("nothing was removed") && alert.contains("“recording.wav”"), "\(alert)")
 }
 
 // Review of F955, mutants M2 and M3: both fixtures above take turns, so while the lost side or channel

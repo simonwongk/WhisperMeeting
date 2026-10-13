@@ -1,3 +1,4 @@
+import Accelerate
 import AVFoundation
 import Foundation
 import os
@@ -223,6 +224,13 @@ enum RecordingMixer {
     /// to judge before it deletes anything (review of F942, R2). One pass, in step with the copy, which is
     /// read with AVAudioFile at 16 kHz — what Shrink writes. Frames past the copy's end are not measured:
     /// the length check judges the end.
+    ///
+    /// AVAssetReader does not read an ffmpeg-made file the same way twice, and each track drifts on its own
+    /// (second review of F942, C3; measured for F980), so before anything is summed each track is aligned to
+    /// the copy, one `auditWindowSeconds` window at a time: its channels' projections onto the copy are
+    /// taken at every lag within ±`RecordingMixPlan.alignmentFrames`, `RecordingMixPlan.alignment` picks the
+    /// track's lag, and the window's Gram matrix and projections are summed from the channels shifted by
+    /// their track's lag. The copy is never shifted, so a channel the copy lacks cannot pick itself a lag.
     static func audit(of original: URL, against copy: URL) async throws -> RecordingMixPlan.Audit {
         let (asset, tracks, facts, end) = try await open(original)
         let copyFile: AVAudioFile
@@ -237,51 +245,117 @@ enum RecordingMixer {
         guard channelCount <= RecordingMixPlan.mostCheckedChannels else {
             return RecordingMixPlan.Audit(trackChannels: channels, sampleRate: Double(sampleRate), windows: [])
         }
-        let perWindow = Swift.max(1, Int(saturating: MeetingStoragePlan.levelWindowSeconds * Double(sampleRate)))
+        let margin = RecordingMixPlan.alignmentFrames
+        let span = 2 * margin + 1
+        let perWindow = Swift.max(1, Int(saturating: RecordingMixPlan.auditWindowSeconds * Double(sampleRate)))
         var windows: [RecordingMixPlan.Audit.Window] = []
-        var gram = [Double](repeating: 0, count: channelCount * channelCount)
-        var projection = [Double](repeating: 0, count: channelCount)
-        var copySquares = 0.0, frames = 0.0, current = 0
-        func close() {
-            // Only the upper triangle was summed; the matrix is symmetric.
-            for i in 0..<channelCount { for j in 0..<i { gram[i * channelCount + j] = gram[j * channelCount + i] } }
-            while windows.count < current {
+        // Each channel's samples from timeline frame `laneStart` on, kept `margin` frames behind the next
+        // slice; the copy's from `copyStart` on, up to where it ended.
+        var lanes = [[Float]](repeating: [], count: channelCount)
+        var laneStart = 0
+        var copyBuffer: [Float] = []
+        var copyStart = 0
+        var copyEnd: Int?
+        var nextSlice = 0
+        var handed = 0
+
+        /// Closes the slice `[nextSlice, upTo)`: aligns each track, sums the slice into its window.
+        func closeSlice(upTo sliceEnd: Int) {
+            let measuredEnd = Swift.min(sliceEnd, copyEnd ?? sliceEnd)
+            let n = measuredEnd - nextSlice
+            defer {
+                // Keep `margin` frames before the next slice for its alignment; drop the rest.
+                let keepFrom = sliceEnd - margin
+                if keepFrom > laneStart {
+                    for channel in lanes.indices { lanes[channel].removeFirst(Swift.min(lanes[channel].count, keepFrom - laneStart)) }
+                    laneStart = keepFrom
+                }
+                if sliceEnd > copyStart {
+                    copyBuffer.removeFirst(Swift.min(copyBuffer.count, sliceEnd - copyStart))
+                    copyStart = sliceEnd
+                }
+                nextSlice = sliceEnd
+            }
+            guard n > 0 else { return }
+            var c = [Float](repeating: 0, count: n)
+            for k in 0..<n {
+                let index = nextSlice + k - copyStart
+                if index >= 0 && index < copyBuffer.count { c[k] = copyBuffer[index] }
+            }
+            // Each channel over the slice and `margin` frames either side: silence before the recording's
+            // start, and the lane's own silence past its end.
+            let padded: [[Float]] = lanes.map { lane in
+                var out = [Float](repeating: 0, count: n + 2 * margin)
+                for k in out.indices {
+                    let index = nextSlice - margin + k - laneStart
+                    if index >= 0 && index < lane.count { out[k] = lane[index] }
+                }
+                return out
+            }
+            // Σ xᵢ[t + lag] · c[t] for every lag in −margin…margin: a correlation, F forward.
+            var projectionsByLag: [[Double]] = []
+            for channel in 0..<channelCount {
+                var out = [Float](repeating: 0, count: span)
+                vDSP_conv(padded[channel], 1, c, 1, &out, 1, vDSP_Length(span), vDSP_Length(n))
+                projectionsByLag.append(out.map(Double.init))
+            }
+            let lags = RecordingMixPlan.alignment(projectionsByLag: projectionsByLag, trackChannels: channels)
+            var lagOf: [Int] = []
+            for (track, count) in channels.enumerated() { lagOf += repeatElement(lags[track], count: count) }
+            var gram = [Double](repeating: 0, count: channelCount * channelCount)
+            var projection = [Double](repeating: 0, count: channelCount)
+            for i in 0..<channelCount {
+                projection[i] = projectionsByLag[i][lagOf[i] + margin]
+                for j in i..<channelCount {
+                    var dot: Float = 0
+                    padded[i].withUnsafeBufferPointer { pi in
+                        padded[j].withUnsafeBufferPointer { pj in
+                            vDSP_dotpr(pi.baseAddress! + margin + lagOf[i], 1, pj.baseAddress! + margin + lagOf[j], 1, &dot, vDSP_Length(n))
+                        }
+                    }
+                    gram[i * channelCount + j] = Double(dot)
+                    gram[j * channelCount + i] = Double(dot)
+                }
+            }
+            var copySquares: Float = 0
+            vDSP_dotpr(c, 1, c, 1, &copySquares, vDSP_Length(n))
+            let index = nextSlice / perWindow
+            while windows.count <= index {
                 windows.append(.init(frames: 0, gram: [Double](repeating: 0, count: channelCount * channelCount),
                                      projection: [Double](repeating: 0, count: channelCount), copySquares: 0))
             }
-            windows.append(.init(frames: frames, gram: gram, projection: projection, copySquares: copySquares))
-            for k in gram.indices { gram[k] = 0 }
-            for k in projection.indices { projection[k] = 0 }
-            copySquares = 0
-            frames = 0
+            windows[index].frames += Double(n)
+            for k in gram.indices { windows[index].gram[k] += gram[k] }
+            for k in projection.indices { windows[index].projection[k] += projection[k] }
+            windows[index].copySquares += Double(copySquares)
         }
-        var sample = [Double](repeating: 0, count: channelCount)
-        _ = try readInStep(asset: asset, tracks: tracks, channels: channels, audioEnd: end) { start, count, lanes in
-            let (copied, valid) = try copyReader.read(count)
-            for frame in 0..<valid {
-                let index = (start + frame) / perWindow
-                if index != current {
-                    if frames > 0 { close() }
-                    current = index
-                }
-                var channel = 0
-                for samples in lanes {
-                    for values in samples { sample[channel] = Double(values[frame]); channel += 1 }
-                }
-                let c = Double(copied[frame])
-                frames += 1
-                copySquares += c * c
-                for i in 0..<channelCount {
-                    let x = sample[i]
-                    projection[i] += x * c
-                    let row = i * channelCount
-                    for j in i..<channelCount { gram[row + j] += x * sample[j] }
-                }
+        /// The end of the slice that starts at `nextSlice`: a slice never crosses a window's boundary.
+        func sliceEnd(limit: Int) -> Int {
+            Swift.min((nextSlice / perWindow + 1) * perWindow, limit)
+        }
+
+        _ = try readInStep(asset: asset, tracks: tracks, channels: channels, audioEnd: end) { start, count, stretch in
+            var channel = 0
+            for samples in stretch {
+                for values in samples { lanes[channel].append(contentsOf: values); channel += 1 }
+            }
+            if copyEnd == nil {
+                let (copied, valid) = try copyReader.read(count)
+                copyBuffer.append(contentsOf: copied.prefix(valid))
+                if valid < count { copyEnd = start + valid }
+            }
+            handed = start + count
+            // A slice is closed once `margin` frames past its end have been read, so its alignment can
+            // look that far ahead.
+            while sliceEnd(limit: handed) + margin <= handed, sliceEnd(limit: handed) > nextSlice {
+                closeSlice(upTo: sliceEnd(limit: handed))
             }
         }
-        if frames > 0 { close() }
+        // What is left, the recording's last partial window included: past its end the lanes hold silence.
+        while nextSlice < handed { closeSlice(upTo: sliceEnd(limit: handed)) }
         return RecordingMixPlan.Audit(trackChannels: channels, sampleRate: Double(sampleRate), windows: windows)
     }
+
 
     // MARK: - Reading
 

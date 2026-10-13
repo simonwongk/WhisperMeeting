@@ -215,11 +215,12 @@ func mixedTrackWhoseChannelsCancelIsFound() {
     #expect(finding(partly, copy: mixedCopy(partly)) == .trackCancels(window: 0, track: 0))
 }
 
-@Test("A track never measurable in the copy, a copy gone silent, a channel the reading lost, too many channels (F942 review R2)")
+@Test("A track too quiet to measure in the copy, a copy gone silent, a channel the reading lost, too many channels (F942 review R2, F978)")
 func mixedCopyFailsClosed() {
-    // Track 2 sounds (above a tenth of the given level) but is always 30 dB under track 1: never measured.
+    // Track 2 sounds but is 30 dB under track 1, too quiet beside it to be measured in the copy: refused
+    // there (F978), where it used to be judged nowhere and the window passed.
     let buried = [[sine(300, 1.0)], [sine(800, 0.03)]]
-    #expect(finding(buried, copy: mixedCopy(buried), level: 0.1) == .trackNeverMeasured(track: 1))
+    #expect(finding(buried, copy: mixedCopy(buried), level: 0.1) == .trackMasked(window: 0, track: 1))
     let call = [[sine(300, 0.2)], [sine(800, 0.1)]]
     #expect(finding(call, copy: [Double](repeating: 0, count: 16_000)) == .copyMissingSound(window: 0))
     // The recording's own decode heard channel 2 at 0.5; the mixer's reading of it was silent.
@@ -281,4 +282,165 @@ func placementIsBoundedByTheAudiosOwnLength() {
     // A limit is never computed from a length that is not a number, nor past what an Int holds.
     #expect(RecordingMixPlan.placementLimit(audioEnd: .nan, rate: 16_000) == 16_000)
     #expect(RecordingMixPlan.placementLimit(audioEnd: 1e30, rate: 48_000) == Int.max)
+}
+
+// MARK: - F980: every threshold of the audit pinned, and the new refusals
+
+/// An audit of these windows, each `(channels, copy)`, with each channel's native level per window its own
+/// RMS there (the recording's decode and the audit's read agree).
+private func auditOf(_ windows: [([[Double]], [Double])], trackChannels: [Int]) -> (RecordingMixPlan.Audit, [[Double]]) {
+    let audit = RecordingMixPlan.Audit(trackChannels: trackChannels, sampleRate: 16_000,
+                                       windows: windows.map { window($0.0, copy: $0.1) })
+    let channels = windows[0].0.count
+    let native: [[Double]] = (0..<channels).map { channel in
+        windows.map { w in (w.0[channel].reduce(0) { $0 + $1 * $1 } / Double(w.0[channel].count)).squareRoot() }
+    }
+    return (audit, native)
+}
+
+@Test("A track's lag is where the copy follows it best, the smaller lag on a tie, 0 when nothing projects (F980)")
+func alignmentPicksEachTracksLag() {
+    let span = 2 * RecordingMixPlan.alignmentFrames + 1
+    #expect(span == 33, "±16 frames: a millisecond at 16 kHz, past the measured read-to-read drift of up to 11")
+    var one = [Double](repeating: 0, count: span), two = [Double](repeating: 0, count: span)
+    one[RecordingMixPlan.alignmentFrames + 5] = 3   // track 1 best at +5
+    two[RecordingMixPlan.alignmentFrames - 2] = 1   // track 2's two channels: 4 at −2 and 4 at +7 tie → −2
+    var twoB = [Double](repeating: 0, count: span)
+    twoB[RecordingMixPlan.alignmentFrames - 2] = 3; twoB[RecordingMixPlan.alignmentFrames + 7] = 4
+    let lags = RecordingMixPlan.alignment(projectionsByLag: [one, two, twoB], trackChannels: [1, 2])
+    #expect(lags == [5, -2])
+    // Nothing positive: a silent track, or one in opposite polarity everywhere, stays at 0.
+    let negative = [Double](repeating: -1, count: span)
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [negative], trackChannels: [1]) == [0])
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [[Double](repeating: 0, count: span)], trackChannels: [1]) == [0])
+}
+
+@Test("Anything that is not a number refuses: a channel's native level, its reading, or the copy (F980 D2)")
+func auditRefusesWhatIsNotANumber() {
+    let call = [[sine(300, 0.2)], [sine(800, 0.1)]]
+    var bad = sine(800, 0.1); bad[7] = .nan
+    let nanChannel = [[sine(300, 0.2)], [bad]]
+    #expect(finding(nanChannel, copy: mixedCopy(call)) == .notANumber(window: 0, channel: 1))
+    #expect(finding(call, copy: mixedCopy(call), native: [[0.14], [.infinity]]) == .notANumber(window: 0, channel: 1))
+    #expect(finding(call, copy: mixedCopy(call), level: .nan) == .notANumber(window: 0, channel: nil))
+    var copy = mixedCopy(call); copy[3] = .nan
+    #expect(finding(call, copy: copy) == .notANumber(window: 0, channel: nil))
+    let mismatched = RecordingMixPlan.Audit(trackChannels: [1, 1], sampleRate: 16_000,
+                                            windows: [.init(frames: 16_000, gram: [1], projection: [0], copySquares: 0)])
+    #expect(RecordingMixPlan.firstFinding(mismatched, nativeChannelWindows: [[0.3], [0.3]], nativeLevel: 0.3) == .unreadableWindow(window: 0),
+            "a window the audit could not measure is a refusal, not a skip (second review P3)")
+}
+
+@Test("Tracks that cancel each other when summed are found; a track that merely subtracts a little is not (F980)")
+func auditFindsTracksThatCancelEachOther() {
+    let voice = sine(300, 0.3)
+    let inverted = [[voice], [voice.map { -$0 }]]
+    #expect(finding(inverted, copy: mixedCopy(inverted)) == .tracksCancel(window: 0))
+    // −0.5 keeps a fifth of the sum's energy, under `minimumOwnMix`; −0.4 keeps 0.31, which stands.
+    let half = [[voice], [voice.map { -0.5 * $0 }]]
+    #expect(finding(half, copy: mixedCopy(half)) == .tracksCancel(window: 0))
+    let less = [[voice], [voice.map { -0.4 * $0 }]]
+    #expect(finding(less, copy: mixedCopy(less)) == nil)
+    // Within a track the same bound: −0.5 of the other channel cancels, −0.4 does not.
+    let partlyLess = [[sine(300, 0.2), sine(300, -0.08)], [sine(800, 0.2)]]
+    #expect(finding(partlyLess, copy: mixedCopy(partlyLess)) == nil)
+}
+
+@Test("A track is measured in the copy only within 24 dB of it, and refused as too quiet beyond (F978)")
+func auditMeasurableShareIsPinned() {
+    // Track 2's share of the copy: a²/(1 + a²). 1/15 gives 1/226, measured; 1/17 gives 1/290, masked.
+    let measured = [[sine(300, 1.0)], [sine(800, 1.0 / 15)]]
+    #expect(finding(measured, copy: mixedCopy(measured)) == nil)
+    let masked = [[sine(300, 1.0)], [sine(800, 1.0 / 17)]]
+    #expect(finding(masked, copy: mixedCopy(masked)) == .trackMasked(window: 0, track: 1))
+    // The same for a channel apart from the others, within one stereo track.
+    let maskedChannel = [[sine(300, 1.0), sine(800, 1.0 / 17)]]
+    #expect(finding(maskedChannel, copy: mixedCopy(maskedChannel)) == .channelMasked(window: 0, channel: 1))
+}
+
+@Test("A measured track, channel or mix must fit at 0.6 of what the mix gives it (F980)")
+func auditMinimumFitIsPinned() {
+    let call = [[sine(300, 0.2)], [sine(800, 0.2)]]
+    func copyScaling(_ second: Double) -> [Double] {
+        let a = mixedCopy([call[0]]), b = mixedCopy([call[1]])
+        return a.indices.map { a[$0] + second * b[$0] }
+    }
+    #expect(finding(call, copy: copyScaling(0.55)) == .trackMissing(window: 0, track: 1))
+    #expect(finding(call, copy: copyScaling(0.65)) == nil)
+    let silent = [Double](repeating: 0, count: 16_000)
+    let stereo = [[sine(300, 0.2), sine(800, 0.2)]]
+    func stereoCopy(_ second: Double) -> [Double] {
+        let a = mixedCopy([[sine(300, 0.2), silent]])
+        let b = mixedCopy([[silent, sine(800, 0.2)]])
+        return a.indices.map { a[$0] + second * b[$0] }
+    }
+    #expect(finding(stereo, copy: stereoCopy(0.55)) == .channelMissing(window: 0, channel: 1))
+    #expect(finding(stereo, copy: stereoCopy(0.65)) == nil)
+    // The whole mix: a copy at the right level that is another sound, and one four times too loud.
+    let other = mixedCopy([[sine(1_100, 0.2)], [sine(1_700, 0.2)]])
+    #expect(finding(call, copy: other) == .copyUnlikeMix(window: 0))
+    #expect(finding(call, copy: mixedCopy(call).map { 4.5 * $0 }) == .copyUnlikeMix(window: 0))
+    #expect(finding(call, copy: mixedCopy(call).map { 0.2 * $0 }) == .copyMissingSound(window: 0))
+}
+
+@Test("A track is fitted on its own only when a quarter of its energy is its own; shared sound is proven as the sum (F980 C4)")
+func auditDistinctShareIsPinned() {
+    // Track 2 = track 1 + d × another sound: its own share is d²/(1 + d²). The copy lacks that other sound.
+    let voice = sine(300, 0.2), other = sine(800, 0.2)
+    let cases: [(d: Double, expected: RecordingMixPlan.Finding?)] = [(0.5, nil), (0.7, .trackMissing(window: 0, track: 1))]
+    for c in cases {
+        let tracks = [[voice], [voice.indices.map { voice[$0] + c.d * other[$0] }]]
+        let copy = mixedCopy([[voice], [voice]])
+        #expect(finding(tracks, copy: copy) == c.expected, "d = \(c.d)")
+    }
+    // Identical tracks, and OBS's master beside its stems: nothing distinct, the sum shown by the mix's fit.
+    let same = [[voice], [voice]]
+    #expect(finding(same, copy: mixedCopy(same)) == nil)
+    let obs = [[voice.indices.map { voice[$0] + other[$0] }], [voice], [other]]
+    #expect(finding(obs, copy: mixedCopy(obs)) == nil)
+}
+
+@Test("A track sounds where it is within 20 dB of its own level over the recording, not the recording's (F980 D1)")
+func auditAudibleShareIsPinned() {
+    let loud = sine(300, 1.0), silent = [Double](repeating: 0, count: 16_000)
+    let cases: [(quiet: Double, expected: RecordingMixPlan.Finding?)] = [(0.08, .trackMissing(window: 1, track: 1)), (0.06, nil)]
+    for c in cases {
+        // Track 2 at 1.0 in window 0 and at `quiet` in window 1; its RMS over both is about 0.50, a tenth
+        // of which is 0.050: 0.08 (RMS 0.057) sounds there, 0.06 (RMS 0.042) does not. The copy lacks it in window 1.
+        let w0 = ([loud, sine(800, 1.0)], mixedCopy([[loud], [sine(800, 1.0)]]))
+        let w1 = ([loud, sine(800, c.quiet)], mixedCopy([[loud], [silent]]))
+        let (audit, native) = auditOf([w0, w1], trackChannels: [1, 1])
+        #expect(RecordingMixPlan.firstFinding(audit, nativeChannelWindows: native, nativeLevel: 0.6) == c.expected, "quiet \(c.quiet)")
+    }
+    // D1's shape: a quiet track whose channels cancel, under a tenth of the recording's level, is judged.
+    let quietAntiphase = [[loud], [sine(800, 0.015), sine(800, -0.015)]]
+    #expect(finding(quietAntiphase, copy: mixedCopy(quietAntiphase), level: 0.7) == .trackCancels(window: 0, track: 1))
+}
+
+@Test("Every window is judged, however short, and the reading is compared per native window (F980 N8, N9)")
+func auditJudgesEveryWindow() {
+    // A 0.3 s window alone, and one after four whole ones: the copy lacks track 2 in each. Track 2 is the
+    // quieter, so the whole mix still fits and the track's own fit names it.
+    let short = [[sine(300, 0.3, frames: 4_800)], [sine(800, 0.1, frames: 4_800)]]
+    #expect(finding(short, copy: mixedCopy(short) { t, _ in t == 0 }) == .trackMissing(window: 0, track: 1))
+    let whole = ([sine(300, 0.3), sine(800, 0.1)], mixedCopy([[sine(300, 0.3)], [sine(800, 0.1)]]))
+    let tail = (short.flatMap { $0 }, mixedCopy(short) { t, _ in t == 0 })
+    let (audit, native) = auditOf([whole, whole, whole, whole, tail], trackChannels: [1, 1])
+    #expect(RecordingMixPlan.firstFinding(audit, nativeChannelWindows: native, nativeLevel: 0.14) == .trackMissing(window: 4, track: 1))
+    // The recording's decode measures five seconds at a time: channel 2 read silent in audit windows 5 and
+    // 6 is compared with its native level over the second five-second stretch, and named at window 5.
+    let silent = [Double](repeating: 0, count: 16_000)
+    let lost = ([sine(300, 0.3), silent], mixedCopy([[sine(300, 0.3)], [silent]]))
+    let (audit2, _) = auditOf([whole, whole, whole, whole, whole, lost, lost], trackChannels: [1, 1])
+    let nativeByFive: [[Double]] = [[0.21, 0.21], [0.07, 0.07]]
+    #expect(RecordingMixPlan.firstFinding(audit2, nativeChannelWindows: nativeByFive, nativeLevel: 0.14) == .channelNotRead(window: 5, channel: 1))
+    #expect(RecordingMixPlan.auditWindowSeconds == 1)
+}
+
+@Test("Sixteen channels are checked and seventeen refused up front (F980)")
+func auditChannelBoundIsPinned() {
+    let sixteen = RecordingMixPlan.Audit(trackChannels: [8, 8], sampleRate: 16_000, windows: [])
+    #expect(RecordingMixPlan.firstFinding(sixteen, nativeChannelWindows: [], nativeLevel: 0.1) == nil)
+    let seventeen = RecordingMixPlan.Audit(trackChannels: [8, 9], sampleRate: 16_000, windows: [])
+    #expect(RecordingMixPlan.firstFinding(seventeen, nativeChannelWindows: [], nativeLevel: 0.1) == .tooManyChannels(count: 17))
 }

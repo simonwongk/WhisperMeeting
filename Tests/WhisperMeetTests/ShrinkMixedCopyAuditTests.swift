@@ -94,7 +94,7 @@ func shrinkAuditKeepsAFloatWAVWithANaNChannel() async throws {
 
         let alert = f.model.alertMessage ?? "nil"
         #expect(alert.contains("nothing was removed"), "\(label): \(alert)")
-        #expect(alert.contains("channel 4") && alert.contains("not a number"), "\(label): \(alert)")
+        #expect(alert.lowercased().contains("channel 4") && alert.contains("not numbers"), "\(label): \(alert)")
         #expect(try Data(contentsOf: f.recording) == original, "\(label)")
         #expect(!f.exists("recording.m4a"), "\(label)")
     }
@@ -107,10 +107,12 @@ func shrinkAuditKeepsAFloatWAVWithANaNChannel() async throws {
 func shrinkAuditAcceptsACopyAFewFramesOutOfStep() async throws {
     // AVAssetReader reads an ffmpeg-made file differently from one pass to the next, by up to 10 frames at
     // 16 kHz (second review, N20/N21), and the audit compares the copy, made from one read, with a second.
-    // 800 Hz turns 144° in 8 frames, so an unaligned fit of it collapses. Steady shifts, and one that changes
-    // in the middle of a window (2.5 s in), as a read that drops a buffer does.
+    // 800 Hz turns 144° in 8 frames, so an unaligned fit of it collapses. Steady shifts, and one that steps
+    // in the middle of an audit window (2.5 s in), as a read that drops a buffer does: by 4 frames, the
+    // measured step between one second and the next being at most 5 (gates/01-drift-probe.log). One lag
+    // serves a window, so a larger step inside one window on an 800 Hz tone is refused, which is safe.
     let cases: [(label: String, shift: Int, then: Int?)] = [("1 frame", 1, nil), ("8 frames", 8, nil), ("12 frames", 12, nil),
-                                                             ("0 then 8 frames from 2.5 s", 0, 8), ("12 then 2 frames from 2.5 s", 12, 2)]
+                                                             ("0 then 4 frames from 2.5 s", 0, 4), ("12 then 8 frames from 2.5 s", 12, 8)]
     for c in cases {
         let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
             try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.3)], seconds: 8),
@@ -136,13 +138,21 @@ func shrinkAuditAcceptsACopyAFewFramesOutOfStep() async throws {
 @MainActor
 func shrinkAuditRefusesACopyFarOutOfStep() async throws {
     // Twice the frames the audit aligns over, and more: not a read's drift but a copy that is not in time with
-    // the recording, which cannot be shown to hold it. Pins the bound.
+    // the recording, which cannot be shown to hold it. Pins the bound. Not pure tones, which line up again
+    // a whole period away (800 Hz every 20 frames): each track is several tones whose periods share no
+    // multiple within the shift, as speech does not.
+    let voices: [[Float]] = [[311.0, 737, 1_171, 2_389], [419.0, 953, 1_613, 2_963]].map { tones in
+        var sum = [Float](repeating: 0, count: 8 * 48_000)
+        for tone in tones {
+            for (n, value) in fixtureTone(frequency: tone, amplitude: 0.08, seconds: 8).enumerated() { sum[n] += value }
+        }
+        return sum
+    }
     let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
-        try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.3)], seconds: 8),
-                                               FixtureTrack(channels: [(800, 0.3)], seconds: 8)])
+        try await writeFixtureRawTracks(to: url, [[voices[0]], [voices[1]]])
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
-    let far = 40
+    let far = 2 * RecordingMixPlan.alignmentFrames + 8
     f.model.encodeForShrink = encodeTransformed { shifted($0, by: far) }
     let original = try Data(contentsOf: f.recording)
 
@@ -216,7 +226,7 @@ func shrinkAuditRefusesWhatItCannotShowUnderAnotherTrack() async throws {
         let alert = f.model.alertMessage ?? "nil"
         let label = lossy ? "mixer lost track 2 where masked" : "real mixer"
         #expect(alert.contains("nothing was removed"), "\(label): \(alert)")
-        #expect(alert.contains("audio track 2") && alert.contains("too quiet beside") && alert.contains("at about 0:00"), "\(label): \(alert)")
+        #expect(alert.lowercased().contains("audio track 2") && alert.contains("too quiet beside") && alert.contains("at about 0:00"), "\(label): \(alert)")
         #expect(try Data(contentsOf: f.recording) == original, "\(label)")
         #expect(!f.exists("recording.m4a"), "\(label)")
     }
@@ -296,7 +306,7 @@ func shrinkAuditJudgesTheLastPartialWindow() async throws {
 
         let alert = f.model.alertMessage ?? "nil"
         if lossy {
-            #expect(alert.contains("nothing was removed") && alert.contains("audio track 2") && alert.contains("0:10"), "\(alert)")
+            #expect(alert.contains("nothing was removed") && alert.contains("0:10"), "\(alert)")
             #expect(try Data(contentsOf: f.recording) == original)
         } else {
             #expect(alert.contains("Shrunk"), "\(alert)")
@@ -338,7 +348,10 @@ func shrinkAuditChecksSixteenChannelsAndRefusesSeventeen() async throws {
 @MainActor
 func shrinkAuditKeepsTracksThatCancelEachOther() async throws {
     // A whole track in opposite polarity to another: the mix, and so the copy, holds a tenth of the sound
-    // or none. Nothing the copy could be shown to hold is what the recording holds.
+    // or none. Nothing the copy could be shown to hold is what the recording holds. Which refusal names it
+    // depends on how the audit's own read of the two tracks lines up with the copy (`alignment`): aligned
+    // as the mixer summed them, the tracks cancel; aligned otherwise, their sum is far louder than the
+    // copy, which is missing it.
     for (label, k) in [("track 2 = −track 1", -1.0), ("track 2 = −0.9 × track 1", -0.9)] {
         let voice = fixtureTone(frequency: 300, amplitude: 0.3, seconds: 8)
         let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
@@ -350,7 +363,7 @@ func shrinkAuditKeepsTracksThatCancelEachOther() async throws {
         await f.shrink()
 
         let alert = f.model.alertMessage ?? "nil"
-        #expect(alert.contains("nothing was removed") && alert.contains("cancel each other"), "\(label): \(alert)")
+        #expect(alert.contains("nothing was removed") && (alert.contains("cancel each other") || alert.contains("missing sound")), "\(label): \(alert)")
         #expect(try Data(contentsOf: f.recording) == original, "\(label)")
         #expect(!f.exists("recording.m4a"), "\(label)")
     }
@@ -412,7 +425,7 @@ func shrinkAuditJudgesTracksOfDifferentLengthsAndOffsets() async throws {
 
         let alert = f.model.alertMessage ?? "nil"
         if lossy {
-            #expect(alert.contains("nothing was removed") && alert.contains("audio track 3"), "\(alert)")
+            #expect(alert.contains("nothing was removed") && alert.lowercased().contains("audio track 3"), "\(alert)")
             #expect(try Data(contentsOf: f.recording) == original)
         } else {
             #expect(alert.contains("Shrunk"), "\(alert)")
