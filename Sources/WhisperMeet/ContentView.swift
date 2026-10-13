@@ -3507,6 +3507,8 @@ private struct TranscriptDetailView: View {
 
     @ViewBuilder
     private func header(_ meeting: MeetingRecord) -> some View {
+        // Resolved once for the button and the caption under it (F795, F800).
+        let shrinkReason = model.shrinkUnavailability(for: meeting)
         VStack(alignment: .leading, spacing: 8) {
             EditableMeetingTitle(store: store, meetingID: meetingID)
                 .id(meetingID)
@@ -3560,9 +3562,8 @@ private struct TranscriptDetailView: View {
                 .disabled(!FileManager.default.fileExists(
                     atPath: store.recordingURL(for: meeting).path
                 ))
-                // F795: disabled with its reason as help, rather than hidden, so a meeting that can't
-                // be shrunk says why. A meeting already shrunk shows nothing.
-                let shrinkReason = model.shrinkUnavailability(for: meeting)
+                // F795: disabled with its reason, rather than hidden, so a meeting that can't be
+                // shrunk says why. A meeting already shrunk shows nothing.
                 if shrinkReason != .alreadyShrunk {
                     Button("Shrink…") { model.requestShrink(ids: [meeting.id]) }
                         .disabled(shrinkReason != nil || model.storageBytes(for: meeting.id) == nil)
@@ -3574,6 +3575,17 @@ private struct TranscriptDetailView: View {
             // Re-measured when a stop, rebuild or shrink changes what the folder holds (F795).
             .task(id: [meeting.id.uuidString, meeting.recordingPath, meeting.status.rawValue]) {
                 await model.refreshStorage(ids: [meeting.id])
+            }
+            // F800: the reason under the button, as the storage design says and the Storage sheet
+            // does (`speakerAnalysisUnavailability`'s pattern) — a tooltip on a disabled button is
+            // not something to rely on. Whichever of the plan's sentences applies, the sheet's own.
+            if let shrinkReason, shrinkReason != .alreadyShrunk {
+                Text(shrinkReason.message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .accessibilityLabel("Shrink unavailable: \(shrinkReason.message)")
             }
         }
     }
