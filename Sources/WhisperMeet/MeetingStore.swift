@@ -510,15 +510,25 @@ enum ForgetHistoryNotice {
 /// sentence names the file, what the list on screen now is, what happened to the damaged bytes,
 /// and the one control that clears it.
 enum DamagedListNotice {
+    /// What a list's load found on disk beyond its health (F933) — the lists' `IndexOnDisk` (F844).
+    enum FileOnDisk: Equatable, Sendable {
+        /// Nothing beyond what the health says.
+        case asHealthSays
+        /// The file was not there at all, and the list opened its backup. The health is
+        /// `.recoveredFromBackup`, whose own sentence is about a damaged file copied aside.
+        case missing
+    }
+
     /// The standing notice, or nil for a list that loaded cleanly. `libraryIsWritable: false`
     /// drops the tail naming the control and saying recording is unaffected, because while the
     /// meeting library is read-only neither is true.
     static func notice(
         for list: MeetingStore.EditableList,
         health: PersistedStoreHealth,
+        onDisk: FileOnDisk,
         libraryIsWritable: Bool
     ) -> String? {
-        guard let what = description(of: list, health: health) else { return nil }
+        guard let what = description(of: list, health: health, onDisk: onDisk) else { return nil }
         guard libraryIsWritable else { return what }
         return "\(what) Editing the \(name(of: list)) is paused until you choose \(actionTitle(for: list, health: health)) in Business Vocabulary, which saves what is shown here as the current copy. Recording and your meetings are not affected."
     }
@@ -534,9 +544,13 @@ enum DamagedListNotice {
         }
     }
 
-    /// Set as `storageErrorMessage` when an edit to a damaged list is refused.
-    static func refused(_ list: MeetingStore.EditableList, health: PersistedStoreHealth) -> String {
-        "Nothing was changed: the \(name(of: list)) is read-only because \(fileName(of: list)) could not be read cleanly. Choose \(actionTitle(for: list, health: health)) in Business Vocabulary to edit it again. Recording and your meetings are not affected."
+    /// Set as `storageErrorMessage` when an edit to a damaged list is refused. A missing file is
+    /// not one that "could not be read cleanly" (F933).
+    static func refused(_ list: MeetingStore.EditableList, health: PersistedStoreHealth, onDisk: FileOnDisk) -> String {
+        let because = onDisk == .missing
+            ? "\(fileName(of: list)) is missing and this is its backup copy"
+            : "\(fileName(of: list)) could not be read cleanly"
+        return "Nothing was changed: the \(name(of: list)) is read-only because \(because). Choose \(actionTitle(for: list, health: health)) in Business Vocabulary to edit it again. Recording and your meetings are not affected."
     }
 
     private static func name(of list: MeetingStore.EditableList) -> String {
@@ -564,11 +578,18 @@ enum DamagedListNotice {
 
     /// Exhaustive with no `default`, like `PersistedStoreHealth.severity`: a new health must be
     /// described here or this stops compiling, rather than silently reading as undamaged.
-    private static func description(of list: MeetingStore.EditableList, health: PersistedStoreHealth) -> String? {
+    private static func description(
+        of list: MeetingStore.EditableList, health: PersistedStoreHealth, onDisk: FileOnDisk
+    ) -> String? {
         let file = fileName(of: list)
         switch health {
         case .complete:
             return nil
+        case .recoveredFromBackup where onDisk == .missing:
+            // F933: the backup was opened because the file is not there. Nothing is damaged, so
+            // nothing is copied aside — the sentence below promised a copy of a file that does not
+            // exist.
+            return "\(file) is missing, so this is its previous saved copy (its backup), which may be one change behind. Nothing was copied aside, and nothing has been changed."
         case .recoveredFromBackup:
             return "\(file) was damaged, so this is its previous saved copy, which may be one change behind. The damaged file has not been changed, and is copied aside before anything replaces it."
         case .divergentGenerations:
@@ -763,6 +784,38 @@ final class MeetingStore: ObservableObject {
         case .vocabulary: vocabularyHealth
         case .replacementRules: replacementRulesHealth
         }
+    }
+
+    /// What each list's load found on disk beyond its health (F933), as `indexOnDisk` is for the
+    /// meeting index (F844): a backup opened because the file was missing, not damaged. Set with the
+    /// list's health by its load, and reset with it by `keepLoadedList` and a recovery's reload.
+    @Published private(set) var vocabularyOnDisk: DamagedListNotice.FileOnDisk = .asHealthSays
+    @Published private(set) var replacementRulesOnDisk: DamagedListNotice.FileOnDisk = .asHealthSays
+
+    func fileOnDisk(of list: EditableList) -> DamagedListNotice.FileOnDisk {
+        switch list {
+        case .vocabulary: vocabularyOnDisk
+        case .replacementRules: replacementRulesOnDisk
+        }
+    }
+
+    /// Assigns a list's health and what its load found on disk together (F933), so neither can be
+    /// set without the other.
+    private func setHealth(of list: EditableList, _ health: PersistedStoreHealth, onDisk: DamagedListNotice.FileOnDisk) {
+        switch list {
+        case .vocabulary:
+            vocabularyHealth = health
+            vocabularyOnDisk = onDisk
+        case .replacementRules:
+            replacementRulesHealth = health
+            replacementRulesOnDisk = onDisk
+        }
+    }
+
+    /// What a list's load result says was on disk (F933): `.missing` when the backup was opened
+    /// because the file was not there (`StoreRepair.primaryMissing`, F844).
+    private static func fileOnDisk<Value>(after result: BackupJSONStore<Value>.LoadResult) -> DamagedListNotice.FileOnDisk {
+        result.health == .recoveredFromBackup && result.repairs.contains(.primaryMissing) ? .missing : .asHealthSays
     }
 
     private(set) var startupRecoveryMessages: [String] = []
@@ -1303,7 +1356,7 @@ final class MeetingStore: ObservableObject {
         guard mutationIsAllowed() else { return false }
         let state = health(of: list)
         guard !state.allowsMutation else { return true }
-        storageErrorMessage = DamagedListNotice.refused(list, health: state)
+        storageErrorMessage = DamagedListNotice.refused(list, health: state, onDisk: fileOnDisk(of: list))
         return false
     }
 
@@ -1321,7 +1374,9 @@ final class MeetingStore: ObservableObject {
     /// unaffected would contradict it. The list's notice appears once the library is writable.
     func damagedListNotice(for list: EditableList) -> String? {
         guard !isDegraded else { return nil }
-        return DamagedListNotice.notice(for: list, health: health(of: list), libraryIsWritable: true)
+        return DamagedListNotice.notice(
+            for: list, health: health(of: list), onDisk: fileOnDisk(of: list), libraryIsWritable: true
+        )
     }
 
     /// The title of the control beside `damagedListNotice(for:)`.
@@ -1350,10 +1405,7 @@ final class MeetingStore: ObservableObject {
         guard mutationIsAllowed(), isListReadOnly(list) else { return }
         switch saveList(list) {
         case .saved:
-            switch list {
-            case .vocabulary: vocabularyHealth = .complete
-            case .replacementRules: replacementRulesHealth = .complete
-            }
+            setHealth(of: list, .complete, onDisk: .asHealthSays)
         case let .lostRace(report):
             reloadList(list)
             storageErrorMessage = "\(report.message) The list now shows what the other copy saved."
@@ -3211,7 +3263,7 @@ final class MeetingStore: ObservableObject {
         }
         let state = health(of: list)
         guard state.allowsMutation else {
-            storageErrorMessage = DamagedListNotice.refused(list, health: state)
+            storageErrorMessage = DamagedListNotice.refused(list, health: state, onDisk: fileOnDisk(of: list))
             return false
         }
         before = (vocabulary, replacementRules)
@@ -3553,8 +3605,8 @@ final class MeetingStore: ObservableObject {
     private func revalidateHealth() {
         health = .complete
         indexOnDisk = .asHealthSays
-        vocabularyHealth = .complete
-        replacementRulesHealth = .complete
+        setHealth(of: .vocabulary, .complete, onDisk: .asHealthSays)
+        setHealth(of: .replacementRules, .complete, onDisk: .asHealthSays)
         // Cleared with `health`, and for the same reason: these describe the state being replaced.
         // The three loads append to this as they go, so without the reset a recovery would leave the
         // launch-time "read-only" message sitting in front of whatever the reload actually found —
@@ -3879,11 +3931,13 @@ final class MeetingStore: ObservableObject {
                 // The list's own health, never the library's (F464). No re-persist on a backup
                 // recovery either: that writes nothing, so the damaged primary is left exactly as it
                 // is (F187, and what `docs/RECOVERY.md` promises). The old `save()` ran during
-                // `init`, bypassing every mutation guard.
-                vocabularyHealth = result.health
+                // `init`, bypassing every mutation guard. And whether the backup was opened for a
+                // missing file rather than a damaged one (F933), which the notice says.
+                setHealth(of: .vocabulary, result.health, onDisk: Self.fileOnDisk(after: result))
             } else {
                 // No list on disk yet: its first save expects none (F864), as the index's does.
                 vocabularyToken = .absent
+                vocabularyOnDisk = .asHealthSays
             }
         } catch {
             // The same state `init` starts from, so the notice's "the list is empty" is true on a
@@ -3893,7 +3947,7 @@ final class MeetingStore: ObservableObject {
             // refused by the list's health, as before; only Keep uses this token.
             vocabulary = []
             vocabularyToken = .absent
-            vocabularyHealth = Self.health(after: error)
+            setHealth(of: .vocabulary, Self.health(after: error), onDisk: .asHealthSays)
         }
     }
 
@@ -3908,15 +3962,17 @@ final class MeetingStore: ObservableObject {
             if let result = try replacementRulesFiles.load() {
                 replacementRules = result.value
                 replacementRulesToken = result.primaryAsRead ?? result.token   // as `readVocabulary` (F865)
-                // As `loadVocabulary`: its own health, and no silent re-persist (F187, F464).
-                replacementRulesHealth = result.health
+                // As `loadVocabulary`: its own health, and no silent re-persist (F187, F464), and
+                // whether the file was missing rather than damaged (F933).
+                setHealth(of: .replacementRules, result.health, onDisk: Self.fileOnDisk(after: result))
             } else {
                 replacementRulesToken = .absent   // as `readVocabulary` (F864)
+                replacementRulesOnDisk = .asHealthSays
             }
         } catch {
             replacementRules = []
             replacementRulesToken = .absent   // as `readVocabulary` (F865)
-            replacementRulesHealth = Self.health(after: error)
+            setHealth(of: .replacementRules, Self.health(after: error), onDisk: .asHealthSays)
         }
     }
 
@@ -3926,7 +3982,7 @@ final class MeetingStore: ObservableObject {
     /// first, so `isDegraded` is already this load's answer.
     private func recordDamage(to list: EditableList) {
         guard let notice = DamagedListNotice.notice(
-            for: list, health: health(of: list), libraryIsWritable: !isDegraded
+            for: list, health: health(of: list), onDisk: fileOnDisk(of: list), libraryIsWritable: !isDegraded
         ) else { return }
         startupRecoveryMessages.append(notice)
     }

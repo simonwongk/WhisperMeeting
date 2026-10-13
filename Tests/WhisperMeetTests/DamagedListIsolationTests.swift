@@ -155,7 +155,7 @@ func damagedListIsReadOnlyByItself(file: DamagedFile, damage: ListDamage) throws
     let shown = contents(of: file, in: store)
     add("refused-term", to: file, in: store)
     #expect(contents(of: file, in: store) == shown)
-    #expect(store.storageErrorMessage == DamagedListNotice.refused(file.list, health: health))
+    #expect(store.storageErrorMessage == DamagedListNotice.refused(file.list, health: health, onDisk: store.fileOnDisk(of: file.list)))
     #expect(try Data(contentsOf: primary) == primaryBefore)
     #expect(try Data(contentsOf: backup) == backupBefore)
 
@@ -235,7 +235,7 @@ func damagedListDefersToAReadOnlyLibrary() throws {
     #expect(store.storageErrorMessage == ReadOnlyLibraryNotice.mutationRefused)
     // The launch alert still names the list, without the tail.
     let quiet = try #require(DamagedListNotice.notice(
-        for: .vocabulary, health: store.health(of: .vocabulary), libraryIsWritable: false
+        for: .vocabulary, health: store.health(of: .vocabulary), onDisk: store.fileOnDisk(of: .vocabulary), libraryIsWritable: false
     ))
     #expect(store.startupRecoveryMessages.contains(quiet))
 }
