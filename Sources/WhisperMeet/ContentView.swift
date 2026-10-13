@@ -3954,17 +3954,21 @@ private struct TranscriptDetailView: View {
             .disabled(store.vocabulary.isEmpty || isEdited || model.glossaryCorrectionRun != nil)
             // F179: exact user-defined replacement rules, reviewed through the same sheet. No model.
             Button {
-                let proposals = model.replacementRuleCorrections(for: meetingID)
-                if proposals.isEmpty {
-                    model.alertMessage = "None of your replacement rules matched this transcript."
-                } else {
-                    proposalReviews.present(ProposalReview(proposals: proposals, source: .replacementRules))
+                // F920: off the main actor, named in the status line below the header while it
+                // runs; nil when the transcript changed meanwhile, and the model has said so.
+                Task {
+                    guard let proposals = await model.replacementRuleCorrections(for: meetingID) else { return }
+                    if proposals.isEmpty {
+                        model.alertMessage = "None of your replacement rules matched this transcript."
+                    } else {
+                        proposalReviews.present(ProposalReview(proposals: proposals, source: .replacementRules))
+                    }
                 }
             } label: {
                 Label("Apply Replacement Rules…", systemImage: "arrow.left.arrow.right")
             }
             .disabled(store.replacementRules.isEmpty || isEdited
-                      || model.libraryReadOnlyFootnote != nil)
+                      || model.libraryReadOnlyFootnote != nil || model.replacementRuleRunID != nil)
             if SummarizerRuntime.isSupportedOnCurrentMac {
                 Button {
                     Task {
@@ -4089,6 +4093,16 @@ private struct TranscriptDetailView: View {
                 Text("Checking the transcript against your vocabulary…")
                 Button("Cancel") { model.cancelGlossaryCorrections() }
                     .controlSize(.small)
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .transition(.gentleFade(reduceMotion: reduceMotion))
+        } else if model.replacementRuleRunID == meetingID {
+            // F920: the rules pass ran on the main actor from the menu, and F858 doubled its work
+            // (a debug build measured 5.9 s for 500 rules over 1,500 lines). It runs off it now.
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Checking the transcript against your replacement rules…")
             }
             .font(.callout)
             .foregroundStyle(.secondary)

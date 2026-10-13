@@ -48,7 +48,7 @@ private let pinnedSegmenter: CJKWordEvidence.Segmenter = { text in
 
 @MainActor
 @Test("Apply Replacement Rules leaves a Chinese compound alone and fixes the word standing alone (F594)")
-func replacementRulesRespectChineseWordsThroughAppModel() throws {
+func replacementRulesRespectChineseWordsThroughAppModel() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F594-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let model = try makeModel(root: root)
@@ -57,7 +57,7 @@ func replacementRulesRespectChineseWordsThroughAppModel() throws {
     model.store.addReplacementRule(heard: "会议", preferred: "会议室")
     let id = addMeeting(model, lines: ["整理会议纪要", "我们在会议厅讨论", "整理会议纪要，明天开会议"])
 
-    let proposals = model.replacementRuleCorrections(for: id)
+    let proposals = try #require(await model.replacementRuleCorrections(for: id))
     // Line 0: 会议 is inside the vocabulary term 会议纪要. Line 1: inside the segmenter's 会议厅.
     // Line 2: proposed once, for the standalone 会议.
     #expect(proposals == [GlossaryCorrection(segmentIndex: 2, from: "会议", to: "会议室", proposedLine: "整理会议纪要，明天开会议")])

@@ -6530,17 +6530,51 @@ final class AppModel: ObservableObject {
         glossaryCorrectionRun = run
     }
 
+    // MARK: - Apply Replacement Rules (F179, F920)
+
+    /// What one rules pass is given (F920).
+    struct ReplacementRuleInput: Sendable {
+        let rules: [ReplacementRule]
+        let segments: [TranscriptSegment]
+        let evidence: CJKWordEvidence
+    }
+
+    /// The pass itself, injectable in the F47 shape; the core's by default. Runs in a detached task
+    /// (F920) — it was built synchronously on the main actor from the Improve menu, and F858 doubled
+    /// its work: two searches per rule per line and every genuine occurrence (a debug build measured
+    /// 500 rules over 1,500 lines at 2.95 s before F858 and 5.91 s after — the Wave 5 review's T-cost).
+    var replacementRulePass: @Sendable (ReplacementRuleInput) -> [GlossaryCorrection] = { input in
+        ReplacementRuleMatcher.corrections(rules: input.rules, segments: input.segments, evidence: input.evidence)
+    }
+
+    /// The meeting whose rules pass is running (F920), or nil; the meeting's status line names it
+    /// and the menu item is disabled meanwhile.
+    @Published private(set) var replacementRuleRunID: UUID?
+
     /// Proposed corrections from the user's exact `heard → preferred` replacement rules (F179).
     /// Read-only — computes over the stored segments; the proposals flow through the same F82 review
     /// sheet + `applyGlossaryCorrections` apply path, and the recording is never opened. Each row
     /// carries its line as proposed (F971), as the other two tools' rows do.
-    func replacementRuleCorrections(for id: UUID) -> [GlossaryCorrection] {
-        guard let meeting = store.meeting(id: id) else { return [] }
-        let rows = ReplacementRuleMatcher.corrections(
-            rules: store.replacementRules, segments: meeting.segments, evidence: cjkWordEvidence
-        )
-        return GlossaryCorrector.proposing(rows, on: meeting.segments)
+    ///
+    /// Off the main actor (F920). Nil when a pass is already running, or when the transcript changed
+    /// while this one ran — then `alertMessage` says so, as Correct Toward Vocabulary's does (F536):
+    /// a row is a line number and a phrase, so proposals made over the old lines are offered nowhere.
+    func replacementRuleCorrections(for id: UUID) async -> [GlossaryCorrection]? {
+        guard replacementRuleRunID == nil, let meeting = store.meeting(id: id) else { return nil }
+        let input = ReplacementRuleInput(rules: store.replacementRules, segments: meeting.segments, evidence: cjkWordEvidence)
+        replacementRuleRunID = id
+        defer { replacementRuleRunID = nil }
+        let pass = replacementRulePass
+        let rows = await Task.detached(priority: .userInitiated) { pass(input) }.value
+        guard store.meeting(id: id)?.segments == input.segments else {
+            alertMessage = Self.transcriptChangedDuringRulesMessage
+            return nil
+        }
+        return GlossaryCorrector.proposing(rows, on: input.segments)
     }
+
+    static let transcriptChangedDuringRulesMessage =
+        "The transcript changed while it was being checked against your replacement rules, so nothing is proposed. Choose Apply Replacement Rules again."
 
     /// The sentences a review sheet's rows are about (F817), one per row: its line's words around
     /// the place applying it would change, found with the same evidence `applyGlossaryCorrections`
