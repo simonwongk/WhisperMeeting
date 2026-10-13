@@ -133,9 +133,11 @@ public enum RecordingHUD {
     /// and drops "stop", since stopping would also end the audio still being saved; F386's "stop"
     /// stays where nothing is being saved. Only the format's failure is named: a track lost to its
     /// format is that source's alone, while a storage failure is the volume's, so the track still
-    /// landing on it is the next to fail, and "the rest is still recording" would be the
-    /// announcement a user behind another app keeps (each warning is announced once in a recording)
-    /// while the disk fills. That restriction was chosen in F932's change, not by the user.
+    /// landing on it is the next to fail. (When this was written each warning was announced once in
+    /// a recording, so "the rest is still recording" would have been the notification a user behind
+    /// another app kept while the disk filled; since F960 a change of advice is announced again. The
+    /// first reason stands, and the user's decision keeps "stop" for the disk.) That restriction was
+    /// chosen in F932's change, not by the user.
     private static func onlyTrackLostToItsFormat(
         writeFailureCause: RecordingWriteFailureCause?,
         unsavedTrack: RecordingChannel?
