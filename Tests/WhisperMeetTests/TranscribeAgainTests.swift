@@ -123,7 +123,9 @@ func transcribeAgainIsWired() throws {
     #expect(source.contains(#"Label("Transcribe Again…", systemImage: "arrow.clockwise")"#))
     #expect(source.contains(#"Button("Transcribe Again…") { confirmTranscribeAgain = true }"#))
     #expect(source.contains("model.transcribeAgain(id: meetingID)"))
-    #expect(source.contains(".disabled(model.transcribeAgainBlockedReason(for: meetingID) != nil)"))
+    // F832: the reason is resolved once per control and shown; the grey reads that same value.
+    #expect(source.contains("let transcribeAgainReason = model.transcribeAgainBlockedReason(for: meetingID)"))
+    #expect(source.contains(".disabled(transcribeAgainReason != nil)"))
 }
 
 // F507 — `recoverInterruptedTranscriptions()` reset every `.processing` meeting to `.recorded` (or

@@ -3780,13 +3780,25 @@ private struct TranscriptDetailView: View {
             // F515: transcribing again is what brings the timestamps back (F420), so the control that
             // does it sits beside this message — beside, never inside it (F306).
             if let warning = meeting.alignmentWarning {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Label(warning, systemImage: "clock.badge.exclamationmark")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button("Transcribe Again…") { confirmTranscribeAgain = true }
-                        .disabled(model.transcribeAgainBlockedReason(for: meetingID) != nil)
+                // F832: a greyed button says why — as help, and in a caption under the row, since a
+                // tooltip on a disabled control is not something to rely on.
+                let transcribeAgainReason = model.transcribeAgainBlockedReason(for: meetingID)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Label(warning, systemImage: "clock.badge.exclamationmark")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Transcribe Again…") { confirmTranscribeAgain = true }
+                            .disabled(transcribeAgainReason != nil)
+                            .help(transcribeAgainReason ?? "Transcribe again to bring the timestamps back. The new transcript replaces this one.")
+                    }
+                    if let transcribeAgainReason {
+                        Text(transcribeAgainReason)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -3894,6 +3906,9 @@ private struct TranscriptDetailView: View {
             ? model.speakerAnalysisUnavailability(for: meeting)
             : nil
         let isEdited = store.isTranscriptEdited(meeting)
+        // F832: resolved once, as `speakerReason` is, so the greyed row, its help and the footnote
+        // below cannot disagree about why Transcribe Again is unavailable.
+        let transcribeAgainReason = model.transcribeAgainBlockedReason(for: meetingID)
         return Menu {
             // F515: first, because it is the one that replaces everything below it. Asks first.
             Button {
@@ -3901,7 +3916,8 @@ private struct TranscriptDetailView: View {
             } label: {
                 Label("Transcribe Again…", systemImage: "arrow.clockwise")
             }
-            .disabled(model.transcribeAgainBlockedReason(for: meetingID) != nil)
+            .disabled(transcribeAgainReason != nil)
+            .help(transcribeAgainReason ?? "Transcribe this recording again. The new transcript replaces this one.")
             Divider()
             Button {
                 suggestVocabulary(meeting)
@@ -4001,12 +4017,18 @@ private struct TranscriptDetailView: View {
                 .disabled(speakerReason != nil)
             }
             if isEdited || store.vocabulary.isEmpty || store.replacementRules.isEmpty
-                || meeting.segments.isEmpty || speakerReason != nil || model.libraryReadOnlyFootnote != nil {
+                || meeting.segments.isEmpty || speakerReason != nil || model.libraryReadOnlyFootnote != nil
+                || transcribeAgainReason != nil {
                 Divider()
                 // F194: first, because it outranks the others — when the library is read-only none of
                 // these can be applied whatever else is true of the transcript.
                 if let readOnly = model.libraryReadOnlyFootnote {
                     Text(readOnly)
+                }
+                // F832: why Transcribe Again is greyed, in the sentence the model gives — unless that
+                // sentence is the read-only line already shown above.
+                if let transcribeAgainReason, transcribeAgainReason != model.libraryReadOnlyFootnote {
+                    Text(transcribeAgainReason)
                 }
                 if isEdited {
                     Text("Unavailable after manual edits — these tools work on the original transcription.")
