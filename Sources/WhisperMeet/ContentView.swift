@@ -1379,42 +1379,25 @@ private struct RecordingChannelMeter: View {
 /// Keeps the fast channel activity label and meter inside one narrowly observed subtree. Capture
 /// warnings still come from the slower health monitor and always take precedence over activity.
 private struct RecordingChannelHealthRow: View {
-    private struct State {
-        let text: String
-        let color: Color
-    }
-
     let title: String
     let systemImage: String
     @ObservedObject var meter: RecordingMeterViewModel
     let channel: RecordingChannel
     let health: RecordingHealthSnapshot
 
-    private var state: State {
-        switch channel {
-        case .microphone:
-            if health.warnings.contains(.microphoneCaptureStopped) {
-                return State(text: "No audio for 3s+", color: .red)
-            }
-            if health.warnings.contains(.microphoneClipping) {
-                return State(text: "Too loud", color: .orange)
-            }
-            return meter.snapshot.microphoneActive
-                ? State(text: "Receiving audio", color: .green)
-                : State(text: "Silent", color: .secondary)
-        case .systemAudio:
-            if health.warnings.contains(.systemAudioCaptureStopped) {
-                return State(text: "No audio for 3s+", color: .red)
-            }
-            if health.warnings.contains(.systemAudioNotDetected) {
-                return State(text: "Not detected yet", color: .orange)
-            }
-            if health.warnings.contains(.systemAudioClipping) {
-                return State(text: "Too loud", color: .orange)
-            }
-            return meter.snapshot.systemAudioActive
-                ? State(text: "Receiving audio", color: .green)
-                : State(text: "Silent (normal until others speak)", color: .secondary)
+    /// Chosen in WhisperCore, where the precedence of a capture warning over the meter's activity
+    /// is tested (F970); this view only colours it.
+    private var state: RecordingChannelRowState {
+        let isActive = channel == .microphone ? meter.snapshot.microphoneActive : meter.snapshot.systemAudioActive
+        return RecordingChannelRowState.make(channel: channel, health: health, isActive: isActive)
+    }
+
+    private func color(_ tone: RecordingChannelRowState.Tone) -> Color {
+        switch tone {
+        case .lost: .red
+        case .caution: .orange
+        case .receiving: .green
+        case .quiet: .secondary
         }
     }
 
@@ -1426,7 +1409,7 @@ private struct RecordingChannelHealthRow: View {
                 Spacer()
                 Text(state.text)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(state.color)
+                    .foregroundStyle(color(state.tone))
             }
             RecordingChannelMeter(meter: meter, channel: channel)
         }

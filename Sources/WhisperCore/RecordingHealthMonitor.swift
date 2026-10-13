@@ -1,6 +1,6 @@
 import Foundation
 
-public enum RecordingChannel: Sendable, Equatable {
+public enum RecordingChannel: Sendable, Equatable, Hashable {
     case microphone
     case systemAudio
 }
@@ -137,6 +137,12 @@ public struct RecordingHealthSnapshot: Sendable, Equatable {
     /// the other track has stopped arriving or has never arrived: then nothing is being saved, and
     /// "the rest is still recording" would be false. Live only, like `writeFailureCause`.
     public let unsavedTrack: RecordingChannel?
+    /// Every track whose writes are failing right now — the tracks `.captureWritesFailing` is about
+    /// (F970), for the per-channel chip on the record screen, which has to say "Not being saved"
+    /// on exactly the channels losing audio. `unsavedTrack` cannot tell it: that is nil both when
+    /// both tracks fail and when one fails beside a track that stopped or never arrived. Live
+    /// only, like the two above; the saved report keeps the warning alone.
+    public let tracksWithFailingWrites: Set<RecordingChannel>
 
     public init(
         microphoneLevel: RecordingAudioLevel,
@@ -144,7 +150,8 @@ public struct RecordingHealthSnapshot: Sendable, Equatable {
         availableStorageBytes: Int64?,
         warnings: [RecordingHealthWarning],
         writeFailureCause: RecordingWriteFailureCause? = nil,
-        unsavedTrack: RecordingChannel? = nil
+        unsavedTrack: RecordingChannel? = nil,
+        tracksWithFailingWrites: Set<RecordingChannel> = []
     ) {
         self.microphoneLevel = microphoneLevel
         self.systemAudioLevel = systemAudioLevel
@@ -152,6 +159,7 @@ public struct RecordingHealthSnapshot: Sendable, Equatable {
         self.warnings = warnings
         self.writeFailureCause = writeFailureCause
         self.unsavedTrack = unsavedTrack
+        self.tracksWithFailingWrites = tracksWithFailingWrites
     }
 
     /// Both channels stopped together — the capture itself stopped, not one device (F292). On the
@@ -537,7 +545,8 @@ public final class RecordingHealthMonitor {
             availableStorageBytes: availableStorageBytes,
             warnings: warnings,
             writeFailureCause: writeFailureCause,
-            unsavedTrack: unsavedTrack(at: time)
+            unsavedTrack: unsavedTrack(at: time),
+            tracksWithFailingWrites: tracksWithFailingWrites
         )
 
         // Fold this snapshot into the running report.
@@ -628,7 +637,15 @@ public final class RecordingHealthMonitor {
     /// warning, for a caller that has to decide something rather than display it. Either track:
     /// a recording that keeps one track and loses the other has still lost audio (F876).
     public var writesAreFailing: Bool {
-        microphoneWriteFailures >= writeFailureThreshold || systemAudioWriteFailures >= writeFailureThreshold
+        !tracksWithFailingWrites.isEmpty
+    }
+
+    /// The tracks at the write-failure threshold (F970); see `RecordingHealthSnapshot.tracksWithFailingWrites`.
+    public var tracksWithFailingWrites: Set<RecordingChannel> {
+        var tracks: Set<RecordingChannel> = []
+        if microphoneWriteFailures >= writeFailureThreshold { tracks.insert(.microphone) }
+        if systemAudioWriteFailures >= writeFailureThreshold { tracks.insert(.systemAudio) }
+        return tracks
     }
 
     private func recentlyClipped(_ channel: ChannelState, at time: TimeInterval) -> Bool {

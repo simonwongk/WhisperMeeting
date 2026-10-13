@@ -38,9 +38,14 @@ The fast stream updates a dedicated nested meter model. It does not publish thro
 model, so the meeting list and detail hierarchy are not re-laid out ~15 times per second.
 
 The **health panel** leads with a one-word status — **healthy**, **worth a quick check**, or **needs
-attention** — derived from the warnings below (`RecordingHealthSnapshot.overallStatus`). Under it,
-each channel has a meter and a plain-language state chip, followed by the storage line and a
-collapsible **"How this is measured"** explainer. The meters and warnings are calculated from the
+attention** — derived from the warnings below (`RecordingHealthSnapshot.overallStatus`), and a
+sentence for the worst warning present, chosen by the same rank the HUD, the banner and the menu
+bar use (`RecordingHUD.leadingWarning(in:)`, F959), never by the order the checks ran in. Under it,
+each channel has a meter and a plain-language state chip (`RecordingChannelRowState`), followed by
+the storage line and a collapsible **"How this is measured"** explainer. The chip puts a capture
+warning before the meter's activity: a channel whose buffers arrive and fail to save reads **"Not
+being saved"** in red, not "Silent", because the meter hears only a buffer that reached the disk
+(F970). The meters and warnings are calculated from the
 same converted samples written into `microphone-audio.f32` and `system-audio.f32`, not from an
 unrelated preview path — with one exception: full-scale (clipped) frames are counted on each
 captured channel **before** the two-channel capture is mixed down to mono (F419), because a source
