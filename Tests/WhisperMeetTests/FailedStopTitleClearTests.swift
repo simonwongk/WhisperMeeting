@@ -73,7 +73,7 @@ func aStopWithNothingToRebuildClearsTheTitle() async throws {
     defer { cleanup() }
     model.recoverInterruptedRecording = { _ in nil }
     model.recordingTitle = "Board call"
-    _ = try await recordTwoSeconds(model)
+    let id = try await recordTwoSeconds(model)
 
     let saved = await model.stopRecording(title: model.recordingTitle)
 
@@ -81,6 +81,10 @@ func aStopWithNothingToRebuildClearsTheTitle() async throws {
     #expect(model.alertMessage?.contains("No usable audio could be rebuilt") == true, "\(model.alertMessage ?? "no message")")
     #expect(model.recordingState == .idle)
     #expect(model.recordingTitle.isEmpty, "the next recording inherits the title: \(model.recordingTitle)")
+    // The clear reaches the field only: the kept folder's sidecar still names the meeting for the launch
+    // that rebuilds it, because the catch clears `activeMeetingID` before the title and the sidecar mirror
+    // (`recordingTitle.didSet`) does nothing with no active meeting. Statement order, so pinned.
+    #expect(RecordingSessionSidecar.read(in: model.store.recordingDirectoryURL(for: id))?.title == "Board call")
     #expect(try await nextRecordingTitle(model, failure) != "Board call")
 }
 
@@ -91,7 +95,7 @@ func aStopWhoseRebuildFailsClearsTheTitle() async throws {
     defer { cleanup() }
     model.recoverInterruptedRecording = { _ in throw RebuildFailed() }
     model.recordingTitle = "Board call"
-    _ = try await recordTwoSeconds(model)
+    let id = try await recordTwoSeconds(model)
 
     let saved = await model.stopRecording(title: model.recordingTitle)
 
@@ -99,5 +103,7 @@ func aStopWhoseRebuildFailsClearsTheTitle() async throws {
     #expect(model.alertMessage?.contains("could not be finalized automatically") == true, "\(model.alertMessage ?? "no message")")
     #expect(model.recordingState == .idle)
     #expect(model.recordingTitle.isEmpty, "the next recording inherits the title: \(model.recordingTitle)")
+    // As above: the sidecar keeps the title the next launch's rebuild needs.
+    #expect(RecordingSessionSidecar.read(in: model.store.recordingDirectoryURL(for: id))?.title == "Board call")
     #expect(try await nextRecordingTitle(model, failure) != "Board call")
 }
