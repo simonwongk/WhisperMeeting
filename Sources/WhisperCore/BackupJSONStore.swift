@@ -497,13 +497,23 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         // the fingerprint is the CAS's input, and a CAS decided from a cached fingerprint would
         // promote that memory from an optimisation into the sole authority on whether to clobber
         // another writer.
+        //
+        // The identity is taken BEFORE the read, and the record below is made only if the file is
+        // still exactly that (F908, the load path's F526 rule). Taken after, two stats that agreed
+        // and a size that matched credited a same-size foreign write landing between the read and
+        // the record with the decode of the bytes it replaced; the rotation then cloned that file
+        // into the backup and remembered the clone, so the next save replaced an undecodable
+        // backup without the F187 quarantine.
+        let primaryBefore = DecodableFileMemory.Identity(path: primaryURL.path)
         let primaryBytes = try? io.read(primaryURL, .readPrimary)
         let existingPrimary = primaryBytes.flatMap { bytes -> Data? in
             if decodableMemory.isProvenDecodable(path: primaryURL.path) { return bytes }
             return (try? decoder.decode(Value.self, from: bytes)) == nil ? nil : bytes
         }
         if existingPrimary != nil {
-            decodableMemory.remember(path: primaryURL.path, byteCount: primaryBytes?.count ?? 0)
+            decodableMemory.remember(
+                path: primaryURL.path, byteCount: primaryBytes?.count ?? 0, unchangedSince: primaryBefore
+            )
         }
         let primaryFingerprint = primaryBytes.map { io.fingerprint($0) }
 
@@ -633,10 +643,14 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         //    rotation aborts before the primary changes, so the previous generation always survives.
         decodableMemory.forget(backupURL.path)
         if let outgoing = existingPrimary {
-            try rotate(from: primaryURL, byteCount: outgoing.count, nonce: nonce)
+            // Decoded as the file `primaryBefore` names (step 3); the clone is remembered only if
+            // the primary is still that file when it is cloned (F908).
+            try rotate(from: primaryURL, byteCount: outgoing.count, nonce: nonce, decodedAs: .primary(primaryBefore))
             phases.append(.rotateBackup)
         } else if !backupDecodable {
-            try rotate(from: stagingURL, byteCount: newData.count, nonce: nonce)
+            // This save's own staging file: decodable by construction, under a name only this
+            // save uses.
+            try rotate(from: stagingURL, byteCount: newData.count, nonce: nonce, decodedAs: .ownStagingFile)
             phases.append(.rotateBackup)
         }
         // else: the outgoing primary is undecodable and the backup is decodable — leave the backup
@@ -848,17 +862,42 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         )
     }
 
+    /// What vouches for a rotation's source being decodable (F908), so its clone may be remembered.
+    private enum RotationSourceProof {
+        /// This save's own staging file, decodable by construction.
+        case ownStagingFile
+        /// The primary, decoded (or remembered) as the file this identity names, taken before step
+        /// 3's read; nil when it could not be stat'ed then, which vouches for nothing.
+        case primary(DecodableFileMemory.Identity?)
+    }
+
     /// Clones `source` to a sibling temp, then renames it onto the backup. A clone rather than a
     /// byte write, so the 2.1 MB payload is written once per save instead of twice.
-    private func rotate(from source: URL, byteCount: Int, nonce: String) throws {
+    ///
+    /// The clone is remembered as decodable only while the source is the file `decodedAs` vouches
+    /// for — still that identity both before the clone and after it (F908). The clone copies
+    /// whatever is at `source` when it runs; remembering it on the strength of a decode of bytes a
+    /// foreign writer has since replaced let the next save skip the backup's decode and replace an
+    /// undecodable backup without the F187 quarantine.
+    private func rotate(from source: URL, byteCount: Int, nonce: String, decodedAs proof: RotationSourceProof) throws {
         let temporary = backupURL.deletingLastPathComponent()
             .appendingPathComponent("\(backupURL.lastPathComponent).rotate-\(nonce)")
+        let sourceBefore = DecodableFileMemory.Identity(path: source.path)
         // No pre-remove: the name carries a fresh nonce per save, so it cannot already exist, and
         // design §3 specifies copy-then-rename with nothing else. An extra seam call here also made
         // `.rotateBackup` occur a variable number of times per save, which broke occurrence-targeted
         // fault injection for no benefit.
         try io.copyItem(source, temporary, .rotateBackup)
         try io.rename(temporary, backupURL, .rotateBackup)
+        let sourceStillDecoded: Bool
+        switch proof {
+        case .ownStagingFile:
+            sourceStillDecoded = true
+        case .primary(let decoded):
+            sourceStillDecoded = decoded != nil && sourceBefore == decoded
+                && DecodableFileMemory.Identity(path: source.path) == decoded
+        }
+        guard sourceStillDecoded else { return }
         decodableMemory.remember(path: backupURL.path, byteCount: byteCount)
     }
 
@@ -1424,24 +1463,6 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             writer: verified ? (recorded?.writer ?? writer) : writer,
             verified: verified
         )
-    }
-
-    /// `readableData`, minus the *decode* when this file is still exactly one this process already
-    /// decoded successfully (F211). The bytes always come from disk; only the proof is reused.
-    ///
-    /// The identity check is the whole safety argument: an atomic replace changes the inode and an
-    /// in-place rewrite changes ctime, so any foreign write misses the memory and takes the full
-    /// decode — which is what keeps F187's preserve-before-overwrite rule exactly as strict as it
-    /// was. Worth it because the skipped work is a `Codable` decode of the entire index on the main
-    /// actor, and it grows with the library: 61 ms per save at 2.6 MB, 352 ms at a hundred meetings.
-    private func knownOrReadableData(at url: URL) -> Data? {
-        guard let data = try? io.read(url, url == primaryURL ? .readPrimary : .readBackup) else {
-            return nil
-        }
-        if decodableMemory.isProvenDecodable(path: url.path) { return data }
-        guard (try? decoder.decode(Value.self, from: data)) != nil else { return nil }
-        decodableMemory.remember(path: url.path, byteCount: data.count)
-        return data
     }
 
     private func readableData(at url: URL) -> Data? {

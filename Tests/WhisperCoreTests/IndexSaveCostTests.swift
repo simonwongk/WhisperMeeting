@@ -142,6 +142,56 @@ private final class SwapOnce: @unchecked Sendable {
     }
 }
 
+/// Armed by the test once the load is done, so the swap below lands on the SAVE's read of the primary.
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var set = false
+    var isSet: Bool { lock.withLock { set } }
+    func raise() { lock.withLock { set = true } }
+}
+
+// MARK: - F908: a save records only what it read
+
+/// `save` step 3 reads the primary, decodes it (or skips on a memory hit), and then recorded it in
+/// F211's memory from stats taken AFTER the decode, checking only that two stats agree and the size
+/// matches — so a same-size foreign write landing between the read and that record was remembered as
+/// decoded though its bytes never were. The rotation then cloned that file into the backup and
+/// remembered the clone too, and the next save, trusting the memory, replaced an undecodable backup
+/// without the F187 quarantine. The record now takes the primary's identity BEFORE the read (the load
+/// path's F526 rule), and the rotation remembers its clone only while the source is still that file.
+@Test("A primary replaced between a save's read and its record is not remembered as decoded, and the next save still quarantines the backup cloned from it (F908)")
+func aPrimaryReplacedDuringASaveIsNotTrusted() throws {
+    let run = UUID().uuidString
+    let library = try seededLibrary(run: run)
+    defer { try? FileManager.default.removeItem(at: library.directory) }
+    // Same length on purpose: the record's two stats agree and the size matches.
+    let original = try Data(contentsOf: library.primaryURL)
+    let swapped = Data(repeating: UInt8(ascii: "x"), count: original.count)
+    let primaryPath = library.primaryURL.path
+    let swaps = SwapOnce()
+    let armed = Flag()
+    var io = StoreFileIO.live
+    io.read = { url, phase in
+        let bytes = try StoreFileIO.live.read(url, phase)
+        // The save's read of the primary returns the old bytes; another writer then replaces the file.
+        if url.path == primaryPath, armed.isSet, swaps.take() { try swapped.write(to: url, options: .atomic) }
+        return bytes
+    }
+    let store = library.store(io: io)
+    let loaded = try #require(try store.load())
+    armed.raise()
+
+    let first = try store.save(loaded.value + [CountedEntry(run: run, title: "entry 6")], expecting: loaded.token)
+    #expect(!swaps.available, "the save never read the primary, so this test proved nothing")
+    // The rotation clones whatever is at the primary when it runs: the foreign bytes.
+    try #require(try Data(contentsOf: library.backupURL) == swapped, "fixture: the rotation did not clone the replaced primary")
+
+    let second = try store.save(loaded.value, expecting: first.token)
+
+    let kept = try second.quarantined.map { try Data(contentsOf: library.directory.appendingPathComponent($0)) }
+    #expect(kept.contains(swapped), "an undecodable backup, remembered as decoded from bytes that were never decoded, was replaced without being copied aside")
+}
+
 // MARK: - Element-wise encoding
 
 /// Every shape the meeting index has: nested objects and arrays, empty ones, optionals both ways,
