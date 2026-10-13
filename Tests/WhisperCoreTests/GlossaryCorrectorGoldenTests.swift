@@ -26,6 +26,9 @@ import Testing
 // - F915: a hyphen, an en dash or an em dash ends a word as a space does (for a term's words too),
 //   and a possessive 's at the end of the phrase is outside it unless the term's own spelling ends
 //   so — trimmed after F819's marks, and with it off the window is no row rather than untrimmed.
+// - F968: a term of three or more words is compared with windows up to one more than its own
+//   number of words, and a term is present only where it equals a window of no more words than its
+//   own — equal across more words it is a split-word mishearing, scored like any other (ratio 1).
 
 private struct Amendments {
     var f819 = true
@@ -36,6 +39,7 @@ private struct Amendments {
     var f940 = true
     var f914 = true
     var f915 = true
+    var f968 = true
 }
 
 /// One of a segment's words, with where it stands (F914).
@@ -65,12 +69,13 @@ private enum PreF536GlossaryCorrector {
                 var best: (similarity: Double, slice: Range<Int>)?
                 var presentAsAWindow = false // amended
                 let termWords = Self.words(of: term, splittingAtDashes: amended.f915).count // amended
-                let largest = amended.f940 ? max(maxWindow, termWords) : maxWindow // amended
+                let largest = amended.f968 ? max(maxWindow, termWords + 1) : amended.f940 ? max(maxWindow, termWords) : maxWindow // amended
                 for size in 1...largest where size <= words.count { // amended (was 1...maxWindow)
                     for start in 0...(words.count - size) {
                         let windowNormalized = normalizedWords[start..<(start + size)].joined()
-                        if windowNormalized == termNormalized { presentAsAWindow = true } // amended
-                        guard !windowNormalized.isEmpty, windowNormalized != termNormalized else { continue }
+                        let splitWord = amended.f968 && size > termWords // amended
+                        if windowNormalized == termNormalized, !splitWord { presentAsAWindow = true } // amended
+                        guard !windowNormalized.isEmpty, windowNormalized != termNormalized || splitWord else { continue } // amended
                         let score = similarity(windowNormalized, termNormalized)
                         if score >= similarityThreshold, score > (best?.similarity ?? 0) {
                             best = (score, start..<(start + size))
@@ -317,6 +322,7 @@ func englishSuggestionsMatchThePreF536Oracle() {
         "the Bank of New York said yes.", "the Bank\tof New York review.",
         "the Kestrol/Falcon build and the Kestrol release.", "the Kestrol-ish build and the Kestrol.",
         "Kestrel's release is ready.", "the Kestrol's build is late.", "Kestrol—the build is late.",
+        "the Bank of New Yor k said yes.", "we deployed Kuber netes today.", "ask Priya Ram an now.",
     ]
     let segments = syntheticTranscript(generated, &random) + fixedLines.enumerated().map {
         TranscriptSegment(speaker: nil, start: Double(60 + $0.offset), end: Double(61 + $0.offset), text: $0.element)
@@ -354,6 +360,10 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withoutF915.f915 = false
     #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF915) != expected,
             "no window in the corpus has a possessive or a dash, so F915's amendment is untested here")
+    var withoutF968 = Amendments()
+    withoutF968.f968 = false
+    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF968) != expected,
+            "no term in the corpus is misheard with a word split in two, so F968's amendment is untested here")
     // With F914 off too: a placed row is a genuine occurrence where it stands, so with F914 on no
     // row changes nothing and the no-op rule is a consequence rather than a step of its own.
     var withNoOpOnly = Amendments()
@@ -363,9 +373,14 @@ func englishSuggestionsMatchThePreF536Oracle() {
     #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutNoOp)
         != PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withNoOpOnly),
             "no proposal in the corpus changes nothing, so F820's no-op amendment is untested here")
-    var withoutF940 = Amendments()
+    // With F968 off on both sides: F968's allowance (one more word than the term) covers F940's
+    // (the term's own words), so F940's switch answers only with F968 off.
+    var withF940Only = Amendments()
+    withF940Only.f968 = false
+    var withoutF940 = withF940Only
     withoutF940.f940 = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF940) != expected,
+    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF940)
+        != PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withF940Only),
             "no term in the corpus has four or more words and a mishearing, so F940's amendment is untested here")
     let identical = actual == expected
     #expect(identical, "first difference: \(zip(actual, expected).first { $0 != $1 }.map { "\($0) vs \($1)" } ?? "counts \(actual.count) vs \(expected.count)")")

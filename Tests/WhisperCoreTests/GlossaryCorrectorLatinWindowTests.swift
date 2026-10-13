@@ -214,6 +214,34 @@ func possessiveAndDashGluedWordsAreOutsideTheWindow() {
     check("Wi-Fi", "the why-fi is down", from: "why-fi", applied: "the Wi-Fi is down")
 }
 
+@Test("A mishearing with one more word than its term is compared whole, so applying it leaves no stray word (F968)")
+func mishearingWithAnExtraWordLeavesNoStrayWord() {
+    func rows(_ term: String, _ text: String) -> [GlossaryCorrection] {
+        GlossaryCorrector.corrections(vocabulary: [term], segments: [seg(text)])
+    }
+    func check(_ term: String, _ text: String, from: String, applied: String) {
+        let segments = [seg(text)]
+        let corrections = GlossaryCorrector.corrections(vocabulary: [term], segments: segments)
+        #expect(corrections.map(\.from) == [from], "\(term) in \(text)")
+        #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == applied, "\(term) in \(text)")
+    }
+    // A term's windows went up to its own number of words (F940), so a mishearing that split one
+    // of its words was compared with too short a window and the row left the fragment behind:
+    // "the Bank of New York k said yes", "ask Priya Raman Iyer Iyer now" (F940's own probe).
+    check("Bank of New York", "the Bank of New Yor k said yes", from: "Bank of New Yor k", applied: "the Bank of New York said yes")
+    check("Priya Raman Iyer", "ask Priya Ram an Iyer now", from: "Priya Ram an Iyer", applied: "ask Priya Raman Iyer now")
+    // A split word that spells the term exactly is that mishearing, not the term present: F820
+    // counted any window equal to the term as present, however many words it took.
+    check("Kubernetes", "we deployed Kuber netes today", from: "Kuber netes", applied: "we deployed Kubernetes today")
+    check("Priya Raman", "ask Priya Ram an now", from: "Priya Ram an", applied: "ask Priya Raman now")
+    // Spelled across its own number of words the term is present, whatever the separators (F820,
+    // F940), and a short term is still compared with windows of up to three (F65).
+    #expect(rows("Bank of New York", "the Bank\tof New York said yes").isEmpty)
+    #expect(rows("Priya Raman", "Priya\tRaman said so").isEmpty)
+    #expect(rows("Wi-Fi", "the wi fi is down").isEmpty)
+    check("Kubernetes", "we deployed cooper netties today", from: "cooper netties", applied: "we deployed Kubernetes today")
+}
+
 @Test("A multi-word term already in the segment proposes nothing, whatever follows it (F820)")
 func multiWordTermAlreadyPresentProposesNothing() {
     #expect(GlossaryCorrector.corrections(vocabulary: ["Priya Raman"], segments: [seg("Priya Raman said the release is ready")]).isEmpty)

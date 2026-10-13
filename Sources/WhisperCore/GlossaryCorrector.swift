@@ -42,8 +42,9 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// a proposal no longer takes the punctuation stuck to its outer words with it (F819, "Kestrol," is
 /// proposed as "Kestrol"), a term equal to a window of several words is already present (F820,
 /// "Priya Raman said" proposes nothing for "Priya Raman"), a row `apply` would leave unchanged
-/// is not proposed at all (F820's review), a term of four or more words is compared with
-/// windows up to its own length (F940), a proposal names the window's text as it stands and
+/// is not proposed at all (F820's review), a term of three or more words is compared with
+/// windows up to one more than its own length and is present only across no more words than its
+/// own (F940, F968), a proposal names the window's text as it stands and
 /// is applied to that window (F914, `characterOffset`), and a dash ends a word as a space does
 /// while a possessive 's is outside the window (F915). A term containing Chinese is compared
 /// with windows of exactly its own length, slid character by character along each run of letters
@@ -169,8 +170,8 @@ public enum GlossaryCorrector {
     }
 
     /// F65's search, which picks the same window for text without Chinese: the first 1–3-token
-    /// window (1–n for a term of n > 3 words, F940, below) with the highest ratio at or above the
-    /// threshold, not equal to the term, unless the
+    /// window (1–(n+1) for a term of n ≥ 3 words, F940 and F968, below) with the highest ratio at
+    /// or above the threshold, unless the
     /// term already stands as a window — one token or, since F820, several: F65 asked only whether
     /// it was one token, so a correct "Priya Raman said" scored 10/14 against "Priya Raman" and was
     /// proposed as it, deleting "said". The phrase returned is the window's text as it stands in
@@ -183,19 +184,30 @@ public enum GlossaryCorrector {
     /// inside the term. (Words joined across a tab or a double space were proposed with one space,
     /// which `apply` never found, until F914 made the phrase the text as it stands.)
     ///
-    /// **A term of four or more words is compared with windows up to its own length (F940)**; every
-    /// other term with windows of up to three words, as F65 compared every term. With three, the best
-    /// window for a mishearing of a longer term was part of it, and applying its row wrote the whole
-    /// term beside the rest: "the Bank of New Yolk said yes" became "the Bank of New York Yolk said
-    /// yes", and "Bank of New York Melon" "Bank of Bank of New York Mellon".
+    /// **A term of three or more words is compared with windows up to one more than its own length
+    /// (F940, F968)**; every other term with windows of up to three words, as F65 compared every
+    /// term. With three, the best window for a mishearing of a longer term was part of it, and
+    /// applying its row wrote the whole term beside the rest: "the Bank of New Yolk said yes" became
+    /// "the Bank of New York Yolk said yes", and "Bank of New York Melon" "Bank of Bank of New York
+    /// Mellon" (F940). With exactly its own length, a mishearing that split one of the term's words
+    /// was compared with too short a window and left the fragment behind: "the Bank of New Yor k"
+    /// became "the Bank of New York k" (F968).
+    ///
+    /// **A term is present where it equals a window of no more words than its own (F820, F968):**
+    /// "Priya Raman said", "Bank⟨TAB⟩of New York". Equal across *more* words it is that term with a
+    /// word split in two — "Kuber netes", "Priya Ram an" — a mishearing like any other, and the
+    /// best there is (F968; F820 counted any equal window as the term present, so "Kuber netes"
+    /// was never proposed).
     private static func bestLatinWindow(
         for term: PreparedTerm, in windows: LatinWindows, text: String, scratch: inout LCSScratch
     ) -> Placement? {
-        let largest = max(maxWindow, term.wordCount)
-        if let smallest = windows.smallestWindowSpelling[term.normalized], smallest <= largest { return nil }
+        let largest = max(maxWindow, term.wordCount + 1)
+        if let smallest = windows.smallestWindowSpelling[term.normalized], smallest <= term.wordCount { return nil }
         var best: (similarity: Double, window: LatinWindows.Window)?
+        // A window equal to the term is scored like any other: it has more words than the term, or
+        // the term would be present (above), and the LCS ratio gives it 1.
         for window in windows.all[..<windows.end(ofSize: largest)]
-        where !window.containsCJK && !window.ids.isEmpty && window.ids != term.ids {
+        where !window.containsCJK && !window.ids.isEmpty {
             let longer = max(window.ids.count, term.ids.count)
             // The LCS is at most the shorter length, so this ratio bounds the score: skip a window
             // that cannot reach the threshold, or cannot beat the best already found (F536).
@@ -375,7 +387,7 @@ public enum GlossaryCorrector {
         }
 
         /// Every window's normalized text, with the fewest tokens it is spelled across — a term equal
-        /// to one no longer than the term may be compared with is already in the segment (F820, F940).
+        /// to one of no more tokens than its own words is already in the segment (F820, F968).
         let smallestWindowSpelling: [String: Int]
         /// In F65's order: every one-token window, then every two-token window, then three, and on
         /// up to `largest` (F940).
@@ -484,7 +496,8 @@ public enum GlossaryCorrector {
         /// The evidence's known terms that could enclose a Chinese window (F594) — only a term with
         /// Chinese in it can.
         let knownCJKTerms: [String]
-        /// The most words any Latin window is built with: three, or the longest Latin term (F940).
+        /// The most words any Latin window is built with: three, or one more than the longest Latin
+        /// term (F940, F968).
         let largestLatinWindow: Int
 
         init(_ vocabulary: [String], knownTerms: [String]) {
@@ -500,7 +513,7 @@ public enum GlossaryCorrector {
                 )
             }
             hasCJKTerms = terms.contains(where: \.isCJK)
-            largestLatinWindow = terms.filter { !$0.isCJK }.map(\.wordCount).reduce(GlossaryCorrector.maxWindow, max)
+            largestLatinWindow = terms.filter { !$0.isCJK }.map { $0.wordCount + 1 }.reduce(GlossaryCorrector.maxWindow, max)
         }
     }
 
