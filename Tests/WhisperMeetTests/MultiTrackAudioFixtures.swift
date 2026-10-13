@@ -32,12 +32,32 @@ func fixtureTone(frequency: Double, amplitude: Double, seconds: Double, rate: Do
 /// tags the tracks in order. With `videoSeconds`, a black H.264 picture of that length is written too.
 func writeFixtureTracks(to url: URL, _ tracks: [FixtureTrack], alternates: Bool = false,
                         languages: [String]? = nil, videoSeconds: Double? = nil) async throws {
+    let samples: [[[Float]]] = tracks.map { track in
+        track.channels.map {
+            fixtureTone(frequency: $0.frequency, amplitude: $0.amplitude, seconds: track.seconds, rate: 48_000,
+                        from: track.audibleFrom, to: track.audibleTo)
+        }
+    }
+    try await writeFixtureSamples(to: url, samples, starts: tracks.map(\.startSeconds), alternates: alternates,
+                                  languages: languages, videoSeconds: videoSeconds)
+}
+
+/// `writeFixtureTracks` for tracks given as raw 48 kHz samples, one array per channel per track, each track
+/// presented from `starts[i]` seconds (0 when `starts` is shorter): for sound that is not a tone per channel,
+/// such as one track that is the sum, or a scaled or delayed copy, of another (F980).
+func writeFixtureRawTracks(to url: URL, _ tracks: [[[Float]]], starts: [Double] = []) async throws {
+    try await writeFixtureSamples(to: url, tracks, starts: tracks.indices.map { $0 < starts.count ? starts[$0] : 0 })
+}
+
+private func writeFixtureSamples(to url: URL, _ samples: [[[Float]]], starts: [Double], alternates: Bool = false,
+                                 languages: [String]? = nil, videoSeconds: Double? = nil) async throws {
     let rate = 48_000.0
+    let tracks = samples
     let type: AVFileType = url.pathExtension == "mov" ? .mov : (url.pathExtension == "m4a" ? .m4a : .mp4)
     let writer = try AVAssetWriter(outputURL: url, fileType: type)
     var inputs: [AVAssetWriterInput] = []
     for (index, track) in tracks.enumerated() {
-        let count = track.channels.count
+        let count = track.count
         // 128 kbps a channel, so each file is large enough beside Shrink's 32 kbps output that the
         // "nothing to gain" rule never decides a test about tracks.
         var settings: [String: Any] = [AVFormatIDKey: kAudioFormatMPEG4AAC, AVSampleRateKey: rate,
@@ -100,12 +120,6 @@ func writeFixtureTracks(to url: URL, _ tracks: [FixtureTrack], alternates: Bool 
         videoFrame += 1
         return true
     }
-    let samples: [[[Float]]] = tracks.map { track in
-        track.channels.map {
-            fixtureTone(frequency: $0.frequency, amplitude: $0.amplitude, seconds: track.seconds, rate: rate,
-                        from: track.audibleFrom, to: track.audibleTo)
-        }
-    }
     let chunk = 4_800
     var next = [Int](repeating: 0, count: inputs.count)
     var finished = [Bool](repeating: false, count: inputs.count)
@@ -130,7 +144,7 @@ func writeFixtureTracks(to url: URL, _ tracks: [FixtureTrack], alternates: Bool 
                     interleaved[frame * channels + channel] = Int16(clampedFixtureSample: samples[index][channel][start + frame])
                 }
             }
-            let startFrame = Int((tracks[index].startSeconds * rate).rounded()) + start
+            let startFrame = Int((starts[index] * rate).rounded()) + start
             try #require(input.append(try fixtureSampleBuffer(interleaved, channels: channels, rate: rate, startFrame: startFrame)),
                          "\(String(describing: writer.error))")
             next[index] = start + count

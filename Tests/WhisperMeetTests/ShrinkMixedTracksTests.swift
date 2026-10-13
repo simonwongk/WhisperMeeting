@@ -23,8 +23,9 @@ private final class CallFlag: @unchecked Sendable {
 }
 
 /// One imported meeting in a temp library: `Recordings/<id>/recording.<ext>`, as `importOne` lays it out.
+/// Shared with `ShrinkMixedCopyAuditTests`, the audit's adversarial fixtures (F980).
 @MainActor
-private struct MixFixture {
+struct MixFixture {
     let root: URL
     let model: AppModel
     let id: UUID
