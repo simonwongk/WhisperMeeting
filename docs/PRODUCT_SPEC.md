@@ -169,7 +169,9 @@ spite of it (F407).
 
 When appends to the capture tracks keep failing — a full disk is the case this is really about —
 the app tells the user, loudly and in every surface it has: the menu-bar title takes its warning
-mark, the risk announcer speaks it once (and once more if its advice changes, F960), the HUD says
+mark, the risk announcer speaks it once — and again each time its advice changes to a sentence not
+yet said in this recording, so at most three more times for its four wordings, and at most seven
+at-risk notifications in a recording all told (F960) — the HUD says
 "Audio is not being saved — stop and check disk space", and the in-window banner says to stop. When what fails is the captured audio's format
 rather than the write, the disk advice is left out (F888). When that is one track alone and the other
 is still being saved, the warning names the track and does not say to stop — "Microphone audio is
