@@ -171,3 +171,39 @@ func aLaterResultWaitsBehindTheHeldOne() throws {
     #expect(saved.status == .completed, "the earlier result was made on top of the later one: \(saved.status)")
     #expect(saved.transcriptText == finished, "\(saved.transcriptText)")
 }
+
+/// A held result whose meeting the other copy deletes has nothing left to describe: the next fold
+/// drops it, so the banner no longer names the meeting and Use the Other Copy, with nothing else to
+/// save, writes nothing (the review of Wave 5 lane Y, mutant R13; filed with F935).
+@MainActor
+@Test("A held result is dropped once the other copy has deleted its meeting, and does not keep an answer writing (F885, F935)")
+func aHeldResultForAMeetingTheOtherCopyDeletedIsDropped() throws {
+    let (store, root, _, review) = try libraryWithTheBannerUp("deleted-while-held")
+    defer { try? FileManager.default.removeItem(at: root) }
+    // A third meeting, whose result below is the lost save that folds the banner.
+    let notes = UUID()
+    store.upsert(MeetingRecord(id: notes, title: "Notes", status: .processing), as: .result)
+    _ = try otherCopySavesBeforeEachOfTheNextTwoSaves(of: store, in: root)
+    store.update(id: review, as: .result, transcribed)
+    store.beforeIndexSaveForTesting = nil
+    try #require(store.heldResultCount(for: review) == 1, "fixture: the transcript is held")
+
+    // The other copy deletes Review, and a result for Notes then loses to that commit: the recovery
+    // re-reads the library and folds the banner.
+    try otherCopyCommits(in: root) { $0.filter { $0.id != review } }
+    store.update(id: notes, as: .result) { $0.status = .completed }
+    try #require(store.meeting(id: review) == nil, "fixture: the other copy's delete did not land")
+    let offer = try #require(store.conflictOffer, "the person's own rename is still a question")
+
+    #expect(store.heldResultCount(for: review) == 0, "a result for a deleted meeting is still held")
+    #expect(!offer.heldResults.contains("Review"), "\(offer.message)")
+    #expect(!offer.message.contains("“Review”"), "the banner names a meeting the other copy deleted: \(offer.message)")
+    #expect(onDisk(root, notes)?.status == .completed, "the Notes result was lost on the way")
+
+    var saves = 0
+    store.beforeIndexSaveForTesting = { saves += 1 }
+    store.discardConflictedEdit()
+    #expect(store.conflictOffer == nil)
+    #expect(saves == 0, "Use the Other Copy, with nothing of its own to save, saved \(saves) time(s) for a dropped result")
+    #expect(onDisk(root, review) == nil, "a dropped result brought the deleted meeting back")
+}

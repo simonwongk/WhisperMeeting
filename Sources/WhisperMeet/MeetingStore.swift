@@ -1835,6 +1835,14 @@ final class MeetingStore: ObservableObject {
     /// Other Copy is chosen on a library that cannot be written, and by a restore, with the offer.
     private var heldResults: [HeldResult] = []
 
+    /// How many of a meeting's results are waiting for the banner's answer (F885): the one whose save
+    /// lost twice and every later one queued behind it (`update`). A caller whose write only repeats
+    /// what a held one will make — the progress path's `.processing` (F935) — asks this instead of
+    /// the list, whose copy a held result has not reached.
+    func heldResultCount(for id: UUID) -> Int {
+        heldResults.filter { $0.id == id }.count
+    }
+
     /// The titles of the meetings with a held result, in list order.
     private var heldResultTitles: [String] {
         let ids = Set(heldResults.map(\.id))

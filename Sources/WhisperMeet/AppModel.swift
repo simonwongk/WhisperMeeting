@@ -1790,6 +1790,13 @@ final class AppModel: ObservableObject {
     /// `executeEngine` performs the real Qwen/Whisper dispatch.
     var runTranscriptionEngineOverride: ((MeetingTranscriptionSelection, URL) async throws -> TranscriptionResult)?
 
+    /// `runTranscriptionEngineOverride` for a stub that reports progress (F935): it is handed the
+    /// run's progress callback, so a test can drive `apply(progress:)` through the real path a
+    /// Whisper run takes. Consulted before the plain override; nil in the app.
+    var runTranscriptionEngineWithProgressOverride: ((
+        MeetingTranscriptionSelection, URL, @escaping @Sendable (LocalTranscriptionProgress) async -> Void
+    ) async throws -> TranscriptionResult)?
+
     /// Builds the Whisper client `executeEngine` runs (F533). Production is the standard client: the
     /// app's model folder, the standard piece policy (a recording over 45 minutes is transcribed in
     /// pieces), and the `ffmpeg` Whisper itself would find. A seam, unlike
@@ -1927,6 +1934,9 @@ final class AppModel: ObservableObject {
         let url = try await Task.detached(priority: .userInitiated) {
             try await RecordingMixer.mixIfNeeded(url, into: mixDirectory)
         }.value ?? url
+        if let override = runTranscriptionEngineWithProgressOverride {
+            return try await override(selection, url, onProgress)
+        }
         if let override = runTranscriptionEngineOverride {
             return try await override(selection, url)
         }
@@ -7329,7 +7339,13 @@ final class AppModel: ObservableObject {
         // Persist the .processing transition once. Later progress ticks only move the in-memory
         // progress bar (transcriptionProgress isn't stored), so re-running the meeting index's
         // backup-validate + two atomic writes on every tick is pure waste.
-        if store.meeting(id: id)?.status != .processing {
+        //
+        // The list is this write's memory, and a `.processing` the banner is holding (F885) has not
+        // reached the list: while one is held, the store queues every later result for the meeting
+        // behind it, so each tick here added one more closure to make the same transition — 200
+        // ticks, 201 held — for as long as the banner waited (F935). The held one lands with the
+        // answer, in order, so nothing is written while it waits.
+        if store.heldResultCount(for: id) == 0, store.meeting(id: id)?.status != .processing {
             store.update(id: id, as: .result) { $0.status = .processing }
         }
     }
