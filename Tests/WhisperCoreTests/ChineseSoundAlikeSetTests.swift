@@ -82,3 +82,50 @@ func everydaySentencesGiveTheMeasuredSoundAlikeRows() {
     // Every row is a Chinese near-miss, so the sheet leaves it unticked and out of Select All (F817).
     #expect(GlossaryReviewDefaults.chineseSpans(rows) == Set(rows.indices))
 }
+
+// The review of Wave 7 lane V wrote 30 more everyday sentences, none a mishearing, for the classes
+// F916's near sounds add — another surname before a title, a numeral, a term spelled right beside
+// another that sounds like it — with the 30 terms above plus five name-and-title terms and 十月. F916
+// as first shipped gave 10 wrong rows there (four renaming a person, three changing a numeral, two
+// rewriting one listed term into another); round 2 leaves one, 精度 → 进度 (jing / jin), a word that
+// sounds nearly like a term, which the text cannot tell from a mishearing of it.
+
+private let vocabularyWithTitles = vocabulary + ["陈经理", "林总", "李老师", "沈总", "牛经理", "十月"]
+
+private let nearSoundSentences = [
+    "我们公司在北京", "这个公式很复杂", "这个模型的精度很高", "下午有四场比赛", "我们订了四间房",
+    "公示期已经结束", "程经理明天来", "宁总在开会", "倪老师上课了", "盛总下午到",
+    "刘经理请假了", "陈经理来了", "林总在开会", "这个系数要调", "测速结果出来了",
+    "这是十个人的项目", "那是事实", "他是四川人", "实际情况很复杂", "我们四月见",
+    "现在是四点", "新版本已经发布", "上星期很忙", "合作伙伴很满意", "部长明天到",
+    "这个功能很实用", "需要更多资金", "他很能干", "南方的天气很热", "冷静一点",
+]
+
+/// Every word NLTokenizer found in those sentences and terms (recorded for round 2 of Wave 7): the
+/// titled names as surname | title (陈 | 经理, 李 | 老师, 沈 | 总), 林总 whole, 四场 and 四间 split.
+private let recordedNearSoundWords: Set<String> = [
+    "一点", "上星期", "上线", "上课", "下午", "个", "主任", "了", "事实", "人", "他", "伙伴", "会议", "伟", "倪", "公司",
+    "公式", "公示期", "冷静", "出来", "刘", "到", "功能", "北京", "十", "十月", "南方", "原因", "发布", "合作", "合同", "周五",
+    "四", "四川", "四月", "四点", "在", "场", "复杂", "多", "天气", "宁", "实用", "实际", "客户", "已经", "市场", "干", "开会",
+    "张", "很", "忙", "总", "情况", "我们", "房", "报告", "数据", "新", "方案", "时间", "明", "明天", "是", "更", "有", "期限",
+    "权限", "李", "来", "林总", "模型", "比赛", "沈", "洋", "测试", "测速", "满意", "热", "版本", "牛", "王", "现在", "的", "盛",
+    "程", "精度", "系数", "系统", "经理", "结束", "结果", "老师", "能", "芳", "要", "见", "订", "请假", "调", "资金", "这", "这个",
+    "进度", "那", "部长", "部门", "间", "陈", "需求", "需要", "项目", "预算", "高",
+]
+
+@Test("The review's 30 near-sound sentences rename no person, change no numeral and rewrite no listed term (F916, F921)")
+func nearSoundSentencesRenameNoPersonAndChangeNoNumeral() {
+    let segmenter = dictionarySegmenter(recordedNearSoundWords)
+    // The premise: the dictionary reads the sentences as NLTokenizer was recorded to.
+    #expect(segmenter("下午有四场比赛").count == 5, "四场 must read as 四 | 场")
+    #expect(segmenter("林总在开会").count == 3, "林总 must read whole")
+    let evidence = CJKWordEvidence(segmenter: segmenter, knownTerms: vocabularyWithTitles)
+    let rows = GlossaryCorrector.corrections(
+        vocabulary: vocabularyWithTitles, segments: nearSoundSentences.map(seg), evidence: evidence
+    )
+    let shown = rows.map { "\(nearSoundSentences[$0.segmentIndex]): \($0.from) → \($0.to)" }
+    // Before round 2: also 公司 → 公式 and back, 四场 → 市场, 四间 → 时间, 四月 → 十月, 程经理 → 陈经理,
+    // 宁总 → 林总, 倪老师 → 李老师 and 刘经理 → 牛经理.
+    #expect(shown == ["这个模型的精度很高: 精度 → 进度"])
+    #expect(GlossaryReviewDefaults.chineseSpans(rows) == Set(rows.indices))
+}
