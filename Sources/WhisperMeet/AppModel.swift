@@ -3888,6 +3888,15 @@ final class AppModel: ObservableObject {
             for id in settledLinkImports {
                 if let meeting = store.meeting(id: id) { await removeUnfinishedExtraction(of: meeting) }
             }
+            // F936: a `capture.lock` nobody holds in a folder whose meeting IS indexed — left by a
+            // build that removed the file only on the capture's own Stop, or by a crash between the
+            // index save and the removal — is removed, because the launch's empty-index check reads a
+            // finished folder's lock file as "never indexed" and such a folder would hide a wipe of
+            // the index beside it. Only a lock the kernel says is free; the live recording's, and
+            // any other writer's, is left as it is. A folder still orphaned keeps its file (above).
+            for meeting in store.meetings where meeting.id != activeMeetingID {
+                RecordingCaptureLock.removeIfFree(in: store.recordingURL(for: meeting).deletingLastPathComponent())
+            }
             // F297: let go of every lock the probe took. The file goes too for a folder that is
             // now indexed — it no longer looks crashed, because it no longer is. A folder still
             // orphaned after the sweep keeps its file: it is the evidence that lets the NEXT

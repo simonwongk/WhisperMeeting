@@ -2132,7 +2132,16 @@ final class MeetingStore: ObservableObject {
             meetings[index].schemaVersion = MeetingRecord.currentSchemaVersion
             scheduleNotesSidecarWrite(for: result.id)
         }
-        persistMeetings()
+        if persistMeetings() {
+            // Indexed now, so a recording the banner held (`unsavedNew`) no longer needs its folder
+            // vouched for: the capture kept its `capture.lock` because the meeting was not indexed
+            // when it stopped (F936), and a finished folder's lock file reads as "never indexed" at
+            // the next launch, so left here it would hide a later wipe of the index beside it.
+            for record in records {
+                RecordingCaptureLock.removeIfFree(in: recordingURL(for: record).deletingLastPathComponent())
+            }
+            return
+        }
         guard writeConflict?.isRace == true else { return }
         meetings = withoutResults
         heldResults = results

@@ -42,6 +42,20 @@ public enum RecordingCaptureLock {
         FileManager.default.fileExists(atPath: directory.appendingPathComponent(filename).path)
     }
 
+    /// Removes the folder's lock file if nothing holds it, and says whether it did (F936). For a
+    /// folder whose meeting has just been indexed by a path other than the capture's own Stop — the
+    /// banner's answer saving a held Stop, the launch's sweep finding a file an earlier build or a
+    /// crash left behind — because `lockFileExists(in:)` reads a finished folder's file as "never
+    /// indexed", so an indexed folder that kept one would hide a later wipe of the index. A held
+    /// lock (a writer alive in the folder) and a lock that cannot be probed are left alone: this only
+    /// ever removes what the kernel says nobody is using.
+    @discardableResult
+    public static func removeIfFree(in directory: URL) -> Bool {
+        guard case .released(let handle) = probe(in: directory) else { return false }
+        handle.release(removingFile: true)
+        return true
+    }
+
     /// An open, flocked descriptor. The lock lives in the open file description, so the handle
     /// must outlive the capture; closing it releases the lock, which is the point.
     public final class Handle: @unchecked Sendable {

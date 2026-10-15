@@ -174,3 +174,108 @@ func aStopHeldByTheBannerKeepsItsLockFile() async throws {
     let reopened = MeetingStore(rootDirectory: root)
     #expect(reopened.health == .complete, "the next launch took the held recording for a wiped meeting: \(reopened.health)")
 }
+
+/// The rule above trusts the lock file to mean "never indexed", so every path that indexes a meeting
+/// must remove it (the review of Wave 7 lane Y, P1). The banner's answer is such a path: a Stop it
+/// held is indexed by Keep My Edit or Use the Other Copy (`saveBack`), and the file used to stay —
+/// forever, in an indexed folder — so a later wipe of the index beside it opened writable and the
+/// sweep replaced the meeting's index entry with a "Recovered Meeting".
+@MainActor
+@Test("A held Stop indexed by the banner's answer loses its lock file, so a later wipe beside it is still seen (F936)")
+func aHeldStopIndexedByTheBannersAnswerLosesItsLockFile() async throws {
+    let root = try libraryRoot("answered")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, cleanup) = try makeModel(root: root)
+    defer { cleanup() }
+    let store = model.store
+    store.upsert(MeetingRecord(id: UUID(), title: "Standup", status: .completed))
+    model.recordingTitle = "Board call"
+    await model.startRecording()
+    let id = try #require(model.activeMeetingID)
+    let folder = store.recordingDirectoryURL(for: id)
+    try model.recorder.beginTestTrackSession(in: folder)
+    try model.recorder.writeTestFrames(system: 48_000 * 2, microphone: 48_000 * 2, systemStart: 0, microphoneStart: 0)
+    let rival = BackupJSONStore<[MeetingRecord]>(
+        primaryURL: root.appendingPathComponent("meetings.json"),
+        backupURL: root.appendingPathComponent("meetings.backup.json"),
+        writer: "ffff9999", recordCount: { $0.count }
+    )
+    var seen = try rival.load()
+    _ = try rival.save([], expecting: seen?.token)
+    var saves = 0
+    store.beforeIndexSaveForTesting = {
+        saves += 1
+        if saves == 2 {
+            seen = try? rival.load()
+            _ = try? rival.save([MeetingRecord(title: "The other copy's", status: .recorded)], expecting: seen?.token)
+        }
+    }
+    _ = await model.stopRecording(title: model.recordingTitle)
+    store.beforeIndexSaveForTesting = nil
+    try #require(store.conflictOffer?.unsavedNew.contains { $0.id == id } == true, "fixture: the banner holds the Stop")
+    let lock = folder.appendingPathComponent(RecordingCaptureLock.filename).path
+    try #require(FileManager.default.fileExists(atPath: lock), "fixture: the held Stop keeps its lock file")
+
+    store.keepConflictedEdit()
+
+    try #require(MeetingStore(rootDirectory: root).meeting(id: id) != nil, "fixture: Keep did not index the held Stop")
+    #expect(!FileManager.default.fileExists(atPath: lock), "the indexed folder kept its lock file")
+    // A later wipe of the index (the 2026-08-14 shape) beside this one indexed recording.
+    seen = try rival.load()
+    _ = try rival.save([], expecting: seen?.token)
+    let reopened = MeetingStore(rootDirectory: root)
+    #expect(reopened.health == .suspectEmpty(recordingFolderCount: 1),
+            "an index wiped beside an indexed recording opened writable: \(reopened.health)")
+}
+
+/// A lock file left in an indexed folder by a build that did not remove it — or by a crash between
+/// the index save and the removal — is removed by the next launch's sweep, so it hides nothing after
+/// one clean launch. A lock the sweep cannot take (a writer alive in that folder) is left alone.
+@MainActor
+@Test("The sweep removes a free lock file left in an indexed folder, so the next wipe beside it is seen (F936)")
+func theSweepRemovesAStaleLockFromAnIndexedFolder() async throws {
+    let root = try libraryRoot("heal")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (id, folder) = try writeFinishedFolder(in: root, lockFile: true)
+    let seeded = MeetingStore(rootDirectory: root)
+    seeded.upsert(MeetingRecord(id: id, title: "Indexed, lock left behind",
+                                recordingPath: "Recordings/\(id.uuidString)/meeting.wav", status: .recorded))
+    try #require(seeded.health == .complete)
+    let lock = folder.appendingPathComponent(RecordingCaptureLock.filename).path
+
+    let (model, cleanup) = try makeModel(root: root)
+    defer { cleanup() }
+    await model.performStartupRecovery()
+
+    #expect(!FileManager.default.fileExists(atPath: lock), "the sweep left a free lock in an indexed folder")
+    #expect(model.store.meeting(id: id)?.title == "Indexed, lock left behind", "the sweep touched the indexed meeting")
+    // Another copy then wipes the index (the 2026-08-14 shape): seen, now that the folder counts again.
+    let rival = BackupJSONStore<[MeetingRecord]>(
+        primaryURL: root.appendingPathComponent("meetings.json"),
+        backupURL: root.appendingPathComponent("meetings.backup.json"),
+        writer: "ffff9999", recordCount: { $0.count }
+    )
+    let seen = try rival.load()
+    _ = try rival.save([], expecting: seen?.token)
+    #expect(MeetingStore(rootDirectory: root).health == .suspectEmpty(recordingFolderCount: 1))
+}
+
+@MainActor
+@Test("The sweep leaves a lock file whose writer is alive, whether or not its meeting is indexed (F936, F297)")
+func theSweepLeavesAHeldLockAlone() async throws {
+    let root = try libraryRoot("held")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (id, folder) = try writeFinishedFolder(in: root, lockFile: false)
+    let seeded = MeetingStore(rootDirectory: root)
+    seeded.upsert(MeetingRecord(id: id, title: "Being written", recordingPath: "Recordings/\(id.uuidString)/meeting.wav", status: .recorded))
+    let writer = try #require(RecordingCaptureLock.acquire(in: folder), "fixture: could not take the folder's lock")
+    defer { writer.release(removingFile: true) }
+    let lock = folder.appendingPathComponent(RecordingCaptureLock.filename).path
+
+    let (model, cleanup) = try makeModel(root: root)
+    defer { cleanup() }
+    await model.performStartupRecovery()
+
+    #expect(FileManager.default.fileExists(atPath: lock), "the sweep removed a lock a live writer holds")
+    #expect(RecordingCaptureLock.probe(in: folder) == .heldByLiveWriter)
+}

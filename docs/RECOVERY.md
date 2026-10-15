@@ -36,11 +36,13 @@ below, it is not a stale lock: the recording app holds it in an open file descri
 it is capturing, and the kernel releases it when that process dies. It is how a second copy of
 WhisperMeet tells a recording that is still in progress (lock held: left alone) from one that
 crashed (lock free: rebuilt, even while the other copy is open). It is removed once the meeting is
-indexed, and is safe to delete by hand — the folder is then treated as it was before the file
-existed, which is to say left alone while another copy of the app is open. A *finished* recording
-that still has the file was never indexed — the app stopped between writing `meeting.wav` and
-saving the index — so the launch does not count it as a meeting the index lost (the empty-index
-check below) and the sweep adds it to the history instead (F936).
+indexed — by the Stop that saves it, by the answer to the conflict banner when the banner held that
+Stop, or by the next launch's sweep for a file an earlier build or a crash left in an indexed folder
+(F936) — and is safe to delete by hand: the folder is then treated as it was before the file existed,
+which is to say left alone while another copy of the app is open. A *finished* recording that still
+has the file was never indexed — the app stopped between writing `meeting.wav` and saving the index —
+so the launch does not count it as a meeting the index lost (the empty-index check below) and the
+sweep adds it to the history instead (F936).
 
 Each `Recordings/<meeting-id>/` folder also holds a human-readable `notes.md` mirroring that
 meeting's transcript, summary and action items, regenerated automatically as they change. It is
