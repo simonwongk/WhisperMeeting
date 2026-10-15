@@ -128,8 +128,10 @@ verified and the index saved.
      another sounds over it, nor a track whose channels cancel when combined: the review deleted an original both ways
      (review of F942, R2 and M8). Instead `RecordingMixer.audit` reads every channel of every track again, the way the
      mixer reads them, in step with the copy, and `RecordingMixPlan.firstFinding` judges each **one-second** window
-     by one rule (F980, 2026-10-14): *the original is deleted only when every track's and every channel's sound is
-     provably in the copy; what the audit cannot prove is a refusal.* In each window: nothing measured is NaN or
+     by one rule (F980, 2026-10-14): *the original is deleted only when the audit finds every track's and every channel's
+     sound in the copy; what it cannot find is a refusal.* This holds against a lost or fully cancelled track; it does not
+     yet hold against a voice cancelled by an opposite-polarity copy of it on another track or channel (review of lane S,
+     X1–X4) or a loss shorter than about half a second inside one window (W) — F998, which keeps mixing Shrink off. In each window: nothing measured is NaN or
      infinite, in the recording's own decode, the audit's read or the copy (D2); every channel the recording's own
      decode hears was read for the mix; every track that sounds keeps a quarter of its sound when its channels are
      combined, and the tracks a quarter when summed (a track or tracks in opposite polarity are refused); the copy
