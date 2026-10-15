@@ -88,10 +88,33 @@ func nearHomophonesCountAsMishearings() {
     #expect(MandarinSound.canonicalReading("zhing") == "zin")
     #expect(MandarinSound.canonicalReading("er") == "er")
     // Through the pass: the term's own example, and a three-character term with the n/l confusion.
-    let segments = [seg("这个预选不够"), seg("请刘经理来一下")]
-    #expect(GlossaryCorrector.corrections(vocabulary: ["预算", "牛经理"], segments: segments) == [
+    // (Until round 2 of Wave 7 the second was 刘经理 → 牛经理: another person, which a near sound no
+    // longer renames — `nearHomophoneNeverReplacesALeadingSurname`.)
+    let segments = [seg("这个预选不够"), seg("今年的连终奖发了")]
+    #expect(GlossaryCorrector.corrections(vocabulary: ["预算", "年终奖"], segments: segments) == [
         GlossaryCorrection(segmentIndex: 0, from: "预选", to: "预算"),
-        GlossaryCorrection(segmentIndex: 1, from: "刘经理", to: "牛经理"),
+        GlossaryCorrection(segmentIndex: 1, from: "连终奖", to: "年终奖"),
+    ])
+}
+
+@Test("A near sound never stands in for the surname a term begins with, nor a surname for the term's first character (F916)")
+func nearHomophoneNeverReplacesALeadingSurname() {
+    // F916's table made 程 (cheng) sound like 陈 (chen), 宁 (ning) like 林 (lin), 倪 (ni) like 李 (li)
+    // and 刘 (liu) like 牛 (niu), so a name with a title — 程经理, 宁总 — was proposed as another
+    // person's (the review of Wave 7 lane V, four of ten wrong rows in 30 everyday sentences).
+    // Renaming a person is the worse error (F921), and an accent's near sound is as likely another
+    // surname as a mishearing. The surname list is `ChinesePersonName`'s; either side being on it is
+    // enough, since 宁 and 牛 are not on it while 林 and 刘 are.
+    let vocabulary = ["陈经理", "林总", "李老师", "牛经理", "预算", "张经理"]
+    let segments = [
+        seg("程经理明天来"), seg("宁总在开会"), seg("倪老师上课了"), seg("刘经理请假了"),
+        seg("这个预选不够"), seg("对，张经里"), seg("陈经里明天来"),
+    ]
+    // A near sound elsewhere in a term, and an exact one after its surname, are proposed as before.
+    #expect(GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments) == [
+        GlossaryCorrection(segmentIndex: 4, from: "预选", to: "预算"),
+        GlossaryCorrection(segmentIndex: 5, from: "张经里", to: "张经理"),
+        GlossaryCorrection(segmentIndex: 6, from: "陈经里", to: "陈经理"),
     ])
 }
 

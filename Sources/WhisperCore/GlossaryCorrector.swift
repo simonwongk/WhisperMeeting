@@ -57,7 +57,9 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// proposes nothing. A window must match more than half the term's characters, position for
 /// position — one of two for a two-character term, since F817 (`enoughInPlace`) — and every
 /// character it gets wrong must sound like the term's, or nearly, by the accent confusions
-/// `MandarinSound` folds (zh/z, sh/s/x, n/l, in/ing…, F916): matching two of three
+/// `MandarinSound` folds (zh/z, sh/s/x, n/l, in/ing…, F916), though a near sound never stands
+/// for a term's leading surname (程经理 is not 陈经理) and no window that is itself a term is
+/// proposed (公司 is not 公式 when both are listed): matching two of three
 /// characters in place also fits 王经理 for 张经理 and 数据集 for 数据库, which the review of F536
 /// found pre-ticked in seven of eight ordinary sentences. A homophone can still be a different real
 /// word or another person's name (公事 for 公式, 张薇 for 张伟), which is why a Chinese near-miss
@@ -332,8 +334,9 @@ public enum GlossaryCorrector {
                 // 张经理, not 王经理 — a different person who matches just as many characters.
                 let soundsAlike = (0..<length).allSatisfy { offset in
                     run.ids[start + offset] == term.ids[offset]
-                        || MandarinSound.isHomophone(
-                            text[run.indices[start + offset]], of: term.characters[offset], cache: &sounds
+                        || mayStandIn(
+                            text[run.indices[start + offset]], for: term.characters[offset],
+                            leading: offset == 0, sounds: &sounds
                         )
                 }
                 guard soundsAlike, !otherTerms.contains(Array(run.ids[start..<(start + length)])) else { continue }
@@ -347,6 +350,23 @@ public enum GlossaryCorrector {
             }
         }
         return best?.phrase
+    }
+
+    /// Whether `heard`, in a window, may be a mishearing of the term's `meant`: it sounds like it
+    /// (`MandarinSound`) — and, where the sound is only near rather than the same, it is not the
+    /// term's first character with a surname on either side (F916): 程经理 is not 陈经理, nor is 宁总
+    /// 林总 — an accent's near sound is as likely another person as a mishearing, and renaming a
+    /// person is the worse error (F921). Either side, since the list is `ChinesePersonName`'s
+    /// hundred: 宁 is not on it, 林 is.
+    private static func mayStandIn(
+        _ heard: Character, for meant: Character, leading: Bool, sounds: inout [Character: String]
+    ) -> Bool {
+        guard MandarinSound.isHomophone(heard, of: meant, cache: &sounds) else { return false }
+        if leading, ChinesePersonName.surnames.contains(heard) || ChinesePersonName.surnames.contains(meant),
+           !MandarinSound.isExactHomophone(heard, of: meant, cache: &sounds) {
+            return false
+        }
+        return true
     }
 
     /// Whether `common` characters in place are enough for a Chinese term of `length` characters:

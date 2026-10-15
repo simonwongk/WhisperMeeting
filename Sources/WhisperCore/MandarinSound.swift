@@ -33,6 +33,15 @@ enum MandarinSound {
         return canonicalReading(a) == canonicalReading(b)
     }
 
+    /// True when `heard` and `meant` are the same character or Han characters with the same toneless
+    /// reading — a homophone without the table's near sounds, for the places a near sound is not
+    /// enough (a term's leading surname, F916).
+    static func isExactHomophone(_ heard: Character, of meant: Character, cache: inout [Character: String]) -> Bool {
+        guard heard != meant else { return true }
+        guard let a = reading(heard, cache: &cache), let b = reading(meant, cache: &cache) else { return false }
+        return a == b
+    }
+
     /// Pinyin initials, the two-letter ones first so "zh" is not read as "z" + "h".
     private static let initials = ["zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "j", "q", "x", "r", "z", "c", "s", "y", "w"]
 
