@@ -286,6 +286,10 @@ final class DictationController: ObservableObject {
     private static let useVocabularyKey = "dictationUseVocabulary"
     private static let engineKey = "dictationTranscriptionEngine"
 
+    /// The `Application Support` folder whose runtimes the helper sync looks at (F879). nil is the
+    /// library the app runs against; a test names a folder of its own.
+    private let applicationSupport: URL?
+
     /// `defaults` follows the library (F550): a `WHISPERMEET_LIBRARY` instance keeps its dictation
     /// settings apart from the real library's, as `AppModel`'s convenience init does.
     init(
@@ -304,9 +308,11 @@ final class DictationController: ObservableObject {
         textInjector: TextInjector? = nil,
         idleEvictSeconds: TimeInterval = 300,
         activationNotifications: NotificationCenter = .default,
+        applicationSupport: URL? = nil,
         activateOnInit: Bool = true
     ) {
         self.defaults = defaults
+        self.applicationSupport = applicationSupport
         self.recorder = recorder
         self.overlay = overlay ?? DictationOverlay()
         self.textInjector = textInjector ?? TextInjector()
@@ -1037,14 +1043,25 @@ final class DictationController: ObservableObject {
     /// partial script and an already-current runtime incurs no write.
     private func ensureHelperInstalled() {
         let files = FileManager.default
-        var helpers = Self.bundledDictationHelpers(fileManager: files)
-        helpers.append(Self.bundledRefineHelper(fileManager: files))
-        helpers.append(Self.bundledSummarizeHelper(fileManager: files))
-        helpers.append(Self.bundledCorrectHelper(fileManager: files))
+        // F879: the real library is read only when this controller is the app's. In a test process a
+        // controller that named no library of its own syncs nothing, and the refusal is recorded
+        // (`TestProcess`), rather than reading what the host happens to have installed.
+        let support: URL?
+        if let applicationSupport {
+            support = applicationSupport
+        } else if TestProcess.allowsRealAccess(to: "runtime helper sync") {
+            support = nil
+        } else {
+            return
+        }
+        var helpers = Self.bundledDictationHelpers(applicationSupport: support, fileManager: files)
+        helpers.append(Self.bundledRefineHelper(applicationSupport: support, fileManager: files))
+        helpers.append(Self.bundledSummarizeHelper(applicationSupport: support, fileManager: files))
+        helpers.append(Self.bundledCorrectHelper(applicationSupport: support, fileManager: files))
         // The one-shot Qwen meeting helper is read at process launch. Atomic replacement makes
         // readers safe, but defer a nonessential update while an existing meeting pass owns it.
         if !isMeetingTranscriptionRunning() {
-            helpers.append(Self.bundledQwenMeetingHelper(fileManager: files))
+            helpers.append(Self.bundledQwenMeetingHelper(applicationSupport: support, fileManager: files))
         }
         for (helper, outcome) in zip(helpers, DictationHelperSync.sync(helpers, fileManager: files)) {
             switch outcome {
@@ -1067,9 +1084,10 @@ final class DictationController: ObservableObject {
     /// (all engine cases — deliberately not `selectedEngine`, which was the F25 bug), attaching the
     /// bundle bytes and whether that engine's runtime is installed.
     private static func bundledDictationHelpers(
+        applicationSupport: URL?,
         fileManager files: FileManager
     ) -> [DictationHelperSync.Helper] {
-        DictationHelperSync.installedHelperPlan().map { location in
+        DictationHelperSync.installedHelperPlan(applicationSupport: applicationSupport).map { location in
             DictationHelperSync.Helper(
                 name: location.resource,
                 bundledData: Bundle.main.url(forResource: location.resource, withExtension: "py")
@@ -1085,15 +1103,16 @@ final class DictationController: ObservableObject {
     /// reinstall. `DictationHelperSync.sync` is engine-agnostic: an absent runtime is skipped,
     /// never created.
     private static func bundledRefineHelper(
+        applicationSupport: URL?,
         fileManager files: FileManager
     ) -> DictationHelperSync.Helper {
         DictationHelperSync.Helper(
             name: "refine_server",
             bundledData: Bundle.main.url(forResource: "refine_server", withExtension: "py")
                 .flatMap { try? Data(contentsOf: $0) },
-            installedScript: SummarizerRuntime.refineHelperScript(),
+            installedScript: SummarizerRuntime.refineHelperScript(applicationSupport: applicationSupport),
             runtimeInstalled: files.isExecutableFile(
-                atPath: SummarizerRuntime.pythonExecutable().path
+                atPath: SummarizerRuntime.pythonExecutable(applicationSupport: applicationSupport).path
             )
         )
     }
@@ -1103,11 +1122,13 @@ final class DictationController: ObservableObject {
     /// that wrote it, so an existing install would have kept a silent copy — and a long, healthy
     /// prefill would then read as a stall.
     private static func bundledSummarizeHelper(
+        applicationSupport: URL?,
         fileManager files: FileManager
     ) -> DictationHelperSync.Helper {
         summarizeHelper(
             bundledData: Bundle.main.url(forResource: "summarize_local", withExtension: "py")
                 .flatMap { try? Data(contentsOf: $0) },
+            applicationSupport: applicationSupport,
             fileManager: files
         )
     }
@@ -1137,11 +1158,13 @@ final class DictationController: ObservableObject {
     /// install only after the summarizer's Repair, while the app's Swift side already expected the
     /// new payload shape.
     private static func bundledCorrectHelper(
+        applicationSupport: URL?,
         fileManager files: FileManager
     ) -> DictationHelperSync.Helper {
         correctHelper(
             bundledData: Bundle.main.url(forResource: "correct_local", withExtension: "py")
                 .flatMap { try? Data(contentsOf: $0) },
+            applicationSupport: applicationSupport,
             fileManager: files
         )
     }
@@ -1167,11 +1190,13 @@ final class DictationController: ObservableObject {
     }
 
     private static func bundledQwenMeetingHelper(
+        applicationSupport: URL?,
         fileManager files: FileManager
     ) -> DictationHelperSync.Helper {
         qwenMeetingHelper(
             bundledData: Bundle.main.url(forResource: "qwen_transcribe", withExtension: "py")
                 .flatMap { try? Data(contentsOf: $0) },
+            applicationSupport: applicationSupport,
             fileManager: files
         )
     }

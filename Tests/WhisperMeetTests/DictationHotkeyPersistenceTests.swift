@@ -34,6 +34,7 @@ func newerBuildsHotkeyModeKeepsTheUsersKey() async throws {
         logStore: DictationLogStore(directory: temporaryDirectory),
         captureSleep: { _ in try await Task.sleep(for: .seconds(3600)) },
         textInjector: isolatedTextInjector(),
+        applicationSupport: temporaryDirectory.appendingPathComponent("Application Support"), // F879
         activateOnInit: true // what the app does at launch
     )
 

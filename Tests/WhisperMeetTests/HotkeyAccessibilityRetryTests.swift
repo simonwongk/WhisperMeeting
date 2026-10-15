@@ -67,6 +67,7 @@ private struct Harness {
             logStore: DictationLogStore(directory: directory),
             textInjector: isolatedTextInjector(),
             activationNotifications: notifications,
+            applicationSupport: directory.appendingPathComponent("Application Support"), // F879
             activateOnInit: true
         )
     }

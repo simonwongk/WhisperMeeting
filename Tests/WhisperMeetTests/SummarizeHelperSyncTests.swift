@@ -46,6 +46,6 @@ func completeSummarizerRuntimeReceivesBundledHelper() throws {
 @Test("The launch helper sync includes the summary helper (F512)")
 func launchSyncIncludesTheSummaryHelper() throws {
     let dictation = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/Dictation/DictationController.swift")
-    let helperIsSynced = dictation.contains("helpers.append(Self.bundledSummarizeHelper(fileManager: files))")
+    let helperIsSynced = dictation.contains("helpers.append(Self.bundledSummarizeHelper(applicationSupport: support, fileManager: files))")
     #expect(helperIsSynced)
 }

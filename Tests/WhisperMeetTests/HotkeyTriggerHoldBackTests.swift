@@ -379,6 +379,7 @@ func aListenOnlyFKeyIsRearmedOnActivation() throws {
         captureSleep: { _ in try await Task.sleep(for: .seconds(3600)) },
         textInjector: isolatedTextInjector(),
         activationNotifications: notifications,
+        applicationSupport: directory.appendingPathComponent("Application Support"), // F879
         activateOnInit: true
     )
     try #require(monitor.startCount == 1)

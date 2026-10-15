@@ -28,6 +28,7 @@ func changingHotkeyResyncsStatus() async throws {
         hotkeyMonitor: monitor,
         logStore: DictationLogStore(directory: temporaryDirectory),
         textInjector: isolatedTextInjector(),
+        applicationSupport: temporaryDirectory.appendingPathComponent("Application Support"), // F879
         activateOnInit: true
     )
 

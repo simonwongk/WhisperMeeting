@@ -48,6 +48,6 @@ func completeSummarizerRuntimeReceivesBundledCorrectionHelper() throws {
 @Test("The launch helper sync includes the correction helper (F643)")
 func launchSyncIncludesTheCorrectionHelper() throws {
     let dictation = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/Dictation/DictationController.swift")
-    let helperIsSynced = dictation.contains("helpers.append(Self.bundledCorrectHelper(fileManager: files))")
+    let helperIsSynced = dictation.contains("helpers.append(Self.bundledCorrectHelper(applicationSupport: support, fileManager: files))")
     #expect(helperIsSynced)
 }
