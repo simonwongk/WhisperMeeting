@@ -526,5 +526,6 @@ conversion and F947) is measured after all, once: when Shrink measures such a fo
 `AVAudioFile` cannot open and no record, it asks the installed `ffprobe` for the container's duration
 (`InterruptedLinkImportExtraction.measureDownload`) and writes the same record, so the next look reads the record
 and no subprocess runs again. A download ffprobe cannot measure — none installed, not media, a container with no
-duration — is refused as before, nothing is written, and it is not asked about again that session. The refusal
-rules are unchanged: a length ffprobe reads that is longer than the recording keeps the download.
+duration, or one whose length ffprobe could only estimate from the bitrate (it warns that it did, and any line beside
+the number measures nothing) — is refused as before, nothing is written, and it is not asked about again that
+session. The refusal rules are unchanged: a length ffprobe reads that is longer than the recording keeps the download.

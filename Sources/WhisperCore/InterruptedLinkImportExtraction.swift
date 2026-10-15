@@ -470,9 +470,12 @@ extension InterruptedLinkImportExtraction {
     ///
     /// `ffprobe -show_entries format=duration` prints the container's own duration (for WebM, the
     /// Segment's Duration element that ffmpeg and yt-dlp write when the file is complete) and `N/A`
-    /// where there is none, which reads as nil. Checked against the installed ffprobe 8.1.2's `-h`
-    /// (`-show_entries`, `-of`, `-v`) on 2026-10-14. Fail-closed throughout: nothing here can make a
-    /// download read as shorter than silence, and a claim longer than the recording keeps it.
+    /// where there is none, which reads as nil. Where there is none but the codec carries a bitrate,
+    /// ffprobe instead estimates one from the file's size and warns that it did; the probe runs at
+    /// warning level and an answer with any message beside it reads as nil (`probedDuration`), so a
+    /// guess — which may be short — is never taken for a measurement. Checked against the installed
+    /// ffprobe 8.1.2's `-h` (`-show_entries`, `-of`, `-v`) on 2026-10-14, and its warning on a 20 s MP3
+    /// in Matroska written to a pipe on 2026-10-15. A claim longer than the recording keeps it.
     public static func measureDownload(
         _ download: URL, ffprobe: URL?, stallTimeout: TimeInterval = 30
     ) async -> TimeInterval? {
@@ -485,9 +488,21 @@ extension InterruptedLinkImportExtraction {
             outputUse: .parsedResult
         )
         guard let outcome, outcome.exitStatus == 0 else { return nil }
-        let lines = outcome.output.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-        guard let last = lines.last(where: { !$0.isEmpty }), let seconds = TimeInterval(last),
-              seconds.isFinite, seconds > 0 else { return nil }
+        return probedDuration(fromOutput: outcome.output)
+    }
+
+    /// The seconds in `ffprobe`'s merged output for `probeDuration`, or nil unless that output is one
+    /// line holding one finite positive number. `probeDuration` runs at warning level, so the line
+    /// libavformat prints when it estimates a duration from the bitrate ("Estimating duration from
+    /// bitrate, this may be inaccurate" — a container with no Duration whose codec carries a bitrate)
+    /// arrives beside the number, and any line beside it means the answer was not read from the
+    /// container: nothing is measured, and Shrink keeps the download.
+    static func probedDuration(fromOutput output: String) -> TimeInterval? {
+        let lines = output.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard lines.count == 1, let seconds = TimeInterval(lines[0]), seconds.isFinite, seconds > 0
+        else { return nil }
         return seconds
     }
 }

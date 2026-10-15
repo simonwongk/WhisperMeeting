@@ -92,11 +92,13 @@ public enum MediaDownloadArguments {
     }
 
     /// `ffprobe` printing only the container's duration in seconds, one bare number, or `N/A` (F962):
-    /// `-v error` so nothing else reaches the output, `-show_entries format=duration` for that one
-    /// field, and `-of default=noprint_wrappers=1:nokey=1` for the value alone. The input is named
-    /// `file:` as `finishExtraction` names its own, so a path is never read as a URL scheme.
+    /// `-v warning` so the warning ffprobe prints when it estimates a duration from the bitrate
+    /// reaches the output beside the number (an answer with anything beside it measures nothing),
+    /// `-show_entries format=duration` for that one field, and `-of default=noprint_wrappers=1:nokey=1`
+    /// for the value alone. The input is named `file:` as `finishExtraction` names its own, so a path
+    /// is never read as a URL scheme.
     public static func probeDuration(input: String) -> [String] {
-        ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "file:\(input)"]
+        ["-v", "warning", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "file:\(input)"]
     }
 
     /// Best-effort caption fetch, pinned to `subLangs` (the video's own language from the probe) so an

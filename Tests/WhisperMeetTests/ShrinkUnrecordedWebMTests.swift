@@ -164,3 +164,48 @@ func realFFprobeMeasuresAWebM() async throws {
     #expect(await InterruptedLinkImportExtraction.measureDownload(notMedia, ffprobe: ffprobe) == nil)
     #expect(await InterruptedLinkImportExtraction.measureDownload(webm, ffprobe: nil) == nil)
 }
+
+@Test("ffprobe's answer counts only when it is one clean duration: a bitrate estimate, or any other message beside it, measures nothing (F962)")
+func aProbedDurationCountsOnlyWhenItIsClean() {
+    // A container with no Duration (a WebM or MKA written to a pipe) whose codec carries a bitrate is
+    // measured by libavformat from size ÷ bitrate, and said so only at warning level. A guess can be
+    // short as easily as long, and a short one would let Shrink remove a download holding more audio
+    // than the recording, so any line beside the number is a reason to measure nothing.
+    let estimate = "[matroska,webm @ 0x7845018000] Estimating duration from bitrate, this may be inaccurate\n20.393000\n"
+    #expect(InterruptedLinkImportExtraction.probedDuration(fromOutput: estimate) == nil)
+    #expect(InterruptedLinkImportExtraction.probedDuration(fromOutput: "[opus @ 0x1] Some other warning\n7.008000\n") == nil)
+    #expect(InterruptedLinkImportExtraction.probedDuration(fromOutput: "7.008000\n7.008000\n") == nil)
+    #expect(InterruptedLinkImportExtraction.probedDuration(fromOutput: "7.008000\n") == 7.008)
+    #expect(InterruptedLinkImportExtraction.probedDuration(fromOutput: "N/A\n") == nil)
+    #expect(InterruptedLinkImportExtraction.probedDuration(fromOutput: "") == nil)
+    // The real tool is asked to say when it guesses.
+    let arguments = MediaDownloadArguments.probeDuration(input: "/x/recording.mka")
+    let level = arguments.firstIndex(of: "-v").map { arguments[arguments.index(after: $0)] }
+    #expect(level == "warning", "\(arguments)")
+}
+
+@Test(
+    "The installed ffprobe's bitrate guess for an MP3 in Matroska written to a pipe measures nothing, so Shrink keeps that download (F962)",
+    .enabled(if: ProcessInfo.processInfo.environment["REAL_FFMPEG"] == "1")
+)
+func realFFprobeBitrateGuessMeasuresNothing() async throws {
+    let ffmpeg = try #require(MediaDownloadRuntime.findFFmpeg(), "REAL_FFMPEG=1 needs an installed ffmpeg")
+    let ffprobe = try #require(MediaDownloadRuntime.findFFprobe(), "REAL_FFMPEG=1 needs an installed ffprobe")
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("F962-guess-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let piped = folder.appendingPathComponent("recording.mka")
+    // Written to a pipe, so the muxer cannot go back and write the Segment's Duration (the review's file).
+    let made = try await ProcessGroupRunner().run(
+        executableURL: URL(fileURLWithPath: "/bin/sh"),
+        arguments: ["-c", "\"$0\" -nostdin -loglevel error -f lavfi -i sine=frequency=440:duration=20 -c:a libmp3lame -b:a 128k -f matroska - > \"$1\"",
+                    ffmpeg.path, piped.path],
+        environment: MediaDownloadClient.makeEnvironment(),
+        stallTimeout: 0
+    )
+    try #require(made.exitStatus == 0, "could not make the piped MKA: \(made.output)")
+    try #require(DecodedAudio.declaredDuration(of: piped) == nil, "fixture: AVAudioFile read the MKA, so ffprobe is never consulted for it")
+
+    #expect(await InterruptedLinkImportExtraction.measureDownload(piped, ffprobe: ffprobe) == nil,
+            "a length ffprobe estimated from the bitrate was taken as measured")
+}
