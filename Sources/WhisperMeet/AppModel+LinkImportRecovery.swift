@@ -23,6 +23,9 @@ extension AppModel {
         case unfinished(reason: String, recording: URL)
         /// Cancelled: index nothing, so the next launch finds the folder as it was.
         case leaveForNextLaunch
+        /// The download's conversion was still running when the launch stopped waiting for it (F912):
+        /// index nothing now; `finishDeferredLinkImportConversion` adds the meeting when it ends.
+        case converting(Task<URL, Error>, download: URL)
     }
 
     /// The caveat on a link import recovered from a WAV that could not be checked against the complete
@@ -59,6 +62,8 @@ extension AppModel {
             switch await convertInterruptedLinkImportDownload(download) {
             case .cancelled:
                 return .leaveForNextLaunch
+            case let .converting(task):
+                return .converting(task, download: download)
             case let .converted(finished, seconds):
                 return .recording(
                     RecoveredRecording(recordingURL: finished, duration: seconds, source: .importedRecording),
@@ -90,6 +95,8 @@ extension AppModel {
         switch await convertInterruptedLinkImportDownload(download) {
         case .cancelled:
             return .leaveForNextLaunch
+        case let .converting(task):
+            return .converting(task, download: download)
         case let .converted(finished, seconds):
             return .recording(
                 RecoveredRecording(recordingURL: finished, duration: seconds, source: .importedRecording),
@@ -183,26 +190,155 @@ extension AppModel {
         case converted(URL, TimeInterval)
         case failed(String)
         case cancelled
+        /// Still running when the launch stopped waiting for it (F912).
+        case converting(Task<URL, Error>)
     }
 
-    /// Runs `finishInterruptedLinkImportExtraction` (under the launch's time limit) and measures its
-    /// result; a result AVFoundation cannot measure counts as a failed conversion.
+    /// Runs `finishInterruptedLinkImportExtraction` and measures its result; a result AVFoundation
+    /// cannot measure counts as a failed conversion.
+    ///
+    /// The launch waits `linkImportConversionWait` for it (F912). A conversion still running then is
+    /// not stopped — `0da8039` killed it and listed the import as unfinished, whose remedy is a second
+    /// download of something complete on disk — but left running, and handed back for
+    /// `finishDeferredLinkImportConversion` to index when it ends. Its own expiry is its output
+    /// (`linkImportConversionStallLimit`, in the seam's default).
     ///
     /// A finished conversion is a measurement of the download too: the WAV holds all of it. So its
     /// length is recorded beside the download (`InterruptedLinkImportExtraction.recordConversion`),
     /// which is how Shrink can show the recording covers a WebM that AVFoundation cannot read, and
     /// remove it (F947). Without the record such a meeting was never shrunk.
     private func convertInterruptedLinkImportDownload(_ download: URL) async -> LinkImportConversion {
-        do {
-            let finished = try await finishInterruptedLinkImportExtraction(download)
+        let finish = finishInterruptedLinkImportExtraction
+        let conversion = Task { try await finish(download) }
+        let wait = linkImportConversionWait
+        // Whichever ends first: the conversion, or the wait. Not a task group — a group waits for
+        // every child before it returns, and a child awaiting `conversion.result` cannot be
+        // cancelled, so a group made the launch wait for the whole conversion after all (the first
+        // cut of F912 did, and its tests passed only because their stubs ended on their own). Two
+        // free tasks race for one continuation instead; the loser finishes later and resumes nothing.
+        let ended = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            let first = FirstToFinish()
+            Task {
+                _ = await conversion.result
+                if first.claim() { continuation.resume(returning: true) }
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(wait))
+                if first.claim() { continuation.resume(returning: false) }
+            }
+        }
+        guard ended else { return .converting(conversion) }
+        return await settleConversion(conversion.result, of: download)
+    }
+
+    /// Lets exactly one of two racing tasks resume a continuation (F912).
+    private final class FirstToFinish: @unchecked Sendable {
+        private let lock = NSLock()
+        private var claimed = false
+        func claim() -> Bool {
+            lock.withLock {
+                defer { claimed = true }
+                return !claimed
+            }
+        }
+    }
+
+    /// What a conversion's end means for the import: measured and recorded, failed, or cancelled.
+    private func settleConversion(_ result: Result<URL, Error>, of download: URL) async -> LinkImportConversion {
+        switch result {
+        case let .success(finished):
             let measured = await Self.loadDuration(of: finished)
             guard measured > 0 else { return .failed(MediaDownloadError.extractionFailed.localizedDescription) }
             InterruptedLinkImportExtraction.recordConversion(of: download, seconds: measured)
             return .converted(finished, measured)
-        } catch is CancellationError {
+        case .failure(is CancellationError):
             return .cancelled
-        } catch {
+        case let .failure(error):
             return .failed(error.localizedDescription)
         }
+    }
+
+    /// Adds the meeting of a link import whose conversion outlasted the launch's wait, once that
+    /// conversion ends (F912): from the finished WAV as the sweep would have, or as an unfinished
+    /// import when it could not be finished. Says so through `report`, as the sweep's notice does
+    /// (F257). A cancelled conversion — a quit — indexes nothing, so the next launch finds the folder
+    /// as it was; so does one that ends after the library stopped accepting changes, or after
+    /// something else indexed the folder.
+    func finishDeferredLinkImportConversion(
+        orphan: OrphanedRecording, download: URL, conversion: Task<URL, Error>,
+        mediaSource: MediaSource, provenanceTags: [String]?
+    ) async {
+        let settled = await settleConversion(conversion.result, of: download)
+        // A quit cancels this task (`cancelWorkForQuit`): nothing is indexed even if the conversion
+        // had just finished, so the next launch finds the folder, WAV and all, and decides itself.
+        guard !Task.isCancelled, !store.isDegraded, !store.isRestoringLibrary, store.meeting(id: orphan.id) == nil else { return }
+        switch settled {
+        case .cancelled, .converting:
+            return
+        case let .failed(reason):
+            report(indexUnfinishedLinkImport(
+                orphan: orphan, download: download, reason: reason,
+                mediaSource: mediaSource, provenanceTags: provenanceTags
+            ))
+        case let .converted(finished, seconds):
+            report(indexConvertedLinkImport(
+                orphan: orphan, finished: finished, seconds: seconds,
+                mediaSource: mediaSource, provenanceTags: provenanceTags
+            ))
+            if let meeting = store.meeting(id: orphan.id) { await removeUnfinishedExtraction(of: meeting) }
+        }
+    }
+
+    /// Lists a link import whose conversion could not be finished (F453): the download as its
+    /// recording, with why, and never a suggestion to delete the entry. Returns the notice.
+    func indexUnfinishedLinkImport(
+        orphan: OrphanedRecording, download: URL, reason: String,
+        mediaSource: MediaSource, provenanceTags: [String]?
+    ) -> String {
+        let failedTitle = Self.unfinishedLinkImportTitle(host: mediaSource.host)
+        let message = Self.unfinishedLinkImportMessage(reason: reason)
+        store.upsert(MeetingRecord(
+            id: orphan.id,
+            title: failedTitle,
+            createdAt: orphan.createdAt,
+            recordingPath: store.relativeRecordingPath(for: download),
+            status: .failed,
+            errorMessage: message,
+            tags: provenanceTags,
+            recoverySource: RecoveredRecording.Source.importedRecording.rawValue,
+            source: mediaSource
+        ))
+        return "\(failedTitle) needs attention. \(message)"
+    }
+
+    /// Adds the meeting of a link import from the WAV its deferred conversion made (F912) — the record
+    /// `performStartupRecovery`'s sweep writes for a recovered import that is not truncated, read
+    /// from the same sidecar: a link import has no capture session, so its title is the synthesized
+    /// one unless a session says otherwise, and it carries no markers or sleep. Returns the notice.
+    private func indexConvertedLinkImport(
+        orphan: OrphanedRecording, finished: URL, seconds: TimeInterval,
+        mediaSource: MediaSource, provenanceTags: [String]?
+    ) -> String {
+        let session = RecordingSessionSidecar.read(in: orphan.directory)
+        let userTitle = session?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let title = userTitle.isEmpty
+            ? "Recovered Meeting \(orphan.createdAt.formatted(date: .abbreviated, time: .shortened))"
+            : userTitle
+        let recovered = RecoveredRecording(recordingURL: finished, duration: seconds, source: .importedRecording)
+        store.upsert(MeetingRecord(
+            id: orphan.id,
+            title: title,
+            createdAt: orphan.createdAt,
+            duration: seconds,
+            recordingPath: store.relativeRecordingPath(for: finished),
+            errorMessage: "Recovered after an interruption. The original recording and source tracks were preserved.",
+            markers: session?.markers.isEmpty == false ? session?.markers : nil,
+            tags: provenanceTags,
+            recoveryWarning: Self.recoveryWarning(for: recovered),
+            recoverySource: recovered.source.rawValue,
+            recoveryInterruption: session?.interruptedBySleepAt == nil ? nil : RecoveryInterruption.systemSleep.rawValue,
+            source: mediaSource
+        ))
+        return "\(title) was added back to meeting history."
     }
 }

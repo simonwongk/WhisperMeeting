@@ -60,11 +60,16 @@ public enum InterruptedLinkImportExtraction {
     ///
     /// - Parameter ffmpeg: the executable, or nil when none is installed (`ffmpegMissing`).
     /// - Parameter timeLimit: the longest the conversion may run, or nil for no limit.
+    /// - Parameter outputStallTimeout: the longest the conversion's output may go without growing
+    ///   before it is killed and `extractionStalled` thrown (F912), or nil for no such bound. The
+    ///   expiry a conversion left to finish in the background needs, derived from what a conversion
+    ///   does — ffmpeg writes the WAV as it goes — rather than from how long one may take.
     public static func finish(
         download: URL,
         ffmpeg: URL?,
         stallTimeout: TimeInterval = MediaDownloadClient.defaultStallTimeout,
-        timeLimit: TimeInterval? = nil
+        timeLimit: TimeInterval? = nil,
+        outputStallTimeout: TimeInterval? = nil
     ) async throws -> URL {
         guard let ffmpeg else { throw MediaDownloadError.ffmpegMissing }
         let directory = download.deletingLastPathComponent()
@@ -95,6 +100,30 @@ public enum InterruptedLinkImportExtraction {
             }
         }
         defer { watch?.cancel() }
+        // F912: the output's own clock. Sampled rather than watched, because what matters is that the
+        // file grew at all since the last look; a stuck ffmpeg's progress lines do not touch it.
+        let stall = TimeLimitWatch()
+        let outputWatch = outputStallTimeout.map { seconds in
+            Task.detached {
+                var lastSize: Int64 = -1
+                var lastGrowth = ProcessInfo.processInfo.systemUptime
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    if Task.isCancelled { return }
+                    let size = (try? FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?.int64Value ?? -1
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if size != lastSize {
+                        lastSize = size
+                        lastGrowth = now
+                    } else if now - lastGrowth >= seconds {
+                        stall.markReached()
+                        runner.kill()
+                        return
+                    }
+                }
+            }
+        }
+        defer { outputWatch?.cancel() }
         do {
             let outcome: ProcessGroupRunner.Outcome
             do {
@@ -112,6 +141,8 @@ public enum InterruptedLinkImportExtraction {
             } catch is CancellationError where limit.wasReached {
                 // The watch's cancel, not the caller's: a caller's cancellation is rethrown as it is.
                 throw MediaDownloadError.extractionTimedOut(timeLimit ?? 0)
+            } catch is CancellationError where stall.wasReached {
+                throw MediaDownloadError.extractionStalled(outputStallTimeout ?? 0)
             }
             // Non-empty, not merely present: this run created the file before ffmpeg started.
             let written = (try? FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber)?.int64Value ?? 0

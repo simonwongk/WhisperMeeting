@@ -288,6 +288,63 @@ func aCancelledConversionIsNotATimeout() async throws {
     #expect(temporaryFiles(in: folder).isEmpty, "a temp file was left: \(temporaryFiles(in: folder))")
 }
 
+// MARK: - F912: a conversion left to finish in the background expires when its output stops growing
+
+/// A stand-in ffmpeg whose output keeps growing: it appends to its output every tenth of a second for
+/// about a second and a half, then exits 0 — slower than any output-stall bound a test passes, so a
+/// bound that watched the clock rather than the output would stop it.
+private func growingFFmpeg(in folder: URL) throws -> URL {
+    let script = folder.appendingPathComponent("growing-ffmpeg.sh")
+    try """
+    #!/bin/sh
+    for out; do :; done
+    : > "${out#file:}"
+    i=0
+    while [ $i -lt 15 ]; do
+      printf 'x' >> "${out#file:}"
+      sleep 0.1
+      i=$((i + 1))
+    done
+    exit 0
+    """.write(to: script, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+    return script
+}
+
+@Test("A conversion whose output stops growing is stopped after the output-stall bound, and touches nothing (F912)")
+func aConversionWhoseOutputStopsGrowingIsStopped() async throws {
+    let (folder, download, partial) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let before = try Data(contentsOf: partial)
+    // Writes part of its output, then prints progress for ten seconds and writes nothing more.
+    let ffmpeg = try stuckFFmpeg(in: folder)
+    let started = ProcessInfo.processInfo.systemUptime
+
+    await #expect(throws: MediaDownloadError.extractionStalled(0.5)) {
+        try await InterruptedLinkImportExtraction.finish(download: download, ffmpeg: ffmpeg, stallTimeout: 30, outputStallTimeout: 0.5)
+    }
+
+    // Stopped by the output bound, not by the stand-in running to its own end ten seconds on.
+    #expect(ProcessInfo.processInfo.systemUptime - started < 8, "the conversion ran to the stand-in's own end")
+    try #require(FileManager.default.fileExists(atPath: folder.appendingPathComponent("started").path),
+                 "the stand-in never wrote the first part of its output")
+    #expect(try Data(contentsOf: partial) == before, "the half-written WAV changed")
+    #expect(try String(contentsOf: download, encoding: .utf8) == "the complete download")
+    #expect(temporaryFiles(in: folder).isEmpty, "a temp file was left: \(temporaryFiles(in: folder))")
+}
+
+@Test("A conversion whose output keeps growing is not stopped by the output-stall bound (F912)")
+func aConversionWhoseOutputGrowsIsLeftToFinish() async throws {
+    let (folder, download, _) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let ffmpeg = try growingFFmpeg(in: folder)
+
+    let result = try await InterruptedLinkImportExtraction.finish(download: download, ffmpeg: ffmpeg, stallTimeout: 30, outputStallTimeout: 0.5)
+
+    #expect(try String(contentsOf: result, encoding: .utf8) == String(repeating: "x", count: 15))
+    #expect(temporaryFiles(in: folder).isEmpty, "a temp file was left: \(temporaryFiles(in: folder))")
+}
+
 @Test(
     "The installed ffmpeg, still converting at its time limit, is stopped and leaves no file behind (F453)",
     .enabled(if: ProcessInfo.processInfo.environment["REAL_FFMPEG"] == "1")

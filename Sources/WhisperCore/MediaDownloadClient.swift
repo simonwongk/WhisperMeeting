@@ -15,6 +15,9 @@ public enum MediaDownloadError: LocalizedError, Equatable {
     case extractionFailed
     /// That run was still going when its time limit, in seconds, passed, so it was stopped (F453).
     case extractionTimedOut(TimeInterval)
+    /// That run's output had not grown for this many seconds, so it was stopped (F912): ffmpeg with
+    /// its input read blocked keeps printing progress and writes nothing.
+    case extractionStalled(TimeInterval)
 
     public var errorDescription: String? {
         switch self {
@@ -38,6 +41,8 @@ public enum MediaDownloadError: LocalizedError, Equatable {
             return "FFmpeg could not convert the downloaded file into audio WhisperMeet can play."
         case let .extractionTimedOut(seconds):
             return "Converting the downloaded file was taking longer than \(Int(saturating: seconds)) seconds, so it was stopped."
+        case let .extractionStalled(seconds):
+            return "Converting the downloaded file stopped making progress for \(Int(saturating: seconds)) seconds, so it was stopped."
         }
     }
 }

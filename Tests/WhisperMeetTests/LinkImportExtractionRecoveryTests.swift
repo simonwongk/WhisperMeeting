@@ -214,15 +214,23 @@ func aConversionPastTheLaunchLimitIsListedAndKept() async throws {
     }
 }
 
-@Test("Startup recovery's real conversion runs under the launch's time limit (F453)")
+@Test("Startup recovery's real conversion expires on its output, not on the launch's wait (F453, F912)")
 func theLaunchConversionIsGivenItsTimeLimit() throws {
     // The seam's default cannot run in a test process — it refuses ffmpeg there (F442) — so its
-    // wiring is pinned as source. Without the limit, everything after the recovery sweep waits for
-    // the whole conversion, and for a stuck one indefinitely.
+    // wiring is pinned as source. The launch waits `linkImportConversionWait` and then leaves the
+    // conversion to finish in the background (F912), so the conversion itself must not be killed at
+    // the launch's limit any more, and must still have an expiry of its own: a stuck ffmpeg prints
+    // progress and writes nothing, so the bound is on its output.
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppModel.swift")
     let declaration = try #require(source.range(of: "var finishInterruptedLinkImportExtraction"))
     let closureEnd = try #require(source.range(of: "\n    }\n", range: declaration.upperBound..<source.endIndex))
     let seam = source[declaration.lowerBound..<closureEnd.upperBound]
-    #expect(seam.contains("timeLimit: AppModel.linkImportConversionTimeLimit"), "\(seam)")
+    #expect(seam.contains("outputStallTimeout: AppModel.linkImportConversionStallLimit"), "\(seam)")
+    #expect(!seam.contains("timeLimit: AppModel.linkImportConversionTimeLimit"), "the launch's limit kills the conversion again: \(seam)")
     #expect(AppModel.linkImportConversionTimeLimit > 0 && AppModel.linkImportConversionTimeLimit.isFinite)
+    #expect(AppModel.linkImportConversionStallLimit > 0 && AppModel.linkImportConversionStallLimit.isFinite)
+    // The wait the app runs with is the documented limit; tests shorten the instance's.
+    let wait = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppModel.swift")
+        .range(of: "var linkImportConversionWait: TimeInterval = AppModel.linkImportConversionTimeLimit")
+    #expect(wait != nil, "the launch's wait no longer defaults to linkImportConversionTimeLimit")
 }

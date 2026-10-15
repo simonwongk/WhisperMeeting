@@ -578,6 +578,9 @@ final class AppModel: ObservableObject {
     /// Every link import started through `startLinkImport` that has not ended, so Quit can stop them
     /// (F893). Each removes itself when it ends.
     private var runningLinkImports: [UUID: Task<LinkImportOutcome, Never>] = [:]
+    /// Interrupted link imports whose recovery conversion outlasted the launch's wait and goes on in
+    /// the background (F912), by meeting id, so Quit can stop them. Each removes itself when it ends.
+    var deferredLinkImportConversions: [UUID: Task<Void, Never>] = [:]
     /// What a link import is doing once its audio has downloaded, for the link-import sheet (F895).
     /// Nil before the download has finished and once the import has ended, however it ended.
     @Published private(set) var linkImportStage: LinkImportStage?
@@ -1613,8 +1616,9 @@ final class AppModel: ObservableObject {
 
     /// Converts an interrupted link import's download into the `recording.wav` the import was
     /// making, and returns it (F453; `InterruptedLinkImportExtraction`). Injectable so startup
-    /// recovery's handling is tested without ffmpeg. The default runs the user's ffmpeg for at most
-    /// `linkImportConversionTimeLimit`, and in a test process refuses as if none were installed
+    /// recovery's handling is tested without ffmpeg. The default runs the user's ffmpeg, killed only
+    /// when its output stops growing for `linkImportConversionStallLimit` (F912; the launch's own
+    /// wait is `linkImportConversionWait`), and in a test process refuses as if none were installed
     /// (F442), so an unstubbed test never runs a real subprocess or depends on what the host has
     /// installed.
     var finishInterruptedLinkImportExtraction: @Sendable (URL) async throws -> URL = { download in
@@ -1622,9 +1626,14 @@ final class AppModel: ObservableObject {
         return try await InterruptedLinkImportExtraction.finish(
             download: download,
             ffmpeg: MediaDownloadRuntime.findFFmpeg(),
-            timeLimit: AppModel.linkImportConversionTimeLimit
+            outputStallTimeout: AppModel.linkImportConversionStallLimit
         )
     }
+
+    /// How long startup recovery waits for one interrupted link import's conversion before leaving
+    /// it to finish in the background (F912). `linkImportConversionTimeLimit` in the app; a test
+    /// shortens it.
+    var linkImportConversionWait: TimeInterval = AppModel.linkImportConversionTimeLimit
 
     /// Runs one reviewed source-tracks rebuild (F267/F459). Injectable in the same F47 shape as
     /// `recoverInterruptedRecording` above, so a test can hold the (real, detached) work open long
@@ -3726,20 +3735,30 @@ final class AppModel: ObservableObject {
                         // Nothing is indexed, so the next launch finds the folder as it was.
                         continue
                     case let .unfinished(reason, download):
-                        let failedTitle = Self.unfinishedLinkImportTitle(host: mediaSource.host)
-                        let message = Self.unfinishedLinkImportMessage(reason: reason)
-                        store.upsert(MeetingRecord(
-                            id: orphan.id,
-                            title: failedTitle,
-                            createdAt: orphan.createdAt,
-                            recordingPath: store.relativeRecordingPath(for: download),
-                            status: .failed,
-                            errorMessage: message,
-                            tags: provenanceTags,
-                            recoverySource: RecoveredRecording.Source.importedRecording.rawValue,
-                            source: mediaSource
+                        messages.append(indexUnfinishedLinkImport(
+                            orphan: orphan, download: download, reason: reason,
+                            mediaSource: mediaSource, provenanceTags: provenanceTags
                         ))
-                        messages.append("\(failedTitle) needs attention. \(message)")
+                        continue
+                    case let .converting(conversion, download):
+                        // F912: still converting when the launch stopped waiting. Left running; the
+                        // meeting is added when it ends, and a quit cancels it (`cancelWorkForQuit`),
+                        // which indexes nothing, so the next launch finds the folder as it was.
+                        messages.append(Self.linkImportStillConverting(host: mediaSource.host))
+                        let id = orphan.id
+                        deferredLinkImportConversions[id] = Task { [weak self] in
+                            // Cancelling this task cancels the conversion it waits for: `conversion`
+                            // is its own task, which a cancelled await would otherwise leave running.
+                            await withTaskCancellationHandler {
+                                await self?.finishDeferredLinkImportConversion(
+                                    orphan: orphan, download: download, conversion: conversion,
+                                    mediaSource: mediaSource, provenanceTags: provenanceTags
+                                )
+                            } onCancel: {
+                                conversion.cancel()
+                            }
+                            self?.deferredLinkImportConversions[id] = nil
+                        }
                         continue
                     case let .recording(settled, settledDuration, warning):
                         recovered = settled
@@ -5535,6 +5554,9 @@ final class AppModel: ObservableObject {
     func cancelWorkForQuit() {
         cancelAllInstalls()
         for task in runningLinkImports.values { task.cancel() }
+        // F912: a recovery conversion left to finish in the background is stopped the way a quit
+        // stops an import's (F893); nothing is indexed, and the next launch converts the folder again.
+        for task in deferredLinkImportConversions.values { task.cancel() }
     }
 
     /// What `importFromURL` did (F539). The sheet closes on `.imported`, keeps itself open for
@@ -5566,17 +5588,31 @@ final class AppModel: ObservableObject {
     /// written to.
     static let recordingStillInProgress = "A recording on this Mac is still in progress, so it was left alone rather than rebuilt. Nothing was changed, and it will be added to your history when that recording stops."
 
-    /// The longest startup recovery lets one conversion of an interrupted link import's download run
-    /// (F453; `finishInterruptedLinkImportExtraction`). The rest of the recovery sweep and everything
+    /// The longest startup recovery waits for one conversion of an interrupted link import's download
+    /// (F453; `convertInterruptedLinkImportDownload`). The rest of the recovery sweep and everything
     /// after it — re-queued transcriptions, the integrity check, the launch notice, files opened from
     /// Finder, the watched folder — waits for that conversion, and the imports are converted one after
-    /// another, so a launch waits about this long at most for each. ffmpeg 8 keeps printing progress
-    /// when its input stops arriving, so the runner's stall watchdog alone never ends a stuck one, and
-    /// with its read blocked it does not exit on SIGTERM either, so a run still going at the limit is
-    /// killed (SIGKILL). Measured with ffmpeg 8.1.2 on an M3 Pro: an hour of YouTube-style Opus took
-    /// 7.1 s and four hours 28.3 s, so this finishes about four hours of audio there; anything longer
-    /// is killed and listed as an unfinished import with its link.
+    /// another, so a launch waits about this long at most for each. Measured with ffmpeg 8.1.2 on an
+    /// M3 Pro: an hour of YouTube-style Opus took 7.1 s and four hours 28.3 s, so a conversion of up
+    /// to about four hours of audio ends inside the wait there. One still running then used to be
+    /// killed and listed as an unfinished import, a second download of something complete on disk;
+    /// since F912 it goes on in the background and the meeting is added when it ends, its own expiry
+    /// being its output (`linkImportConversionStallLimit`).
     nonisolated static let linkImportConversionTimeLimit: TimeInterval = 30
+
+    /// The longest a conversion left to finish in the background (F912) may go without its output
+    /// growing before it is killed and listed as an unfinished import
+    /// (`InterruptedLinkImportExtraction.finish(outputStallTimeout:)`). Its expiry is its output
+    /// rather than a clock: ffmpeg writes the WAV as it converts, at hundreds of times real time, so
+    /// a minute with nothing written is a conversion that has stopped, however long the audio is.
+    nonisolated static let linkImportConversionStallLimit: TimeInterval = 60
+
+    /// Startup recovery's word for a link import whose conversion is still running when the launch
+    /// stops waiting for it (F912): it goes on in the background, and the meeting is added when it
+    /// ends.
+    static func linkImportStillConverting(host: String) -> String {
+        "A link import from \(host) is still being converted into audio WhisperMeet can play. It will be added to your history when that finishes; nothing was changed."
+    }
 
     /// The entry for a link import recovered from a download macOS cannot open, whose conversion
     /// could not be finished (F453). Says where the complete download is and how to get a meeting
