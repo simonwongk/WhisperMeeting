@@ -65,9 +65,10 @@ import WhisperCore
     }
     private let store: BackupJSONStore<DictationLog>
     /// The generation this store last read or wrote, threaded into the next save so the
-    /// compare-and-swap can fire (F190). A plain token, NOT a health input: `health` is the load
-    /// verdict and a lost race says nothing about whether the bytes on disk were readable, so a
-    /// conflict is reported through `saveErrorMessage` and changes nothing else.
+    /// compare-and-swap can fire (F190). `.absent` after a load that found no file (F905, F864).
+    /// A plain token, NOT a health input: `health` is the load verdict and a lost race says nothing
+    /// about whether the bytes on disk were readable. A lost race re-reads the history (`persist`,
+    /// F905), which refreshes this token with the re-read's, and `health` only as any load does.
     private var token: GenerationToken?
     /// Test-only seam (nil in production): called between `clear()`'s two saves. A real
     /// `BackupJSONStore.save` failure (a `generationConflict` from a rival writer, an EIO, a
