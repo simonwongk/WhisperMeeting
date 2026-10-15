@@ -139,6 +139,10 @@ public enum IntegrityFinding: Sendable, Equatable {
     /// above could not run (F638). Not a finding about the audio itself: it says what went
     /// unchecked, where the report used to say nothing and read as a clean result.
     case sourceTrackManifestMissing
+    /// The recording file is a Finder alias — a bookmark to a file elsewhere — and not audio (F944).
+    /// What an import of an alias made before F705: `copyItem` copied the alias's bytes as
+    /// `recording.<ext>`, so the meeting is 0:00 with no audio of its own.
+    case recordingIsAlias
 
     /// Whether this is a problem with the recording, as opposed to a note about what the check
     /// could not look at (F638). Verify Library's header counts a recording as having problems only
@@ -147,7 +151,7 @@ public enum IntegrityFinding: Sendable, Equatable {
     public var isProblem: Bool {
         switch self {
         case .recordingMissing, .recordingEmpty, .wavHeaderUnreadable, .wavTruncated,
-             .sourceTrackFrameMismatch, .durationInconsistent:
+             .sourceTrackFrameMismatch, .durationInconsistent, .recordingIsAlias:
             return true
         case .sourceTrackManifestMissing:
             return false
@@ -203,6 +207,10 @@ public enum MeetingIntegrityChecker {
             let actualBytes = fileSize(descriptor.recordingURL)
             if actualBytes == 0 {
                 findings.append(.recordingEmpty)
+            } else if isFinderAlias(descriptor.recordingURL) {
+                // F944: the bytes are a bookmark, not audio, whatever the extension says. Nothing
+                // further is read from them; a WAV-named alias is not also "header unreadable".
+                findings.append(.recordingIsAlias)
             } else if descriptor.recordingURL.pathExtension.lowercased() == "wav" {
                 // WAV inspection (header/truncation/duration) only applies to in-app WAV recordings.
                 // Imported non-WAV containers (.m4a/.mp3/.mp4/…) are opaque here — existence + non-empty
@@ -251,5 +259,15 @@ public enum MeetingIntegrityChecker {
 
     static func fileSize(_ url: URL) -> Int64 {
         ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    /// Whether the file at `url` is a Finder alias: a regular file holding a bookmark, as Foundation
+    /// reports it (`isAliasFile`), and not a symbolic link, which Foundation also calls an alias and
+    /// which does play (F944). Measured in F705: an alias is `isAliasFile` true, `isRegularFile` true,
+    /// `isSymbolicLink` false, and `copyItem` carries the alias flag onto the copy, which is what an
+    /// import before F705 put in the library.
+    static func isFinderAlias(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isAliasFileKey, .isSymbolicLinkKey]) else { return false }
+        return values.isAliasFile == true && values.isSymbolicLink != true
     }
 }

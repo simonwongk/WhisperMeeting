@@ -8374,6 +8374,11 @@ extension AppModel {
             return "“\(title)”: the \(track) source track is shorter than recorded (\(actualFrames) of \(expectedFrames) frames)."
         case let .durationInconsistent(headerSeconds, indexSeconds):
             return "“\(title)”: the recording’s length (\(String(format: "%.1f", headerSeconds))s) doesn’t match its saved duration (\(String(format: "%.1f", indexSeconds))s)."
+        case .recordingIsAlias:
+            // F944: an import of a Finder alias before F705 copied the alias itself, not the recording
+            // it points to. Nothing is resolved or rebuilt here — the user decides whether to import
+            // the original again — and deleting the entry removes only the alias's bytes.
+            return "“\(title)”: the recording file is a Finder alias — a pointer to a file somewhere else — not audio. It was imported from an alias by an earlier version of WhisperMeet, so this meeting has no audio of its own. If the original recording still exists, import it again; this entry can then be deleted."
         case .sourceTrackManifestMissing:
             // "Missing or unreadable", not "failed to write": the folder alone cannot say why.
             return "“\(title)”: its separate microphone and system tracks were not checked, because the file describing them (source-tracks.json) is missing or unreadable."
