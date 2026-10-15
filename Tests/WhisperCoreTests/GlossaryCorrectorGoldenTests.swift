@@ -29,6 +29,9 @@ import Testing
 // - F968: a term of three or more words is compared with windows up to one more than its own
 //   number of words, and a term is present only where it equals a window of no more words than its
 //   own — equal across more words it is a split-word mishearing, scored like any other (ratio 1).
+// - F972: windows of more than three words are compared only where the line holds at least half
+//   the term's words as whole words (one for three words, two for four or five); a term of four or
+//   more words is then not compared with such a line at all, a three-word term keeps its three.
 
 private struct Amendments {
     var f819 = true
@@ -40,6 +43,7 @@ private struct Amendments {
     var f914 = true
     var f915 = true
     var f968 = true
+    var f972 = true
 }
 
 /// One of a segment's words, with where it stands (F914).
@@ -68,8 +72,16 @@ private enum PreF536GlossaryCorrector {
 
                 var best: (similarity: Double, slice: Range<Int>)?
                 var presentAsAWindow = false // amended
-                let termWords = Self.words(of: term, splittingAtDashes: amended.f915).count // amended
-                let largest = amended.f968 ? max(maxWindow, termWords + 1) : amended.f940 ? max(maxWindow, termWords) : maxWindow // amended
+                let termWordList = Self.words(of: term, splittingAtDashes: amended.f915) // amended
+                let termWords = termWordList.count // amended
+                var largest = amended.f968 ? max(maxWindow, termWords + 1) : amended.f940 ? max(maxWindow, termWords) : maxWindow // amended
+                if amended.f972, largest > maxWindow { // amended
+                    let held = termWordList.map { normalize($0.text) }.filter { !$0.isEmpty && normalizedWords.contains($0) }.count // amended
+                    if held < max(1, termWords / 2) { // amended
+                        if termWords > maxWindow { continue } // amended
+                        largest = maxWindow // amended
+                    } // amended
+                } // amended
                 for size in 1...largest where size <= words.count { // amended (was 1...maxWindow)
                     for start in 0...(words.count - size) {
                         let windowNormalized = normalizedWords[start..<(start + size)].joined()
@@ -323,6 +335,7 @@ func englishSuggestionsMatchThePreF536Oracle() {
         "the Kestrol/Falcon build and the Kestrol release.", "the Kestrol-ish build and the Kestrol.",
         "Kestrel's release is ready.", "the Kestrol's build is late.", "Kestrol—the build is late.",
         "the Bank of New Yor k said yes.", "we deployed Kuber netes today.", "ask Priya Ram an now.",
+        "the Bonk off Noo Yolk said yes.",
     ]
     let segments = syntheticTranscript(generated, &random) + fixedLines.enumerated().map {
         TranscriptSegment(speaker: nil, start: Double(60 + $0.offset), end: Double(61 + $0.offset), text: $0.element)
@@ -364,6 +377,10 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withoutF968.f968 = false
     #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF968) != expected,
             "no term in the corpus is misheard with a word split in two, so F968's amendment is untested here")
+    var withoutF972 = Amendments()
+    withoutF972.f972 = false
+    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF972) != expected,
+            "no line in the corpus is misheard in more than half a long term's words, so F972's amendment is untested here")
     // With F914 off too: a placed row is a genuine occurrence where it stands, so with F914 on no
     // row changes nothing and the no-op rule is a consequence rather than a step of its own.
     var withNoOpOnly = Amendments()

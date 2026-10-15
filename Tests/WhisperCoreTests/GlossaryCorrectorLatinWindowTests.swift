@@ -242,6 +242,31 @@ func mishearingWithAnExtraWordLeavesNoStrayWord() {
     check("Kubernetes", "we deployed cooper netties today", from: "cooper netties", applied: "we deployed Kubernetes today")
 }
 
+@Test("A term of four or more words is compared only with a line that holds at least half its words; a three-word term gets its fourth window only there (F972)")
+func longTermsAreComparedOnlyWhereTheLineHoldsHalfTheirWords() {
+    func rows(_ term: String, _ text: String) -> [GlossaryCorrection] {
+        GlossaryCorrector.corrections(vocabulary: [term], segments: [seg(text)])
+    }
+    func check(_ term: String, _ text: String, from: String, applied: String) {
+        let segments = [seg(text)]
+        let corrections = GlossaryCorrector.corrections(vocabulary: [term], segments: segments)
+        #expect(corrections.map(\.from) == [from], "\(term) in \(text)")
+        #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == applied, "\(term) in \(text)")
+    }
+    // One long phrase made every line build windows up to its own length: +22% on ordinary lines
+    // and +78% on long ones with 50 phrases of 10–20 words (the Wave 6 review of F940). A
+    // mishearing keeps most of a phrase's words, so a line holding fewer than half of them, as
+    // whole words, is not compared with the phrase at all — and builds no window for it.
+    #expect(rows("Bank of New York", "the Bonk off Noo Yolk said yes").isEmpty)
+    check("Bank of New York", "the Bonk of Noo York said yes", from: "Bonk of Noo York", applied: "the Bank of New York said yes")
+    check("Bank of New York", "the Bonk of New York said yes", from: "Bonk of New York", applied: "the Bank of New York said yes")
+    // A three-word term keeps F65's windows of up to three on every line; its fourth (F968) needs
+    // one of its words in the line, so a mishearing sharing none is compared as before F968.
+    check("Priya Raman Iyer", "ask Pria Ram an Iyer now", from: "Pria Ram an Iyer", applied: "ask Priya Raman Iyer now")
+    check("Priya Raman Iyer", "ask Pria Ramen Eyer now", from: "Pria Ramen Eyer", applied: "ask Priya Raman Iyer now")
+    check("Priya Raman Iyer", "ask Pria Ram an Eyer now", from: "Pria Ram an", applied: "ask Priya Raman Iyer Eyer now")
+}
+
 @Test("A multi-word term already in the segment proposes nothing, whatever follows it (F820)")
 func multiWordTermAlreadyPresentProposesNothing() {
     #expect(GlossaryCorrector.corrections(vocabulary: ["Priya Raman"], segments: [seg("Priya Raman said the release is ready")]).isEmpty)
