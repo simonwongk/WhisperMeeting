@@ -57,13 +57,42 @@ func twoCharacterTermNeedsMoreThanHalf() {
 func twoCharacterHomophoneMishearingIsProposed() {
     let segments = [seg("明天的会意改到下午"), seg("我们周无见"), seg("这个预选不够")]
     let corrections = GlossaryCorrector.corrections(vocabulary: ["会议", "周五", "预算"], segments: segments)
-    // 会意 (hui yi) and 周无 (zhou wu) read exactly as the terms do, tones aside. 预选 (yu xuan) does
-    // not read as 预算 (yu suan), so it is not proposed: matching by sound is matching by sound.
+    // 会意 (hui yi) and 周无 (zhou wu) read exactly as the terms do, tones aside. 预选 (yu xuan)
+    // reads nearly as 预算 (yu suan) — x for s, a confusion of some accents — and is proposed since
+    // F916 (F817 could not, and closed partial on its own example).
     #expect(corrections == [
         GlossaryCorrection(segmentIndex: 0, from: "会意", to: "会议"),
         GlossaryCorrection(segmentIndex: 1, from: "周无", to: "周五"),
+        GlossaryCorrection(segmentIndex: 2, from: "预选", to: "预算"),
     ])
-    #expect(GlossaryCorrector.apply(corrections, to: segments).map(\.text) == ["明天的会议改到下午", "我们周五见", "这个预选不够"])
+    #expect(GlossaryCorrector.apply(corrections, to: segments).map(\.text) == ["明天的会议改到下午", "我们周五见", "这个预算不够"])
+}
+
+@Test("A character that sounds nearly like the term's — zh/z, ch/c, sh/s/x, n/l, ing/in, eng/en — counts as a mishearing of it (F916)")
+func nearHomophonesCountAsMishearings() {
+    var cache: [Character: String] = [:]
+    // The retroflex, the n/l and the front/back nasal mergers of southern accents, and s for x.
+    #expect(MandarinSound.isHomophone("选", of: "算", cache: &cache))   // xuan / suan
+    #expect(MandarinSound.isHomophone("四", of: "十", cache: &cache))   // si / shi
+    #expect(MandarinSound.isHomophone("资", of: "知", cache: &cache))   // zi / zhi
+    #expect(MandarinSound.isHomophone("男", of: "兰", cache: &cache))   // nan / lan
+    #expect(MandarinSound.isHomophone("刘", of: "牛", cache: &cache))   // liu / niu
+    #expect(MandarinSound.isHomophone("新", of: "星", cache: &cache))   // xin / xing
+    #expect(MandarinSound.isHomophone("分", of: "风", cache: &cache))   // fen / feng
+    // Different initials or finals outside the table are different sounds, as before.
+    #expect(!MandarinSound.isHomophone("王", of: "张", cache: &cache))  // wang / zhang
+    #expect(!MandarinSound.isHomophone("计", of: "预", cache: &cache))  // ji / yu
+    #expect(!MandarinSound.isHomophone("班", of: "帮", cache: &cache))  // ban / bang: an/ang is not in the table
+    #expect(MandarinSound.isHomophone("刘", of: "留", cache: &cache))   // liu / liu: an exact homophone still is one
+    #expect(MandarinSound.canonicalReading("xuan") == "suan")
+    #expect(MandarinSound.canonicalReading("zhing") == "zin")
+    #expect(MandarinSound.canonicalReading("er") == "er")
+    // Through the pass: the term's own example, and a three-character term with the n/l confusion.
+    let segments = [seg("这个预选不够"), seg("请刘经理来一下")]
+    #expect(GlossaryCorrector.corrections(vocabulary: ["预算", "牛经理"], segments: segments) == [
+        GlossaryCorrection(segmentIndex: 0, from: "预选", to: "预算"),
+        GlossaryCorrection(segmentIndex: 1, from: "刘经理", to: "牛经理"),
+    ])
 }
 
 @Test("A two-character window sharing no character with the term is not proposed, however alike it sounds (F817)")

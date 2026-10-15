@@ -56,7 +56,8 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// inside an ordinary sentence was never found. A term already present in the segment is correct and
 /// proposes nothing. A window must match more than half the term's characters, position for
 /// position — one of two for a two-character term, since F817 (`enoughInPlace`) — and every
-/// character it gets wrong must sound like the term's (`MandarinSound`): matching two of three
+/// character it gets wrong must sound like the term's, or nearly, by the accent confusions
+/// `MandarinSound` folds (zh/z, sh/s/x, n/l, in/ing…, F916): matching two of three
 /// characters in place also fits 王经理 for 张经理 and 数据集 for 数据库, which the review of F536
 /// found pre-ticked in seven of eight ordinary sentences. A homophone can still be a different real
 /// word or another person's name (公事 for 公式, 张薇 for 张伟), which is why a Chinese near-miss
