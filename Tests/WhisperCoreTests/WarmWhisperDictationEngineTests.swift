@@ -144,9 +144,10 @@ func slowExitHelperEndsWhenItsDirectoryIsRemoved() async throws {
     try process.run()
     let pid = process.processIdentifier
     // Never leave the stand-in behind, whichever way this test ends: KILL, not TERM, because a TERM
-    // is exactly what a failing run does not send.
+    // is exactly what a failing run does not send. Only while it still runs: once it has exited and
+    // been reaped, its pid may already belong to another process.
     defer {
-        Darwin.kill(pid, SIGKILL)
+        if process.isRunning { Darwin.kill(pid, SIGKILL) }
         try? FileManager.default.removeItem(at: tmp)
     }
     try await waitUntil("the stand-in to record its pid") { recordedPID(helper.pidFile) == pid }

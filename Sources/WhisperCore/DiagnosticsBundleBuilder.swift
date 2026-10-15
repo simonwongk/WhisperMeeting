@@ -74,19 +74,20 @@ public enum DiagnosticsBundleBuilder {
     /// F141 pattern stopped at the first space or non-ASCII character and left
     /// "<path>/会议记录/季度规划会议.mov" and "<path> Support<path> Meeting Q3.m4a". So a path ends
     /// early in one case only: at a component ending in an extension this app's paths end in
-    /// (`recognisedExtensions`) that is followed by the end of the line, by punctuation that cannot be
-    /// more of a name (`pathEndPunctuation`), or by whitespace — or a `.`, `!` or `?` ending a
-    /// sentence — and with no further `/` on the line (a later `/` means the component may be a
-    /// folder in the middle of a longer path, whatever followed its extension). Anything else is
-    /// redacted from the path to the end of its line, as `<path>…` — plain `<path>` when what was cut
-    /// holds no whitespace. The line is the limit, so a traceback keeps its later lines, and its
-    /// final error with them.
+    /// (`recognisedExtensions`) that is followed by the end of the line or by a closing quote
+    /// (`pathClosingQuotes`, F896), with no further `/` on the line (a later `/` means the component
+    /// may be a folder in the middle of a longer path, whatever followed its extension). Anything
+    /// else — whitespace or punctuation after the extension included, since "notes.txt draft" and
+    /// "Q3.wav, final" go on — is redacted from the path to the end of its line, as `<path>…`, plain
+    /// `<path>` when what was cut holds no whitespace. The line is the limit, so a traceback keeps its
+    /// later lines, and its final error with them.
     ///
-    /// What this cannot see: a name that itself has a recognised extension followed by a space or
-    /// punctuation in the middle ("notes.txt draft"), with no `/` after it on the line, ends early; a
-    /// name with a line break in it is cut at the break. A bare file name with no `/` is not a path
-    /// and is kept, and neither is a relative path whose first folder holds a space ("My
-    /// Meetings/Board Q3/…") or a `~/` inside a word (F896).
+    /// What this cannot see: a name with a recognised extension followed by a quote in the middle
+    /// (`Q3.wav" draft`, `Bob.md's notes`) ends at the quote; a name with a line break in it is cut at
+    /// the break. A bare file name with no `/` is not a path and is kept, and neither is a relative
+    /// path whose folders hold spaces ("My Meetings/Board Q3/…"), a `./` or `../` path, an absolute
+    /// path right after a CJK character, a literal `\n`, or a non-space mark such as `—`, `…`, `•`,
+    /// `@`, `$HOME` (F992).
     public static func redactPaths(_ text: String) -> String {
         var output = ""
         var line: [Character] = []
