@@ -13,8 +13,9 @@ actually spoken — English or Mandarin — and are never translated.
 summaries, AI transcript correction, and export are fully local, with no account and no per-minute
 fee. There is exactly one exception, and it is opt-in: if you save a Claude API key in Settings and
 choose the Claude summary engine, that transcript is sent to Anthropic’s API to produce a summary.
-Summaries otherwise run on a model on this Mac by default, and nothing leaves the machine without a
-saved key and an explicit, confirmed press — see [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
+Summaries otherwise run on a model on this Mac by default (Apple silicon; an Intel Mac cannot run
+that model, so its summary engine starts on Claude), and nothing leaves the machine without a saved
+key and an explicit, confirmed press — see [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
 
 OpenAI Whisper is the default transcription engine; Apple-silicon Macs can additionally install the
 opt-in open-source Qwen3-ASR engine. A separate local language model (installed once) powers the
@@ -185,11 +186,13 @@ Beyond the core record → transcribe flow:
 - **Transcript quality review** — flags low-confidence, likely-silence, and repetitive segments
   (using Whisper’s own metrics), ordered worst-first, so you can spot-check the shakiest parts. It
   never changes your transcript. See [docs/TRANSCRIPT_QUALITY.md](docs/TRANSCRIPT_QUALITY.md).
-- **Meeting summaries (local by default)** — Summarize produces a summary, key points, and action
-  items from a language model running on this Mac — no key, no upload. A **Claude** cloud engine is
-  available as an opt-in upgrade: save a Claude API key in Settings and select it to send that
-  transcript to Anthropic’s API instead — the one non-local feature, never used without a saved key
-  and an explicit, confirmed press. See [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
+- **Meeting summaries (local by default on Apple silicon)** — Summarize produces a summary, key
+  points, and action items from a language model running on this Mac — no key, no upload. A
+  **Claude** cloud engine is available as an opt-in upgrade: save a Claude API key in Settings and
+  select it to send that transcript to Anthropic’s API instead — the one non-local feature, never
+  used without a saved key and an explicit, confirmed press. An Intel Mac cannot run the local
+  model, so there the engine starts on Claude, and still sends nothing until a key is saved and a
+  press confirmed. See [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
 - **Meeting templates** — a **template** (Decision Log, 1:1, Project Update, Interview, Customer Call,
   or General) reshapes how the summary is organized for that kind of meeting, alongside the length
   “style”. Templates only guide the summary’s structure; they never change what leaves the Mac.
