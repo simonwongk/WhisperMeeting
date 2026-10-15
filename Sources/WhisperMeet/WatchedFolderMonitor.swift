@@ -4,9 +4,12 @@ import WhisperCore
 /// Looks at the watched folder every few seconds and reports finished new recordings (F318).
 ///
 /// A timer and a directory listing rather than FSEvents: the question being asked is "has this file
-/// stopped changing", which needs repeated looks whatever woke them, and listing one folder every
-/// three seconds costs nothing measurable. The decision itself is `WatchedFolderInbox`, which is
-/// pure and tested; this only feeds it.
+/// stopped changing", which needs repeated looks whatever woke them. Each look has two halves. The
+/// listing, and building its entries, runs off the main actor (`listing(at:)` in a detached task).
+/// The decision, `inbox.ready(in:)`, runs back on the main actor and is not free: over a synthetic
+/// 20,000-file listing at -O it measured about 4 ms a look after F716 (about 17 ms before it, and
+/// 75–246 ms before F671). The decision itself is `WatchedFolderInbox`, which is pure and tested;
+/// this only feeds it.
 @MainActor
 final class WatchedFolderMonitor {
     static let interval: TimeInterval = 3
