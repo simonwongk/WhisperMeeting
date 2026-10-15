@@ -190,7 +190,9 @@ leaves the saved history (see [Intentional deletion](#intentional-deletion)). Se
 library lists each of these safety copies with its date and size; **Remove…** deletes one
 permanently after asking, and is unavailable while the library is read-only (one of them may be the
 way back) or while a restore runs. Nothing removes a safety copy on its own (F855). While a restore
-runs, WhisperMeet takes no other changes to the library.
+runs, WhisperMeet takes no other changes to the library. A backup can be taken while a meeting is
+being transcribed; once a restore of it opens, that meeting is not left showing as still in
+progress — it comes back ready to transcribe again, or with its earlier transcript if it had one.
 
 ### Rehearsing the restore before you need it
 
