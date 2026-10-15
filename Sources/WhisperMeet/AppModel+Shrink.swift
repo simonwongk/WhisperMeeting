@@ -487,8 +487,9 @@ extension AppModel {
         let descriptor = integrityDescriptorForShrink(meeting)
         let entries = storageEntries, declared = declaredDurationForShrink
         let countTracks = audioTrackCountForShrink, readTracks = audioTracksForShrink
+        let measureDownload = measureDownloadForShrink, unmeasurable = downloadsShrinkCouldNotMeasure
         let indexDuration = meeting.duration
-        return await Task.detached(priority: .utility) {
+        let (facts, couldNotMeasure) = await Task.detached(priority: .utility) { () -> (MeetingStoragePlan.DiskFacts, [String]) in
             let name = recordingURL.lastPathComponent
             let exists = FileManager.default.fileExists(atPath: recordingURL.path)
             // Only an import's container can hold more than one audio track (F801).
@@ -516,11 +517,24 @@ extension AppModel {
             // Unreadable and unrecorded stays unmeasured.
             var otherSeconds: [String: TimeInterval] = [:]
             var otherTracks: [String: [RecordingMixPlan.Track]] = [:]
+            var couldNotMeasure: [String] = []
             for other in MeetingStoragePlan.otherRecordings(in: listed, recordingName: name) {
                 let url = directory.appendingPathComponent(other.name)
-                let seconds = url.pathExtension.lowercased() == "wav"
+                var seconds = url.pathExtension.lowercased() == "wav"
                     ? InterruptedLinkImportExtraction.heldWAVSeconds(at: url)
                     : declared(url) ?? InterruptedLinkImportExtraction.convertedSeconds(of: url)
+                // F962: a download AVAudioFile cannot read, in a folder with no record — one a build
+                // before F947 recovered — is measured once with the installed ffprobe, and the answer
+                // recorded as a conversion's is, so the next look reads the record. Not asked again
+                // this session when it answered nothing; never for an empty file, which holds nothing.
+                if seconds == nil, url.pathExtension.lowercased() != "wav", !other.isEmpty, !unmeasurable.contains(url.path) {
+                    if let measured = await measureDownload(url), measured.isFinite, measured > 0 {
+                        InterruptedLinkImportExtraction.recordConversion(of: url, seconds: measured)
+                        seconds = InterruptedLinkImportExtraction.convertedSeconds(of: url) ?? measured
+                    } else {
+                        couldNotMeasure.append(url.path)
+                    }
+                }
                 if let seconds { otherSeconds[other.name] = seconds }
                 // F955: and its tracks and channels — a WAV's from its header, which ffmpeg writes before
                 // it has finished (F911's half-written WAV), anything else with AVFoundation.
@@ -530,7 +544,7 @@ extension AppModel {
                     otherTracks[other.name] = tracks
                 }
             }
-            return MeetingStoragePlan.DiskFacts(
+            let facts = MeetingStoragePlan.DiskFacts(
                 recordingName: name, recordingExists: exists,
                 inOwnFolder: folder != nil && recordingURL.deletingLastPathComponent().standardizedFileURL.path
                     == folder?.standardizedFileURL.path,
@@ -538,6 +552,9 @@ extension AppModel {
                 durationSeconds: length, entries: listed, audioTrackCount: tracks,
                 otherRecordingSeconds: otherSeconds, channelCount: channels, audioTracks: audioTracks,
                 otherRecordingTracks: otherTracks)
+            return (facts, couldNotMeasure)
         }.value
+        downloadsShrinkCouldNotMeasure.formUnion(couldNotMeasure)
+        return facts
     }
 }

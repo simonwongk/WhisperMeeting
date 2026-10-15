@@ -76,6 +76,16 @@ public enum MediaDownloadRuntime {
         ]
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
+
+    /// The `ffprobe` installed beside that ffmpeg (Homebrew's `ffmpeg` formula ships both), for
+    /// measuring a download macOS cannot open (F962). Nil when none is installed.
+    public static func findFFprobe() -> URL? {
+        let candidates = [
+            URL(fileURLWithPath: "/opt/homebrew/bin/ffprobe"),
+            URL(fileURLWithPath: "/usr/local/bin/ffprobe"),
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
+    }
 }
 
 /// The `yt-dlp` subprocess contract (F183): probe a link, download just its audio as a canonical WAV,

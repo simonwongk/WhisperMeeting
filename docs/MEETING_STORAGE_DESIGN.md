@@ -503,3 +503,11 @@ it — the download's name and size, and the length of the WAV made from it — 
 download's when `AVAudioFile` cannot open it. A record that names another file, or this one at another size, measures
 nothing, so such a download is refused as before; so is a WebM beside a recording that recovery did not convert, such
 as one in a folder an earlier build recovered.
+
+**Amended 2026-10-15 (F962).** A WebM in a folder recovered by a build before the record existed (between F453's
+conversion and F947) is measured after all, once: when Shrink measures such a folder and finds a download that
+`AVAudioFile` cannot open and no record, it asks the installed `ffprobe` for the container's duration
+(`InterruptedLinkImportExtraction.measureDownload`) and writes the same record, so the next look reads the record
+and no subprocess runs again. A download ffprobe cannot measure — none installed, not media, a container with no
+duration — is refused as before, nothing is written, and it is not asked about again that session. The refusal
+rules are unchanged: a length ffprobe reads that is longer than the recording keeps the download.

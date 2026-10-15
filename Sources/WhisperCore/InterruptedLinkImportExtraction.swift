@@ -418,9 +418,12 @@ extension InterruptedLinkImportExtraction {
     /// Shrink rule takes it for audio, and Shrink leaves it in place.
     public static let convertedDownloadFilename = "download-conversion.json"
 
-    /// Records that `download` was converted in full into audio `seconds` long (F947). Best effort:
-    /// a record that cannot be written leaves Shrink unable to show the recording covers the
-    /// download, which keeps the download — the state before the record existed.
+    /// Records that `download` was converted in full into audio `seconds` long (F947) — or, for a
+    /// folder a build before the record recovered, that the installed ffprobe read its container as
+    /// that long when Shrink first measured it (`measureDownload`, F962); either is the length of the
+    /// download's audio, which is all the record is read for. Best effort: a record that cannot be
+    /// written leaves Shrink unable to show the recording covers the download, which keeps the
+    /// download — the state before the record existed.
     public static func recordConversion(of download: URL, seconds: TimeInterval) {
         guard seconds.isFinite, seconds > 0,
               let bytes = (try? FileManager.default.attributesOfItem(atPath: download.path)[.size] as? NSNumber)?.int64Value,
@@ -446,5 +449,34 @@ extension InterruptedLinkImportExtraction {
               bytes == record.downloadBytes
         else { return nil }
         return record.seconds
+    }
+
+    /// The length of `download`'s audio as the installed `ffprobe` reads it from the container, or nil
+    /// when there is no ffprobe, it fails, or it answers nothing usable (F962). For a folder recovered
+    /// by a build before the record above existed, this is the only way to measure a WebM — AVAudioFile
+    /// cannot open one — and its answer is what Shrink then records (`recordConversion`), once, so the
+    /// subprocess runs at most once per folder it can measure.
+    ///
+    /// `ffprobe -show_entries format=duration` prints the container's own duration (for WebM, the
+    /// Segment's Duration element that ffmpeg and yt-dlp write when the file is complete) and `N/A`
+    /// where there is none, which reads as nil. Checked against the installed ffprobe 8.1.2's `-h`
+    /// (`-show_entries`, `-of`, `-v`) on 2026-10-14. Fail-closed throughout: nothing here can make a
+    /// download read as shorter than silence, and a claim longer than the recording keeps it.
+    public static func measureDownload(
+        _ download: URL, ffprobe: URL?, stallTimeout: TimeInterval = 30
+    ) async -> TimeInterval? {
+        guard let ffprobe else { return nil }
+        let outcome = try? await ProcessGroupRunner().run(
+            executableURL: ffprobe,
+            arguments: MediaDownloadArguments.probeDuration(input: download.path),
+            environment: MediaDownloadClient.makeEnvironment(),
+            stallTimeout: stallTimeout,
+            outputUse: .parsedResult
+        )
+        guard let outcome, outcome.exitStatus == 0 else { return nil }
+        let lines = outcome.output.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let last = lines.last(where: { !$0.isEmpty }), let seconds = TimeInterval(last),
+              seconds.isFinite, seconds > 0 else { return nil }
+        return seconds
     }
 }

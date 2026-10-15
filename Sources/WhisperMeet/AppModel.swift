@@ -679,6 +679,22 @@ final class AppModel: ObservableObject {
     /// the planner can tell whether they can be mixed into the copy (F942). Nil when unreadable.
     var audioTracksForShrink: @Sendable (URL) async -> [RecordingMixPlan.Track]? = { await RecordingMixer.tracks(of: $0) }
     var declaredDurationForShrink: @Sendable (URL) -> TimeInterval? = { DecodedAudio.declaredDuration(of: $0) }
+
+    /// How Shrink measures a link import's download that AVAudioFile cannot open and that carries no
+    /// record of recovery's conversion (F962): a WebM in a folder recovered by a build before F947
+    /// wrote `download-conversion.json`. The default asks the installed `ffprobe`
+    /// (`InterruptedLinkImportExtraction.measureDownload`); what it answers is recorded beside the
+    /// download, so it runs at most once per folder it can measure, and a folder it cannot measure is
+    /// not asked again this session (`downloadsShrinkCouldNotMeasure`). In a test process it answers
+    /// nil without spawning anything (F442); a test that wants a length stubs it.
+    var measureDownloadForShrink: @Sendable (URL) async -> TimeInterval? = { download in
+        guard TestProcess.allowsRealAccess(to: "ffprobe") else { return nil }
+        return await InterruptedLinkImportExtraction.measureDownload(download, ffprobe: MediaDownloadRuntime.findFFprobe())
+    }
+
+    /// Downloads `measureDownloadForShrink` answered nil for this session, by path, so a refresh of
+    /// the Storage sheet does not spawn the same failing probe again (F962).
+    var downloadsShrinkCouldNotMeasure: Set<String> = []
     var storageEntries: @Sendable (URL) -> [MeetingStoragePlan.FolderEntry] = { MeetingStorageMeter.entries(in: $0) }
     var availableBytesForShrink: @Sendable (URL) -> Int64? = { url in
         (try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?

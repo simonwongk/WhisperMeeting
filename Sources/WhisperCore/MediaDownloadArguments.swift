@@ -91,6 +91,14 @@ public enum MediaDownloadArguments {
             + ["-f", "wav", "file:\(output)"]
     }
 
+    /// `ffprobe` printing only the container's duration in seconds, one bare number, or `N/A` (F962):
+    /// `-v error` so nothing else reaches the output, `-show_entries format=duration` for that one
+    /// field, and `-of default=noprint_wrappers=1:nokey=1` for the value alone. The input is named
+    /// `file:` as `finishExtraction` names its own, so a path is never read as a URL scheme.
+    public static func probeDuration(input: String) -> [String] {
+        ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", "file:\(input)"]
+    }
+
     /// Best-effort caption fetch, pinned to `subLangs` (the video's own language from the probe) so an
     /// auto-**translated** track can never be adopted into the transcript (original-language invariant).
     public static func captions(url: String, intoDirectory directory: String, subLangs: String) -> [String] {
