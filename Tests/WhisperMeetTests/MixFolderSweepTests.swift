@@ -23,7 +23,12 @@ private final class HandedURL: @unchecked Sendable {
 @MainActor
 @Test("An engine run names its mix folder for this process, and first removes one a dead process left (F965)")
 func anEngineRunSweepsADeadRunsMixFolderAndNamesItsOwn() async throws {
+    // A scratch folder of the test's own, so the sweep under test never reaches the real temporary
+    // folder (F937's rule, applied to the engine run's sweep).
     let temp = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F965-scratch-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: temp) }
     let abandoned = temp.appendingPathComponent(
         OwnedTemporaryFolders.name(prefix: AppModel.mixFolderPrefix, processID: exitedProcess), isDirectory: true)
     let inUse = temp.appendingPathComponent(
@@ -42,6 +47,7 @@ func anEngineRunSweepsADeadRunsMixFolderAndNamesItsOwn() async throws {
         .write(to: recording)
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.engineScratchDirectory = temp
     let handed = HandedURL()
     model.runTranscriptionEngineOverride = { _, url in
         handed.set(url)
@@ -61,6 +67,40 @@ func anEngineRunSweepsADeadRunsMixFolderAndNamesItsOwn() async throws {
             "the mix folder does not name this process: \(folderName)")
     #expect(!FileManager.default.fileExists(atPath: url.deletingLastPathComponent().path),
             "the run's own mix folder is removed when the run ends")
+    #expect(url.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL.path
+            == temp.standardizedFileURL.path, "the mix folder is not in the run's scratch folder")
+}
+
+@MainActor
+@Test("In a test process an engine run does not sweep the real temporary folder, and says it declined (F965, F937)")
+func anEngineRunInATestProcessLeavesTheRealTemporaryFolderAlone() async throws {
+    // F937: a test must not delete from a folder it does not own. The engine run's default scratch is
+    // the real temporary folder, so in a test process its sweep is refused (`TestProcess`, F442) and a
+    // dead process's mix folder there is left for the app to remove.
+    let real = FileManager.default.temporaryDirectory
+    let planted = real.appendingPathComponent(
+        OwnedTemporaryFolders.name(prefix: AppModel.mixFolderPrefix, processID: exitedProcess), isDirectory: true)
+    try FileManager.default.createDirectory(at: planted, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: planted) }
+    let root = real.appendingPathComponent("F965-real-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let recording = root.appendingPathComponent("recording.wav")
+    try fixturePolyWAV([300.0, 500.0, 700.0].map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 1) })
+        .write(to: recording)
+    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.runTranscriptionEngineOverride = { _, _ in
+        TranscriptionResult(id: "stub", text: "Hi.", languageCode: "en", audioDuration: 1,
+                            confidence: nil, segments: [])
+    }
+
+    _ = try await model.executeEngine(MeetingTranscriptionSelection(engine: .whisperLarge, language: .automatic),
+                                      on: recording)
+
+    #expect(FileManager.default.fileExists(atPath: planted.path),
+            "a test's engine run swept the real temporary folder")
+    #expect(TestProcess.refusedAccesses.contains(AppModel.mixFolderSweepRefusal))
 }
 
 @Test("Every temporary folder that holds a mix is named for its process, and swept before it is made (F965)")
@@ -70,6 +110,6 @@ func mixFoldersAreNamedForTheirProcess() throws {
     #expect(!app.contains("\"WhisperMeet-Diarization-\\(UUID()"), "speaker analysis's workspace names no owner")
     #expect(app.contains("OwnedTemporaryFolders.name(prefix: Self.mixFolderPrefix)"), "the engine run does not name its mix folder for this process")
     #expect(app.contains("OwnedTemporaryFolders.name(prefix: AppModel.diarizationFolderPrefix)"), "speaker analysis does not name its workspace for this process")
-    #expect(app.contains("OwnedTemporaryFolders.removeAbandoned(in: scratch, prefix: Self.mixFolderPrefix)"), "the engine run does not sweep dead runs' mix folders")
+    #expect(app.contains("if sweeps { OwnedTemporaryFolders.removeAbandoned(in: scratch, prefix: Self.mixFolderPrefix) }"), "the engine run does not sweep dead runs' mix folders")
     #expect(app.contains("OwnedTemporaryFolders.removeAbandoned(in: scratch, prefix: AppModel.diarizationFolderPrefix)"), "speaker analysis does not sweep dead runs' workspaces")
 }

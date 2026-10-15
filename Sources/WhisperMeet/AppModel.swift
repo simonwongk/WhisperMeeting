@@ -1822,6 +1822,11 @@ final class AppModel: ObservableObject {
     /// `executeEngine` performs the real Qwen/Whisper dispatch.
     var runTranscriptionEngineOverride: ((MeetingTranscriptionSelection, URL) async throws -> TranscriptionResult)?
 
+    /// The folder an engine run mixes into and sweeps of dead processes' mix folders (F965). The real
+    /// temporary folder in the app; a test names a folder of its own, and in a test process the sweep
+    /// of the real one is refused (F937's rule: a test never deletes from a folder it does not own).
+    var engineScratchDirectory: URL = FileManager.default.temporaryDirectory
+
     /// `runTranscriptionEngineOverride` for a stub that reports progress (F935): it is handed the
     /// run's progress callback, so a test can drive `apply(progress:)` through the real path a
     /// Whisper run takes. Consulted before the plain override; nil in the app.
@@ -1962,12 +1967,15 @@ final class AppModel: ObservableObject {
         // file of this run's, removed when the run ends; the recording is only read. The folder is
         // named for this process and the folders of processes that have exited are removed first
         // (F965): the `defer` cannot run when the process dies, and the mix is about 115 MB an hour.
-        let scratch = FileManager.default.temporaryDirectory
+        // A test process never sweeps the real temporary folder (F937); a test names its own.
+        let scratch = engineScratchDirectory
+        let sweeps = scratch.standardizedFileURL.path != FileManager.default.temporaryDirectory.standardizedFileURL.path
+            || TestProcess.allowsRealAccess(to: Self.mixFolderSweepRefusal)
         let mixDirectory = scratch.appendingPathComponent(
             OwnedTemporaryFolders.name(prefix: Self.mixFolderPrefix), isDirectory: true)
         defer { try? FileManager.default.removeItem(at: mixDirectory) }
         let url = try await Task.detached(priority: .userInitiated) {
-            OwnedTemporaryFolders.removeAbandoned(in: scratch, prefix: Self.mixFolderPrefix)
+            if sweeps { OwnedTemporaryFolders.removeAbandoned(in: scratch, prefix: Self.mixFolderPrefix) }
             return try await RecordingMixer.mixIfNeeded(url, into: mixDirectory)
         }.value ?? url
         if let override = runTranscriptionEngineWithProgressOverride {
@@ -5661,6 +5669,8 @@ final class AppModel: ObservableObject {
     /// when the process dies (F965). Speaker analysis's workspace is named the same way.
     nonisolated static let mixFolderPrefix = "WhisperMeet-Mix-"
     nonisolated static let diarizationFolderPrefix = "WhisperMeet-Diarization-"
+    /// What `TestProcess` records when a test's engine run declines to sweep the real temporary folder.
+    nonisolated static let mixFolderSweepRefusal = "temporary folder sweep (WhisperMeet-Mix-)"
 
     /// The longest a conversion left to finish in the background (F912) may go without its output
     /// growing before it is killed and listed as an unfinished import
