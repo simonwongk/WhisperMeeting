@@ -88,6 +88,116 @@ way (F893–F957), most low.
 - Installed to `/Applications` on 2026-10-12 (after the user quit the open app). The letter's four questions were answered the same
   day: F913 and F899 closed, F942 (mix all tracks) and F932 (the one-track warning's wording) are open work.
 
+## Maintenance cycle — Wave 4: 33 tickets closed, 2026-10-07 to 2026-10-08
+
+Six lanes, each worked test-first in its own worktree and reviewed by a second agent; three reviews found a MUST-FIX (a
+safety copy's Remove that could reach a live meeting's audio, a storage notice cleared twice per OK, an F-key tap that let
+go of its lock before it was detached), each fixed before the push. The full trail is in the ticket log under each ID. The
+user's answers in chat on 2026-10-07 decided F821, F664 and F833 (Wave 3's questions), F855 (list the safety copies), F846
+(ship the speech detector inside the app) and F823 (refuse a dictation press during the first download).
+
+**What changed for the user**
+- **History and restore safety copies (F649, F677, F664, F833, F855).** The saved history's protected copy keeps holding
+  after a deleted meeting is shredded from it or its ledger is lost, unreadable or set aside. A deleted meeting's audio
+  leaves the restore safety copies when its week ends. "Two versions of the meeting library were found" has a **Keep the
+  Version on Disk** button. Settings ▸ Meeting library lists each safety copy with its date and size, and **Remove…**
+  deletes one only after asking.
+- **Two copies of the app on one library (F662, F667, F663, F669).** A recording, transcript or summary finished while the
+  conflict banner is up is saved, not dropped, and a stopped recording appears in the list at once. A vocabulary or rule
+  change that loses to the other copy is made again to that copy's list. The history notice survives an OK on another
+  message.
+- **Transcripts, Ask and delete (F837, F849, F831, F658, F873, F870, F867).** An emptied transcript counts as edited.
+  Applied corrections can be undone (Edit ▸ Undo). Second Opinion no longer offers a Replace that runs into a neighbouring
+  line. A meeting transcribed before 2026-09-17 and never edited shows its quality flags again instead of reading as
+  hand-edited. Delete refuses, and says why, a meeting whose folder Shrink, Rebuild Audio or the notes backfill is still
+  writing; the search-index save can no longer land inside a delete.
+- **Dictation (F821, F823, F689, F851, F846).** Replacement rules apply to Quick Dictation before pasting, leaving email
+  addresses, links and host names alone. The first model download is shown, and a press during it is refused with the
+  reason. A speech detector shipped in the app keeps a silent press in a noisy room from pasting anything with Whisper
+  Turbo.
+- **Recording (F659, F703, F462, F856, F875, F876, F877).** A microphone with three or more channels, or one that delivers
+  interleaved channels, records sound instead of silence or nothing; one such format crashed the capture (F856). The at-risk
+  warning fires when only one track stops saving. The free-space reading refreshes during a recording, off the capture
+  queue. Four more corrupt-but-decodable values no longer crash the app.
+- **Tests (F646, F647, F441, F442, F866).** The tests no longer touch the user's Keychain, Preferences or crash reports, and
+  four tests that could not fail now can.
+
+**How it was checked.** The suite went from 2616 (Wave 3) to 2785 tests; the integrated gate passed, and CI run 37809974203
+is green on `2c392fe` (898 s). All 33 closed `fixed`. New tickets F854–F889 were filed along the way; F889 is the letter.
+
+**What is not claimed.**
+- Nothing was clicked through on screen; the sitting is F889 in `NEEDS_HUMAN.md`. Its multi-input hardware check (F857) was
+  closed on 2026-10-12: the user has no such device.
+- The 139,668 preference files earlier test runs left in `~/Library/Preferences` (counted by F442) were not removed; nothing
+  there was deleted.
+- Lanes planned for this wave but not run here — link-import recovery (F453, F479, F791, F438), the save path (F526) and
+  long recordings (F533) — went to Wave 5.
+- Installed to `/Applications` on 2026-10-08.
+
+## Maintenance cycle — Wave 3: 81 tickets closed, 2026-09-28 to 2026-10-07
+
+Fourteen lanes (A–M and O), each worked test-first in its own worktree and reviewed by a second agent, interrupted by two
+usage limits, a network outage and a week's gap, while another session landed the low-severity sweep and Shrink entries
+below. On 2026-10-07 the user asked for one full gate at a time on this Mac, so lanes ran only targeted tests under a shared
+lock and the integrator ran one gate at the end. Three fixes follow planner's picks the user accepted unchanged ("go with
+every recommendation"): F527, F547 and F565; F586 follows the user's own choice of 2026-09-28. The full trail is in the
+ticket log under each ID.
+
+**What changed for the user**
+- **The library's saved history (F517, F553, F527, F604, F648, F650, F688).** A wipe like 2026-08-14's stays recoverable
+  past 64 later saves; a library past about 570 meetings keeps its hour, day and week versions; saves after a restore are
+  kept and ordered first; a history folder that cannot be kept or listed is said once per session instead of failing
+  silently.
+- **Deleting from history, and two copies (F603, F552, F642, F457, F571, F665, F668, F680).** A deleted meeting's text
+  leaves every kept version on time, even after a launch with the clock behind; Forget History is refused on a read-only
+  library, whose history is the way back; a rename, delete, tag or pin that loses to another copy now offers the conflict
+  choice.
+- **Backups (F532, F557, F559, F651, F652, F694, F695).** Backups after the first work on exFAT/FAT drives, whose free space
+  is now read; a damaged backup manifest is reported as damaged; a busy lock is told apart from a failure; a file that
+  changes during a backup can no longer be recorded as verified.
+- **Quitting, the menu bar and windows (F529, F672, F673, F543, F528, F674, F564, F675, F565, F640, F641).** Quitting during
+  a recording asks first, and quitting while Stop is saving waits; Stop & Quit leaves the meeting ready to transcribe
+  instead of transcribing under the quit. The menu bar shows a recording with no window open, and an at-risk warning reaches
+  you when no library window is in front. A rename in one window is no longer reverted by another. The screen-recording row
+  has **Allow…**. The crash notice no longer says "nothing was lost" beside a folder it could not recover.
+- **Model installs (F545, F567, F520, F582, F654, F655, F643).** Installs can be cancelled, Quit stops them, an interrupted
+  one is reclaimed at launch, and a failure says what the installer said. A repair no longer strips a working dictation or
+  link import. A transcription requested during an install waits and then starts.
+- **Dictation trigger key and accessibility (F521, F523, F547, F537, F633, F636, F653).** Choosing a key: Escape cancels,
+  and a modifier held for a click is not taken. Granting Accessibility later re-arms the key. An F-key trigger is no longer
+  also typed into the app in front. The outcome is announced to VoiceOver; review sheets take Return and Escape.
+- **Dictation paste and privacy (F585, F600, F601, F586, F656, F657).** A dictation into a password field is never put on
+  the clipboard unless you press **Copy**; Terminal's Secure Keyboard Entry no longer stops every paste; a paste the app
+  cannot confirm says so honestly.
+- **The dictation model and refinement (F522, F827, F627, F626, F599, F637, F630).** The first model download resumes after
+  an interruption and a failed one is reported; the download library is pinned and an existing cache is re-verified. A
+  silent press no longer pastes "Thank you." (a −60 dBFS floor before any model). A refinement that translates embedded
+  words away is caught, and the same input refines the same way whatever the prompt cache held.
+- **Vocabulary, rules and Second Opinion (F594, F525, F536, F572, F542, F573, F574, F605, F581, F661).** A Chinese rule no
+  longer rewrites the inside of a longer word; adds past the 5,000-term cap are refused, never evicting stored terms;
+  Correct Toward Vocabulary at 5,000 terms and 700 segments went from 78.9 s to 1.2 s (English, measured in a harness).
+  Second Opinion offers the other engine's whole reading, runs in the meeting's language, and no longer marks a refused or
+  unsaved Replace as "Replaced".
+- **Ask, exports and messages (F455, F538, F842, F539, F602, F540).** Ask and action-item quotes follow hand edits; keyword
+  ranking no longer splits every meeting into words again for each question. SRT/VTT exports keep each line's own timing.
+  Link-import errors show inside the sheet; a queued Transcribe Again can be seen and removed; each read-only state is
+  described as what it is.
+- **Tests and tooling (F639, F645, F644, F413, F848).** Waits counted in yields and wall-clock upper bounds were removed,
+  and the WhisperCore purity guard now sees decorated imports.
+
+**How it was checked.** 81 tickets closed: 80 fixed, F601 partly (its terminal readings are F682). 42 were closed on CI run
+36958299690, green on `d9135d8` (2026-10-02), which carried their commits; the integrated gate passed 2616 tests on
+`90aedec`, and CI run 37640080777 is green on `2c2976b` (743 s) for the other 39. New tickets F807–F853 were filed along the
+way.
+
+**What is not claimed.**
+- Nothing was clicked through on screen; the sitting (F807), one silent dictation press on the user's own microphone (F845),
+  an optional F-key test (F685) and the terminal readings (F682) are in the letter "F807 · F845 · F685 — Wave 3" in
+  `NEEDS_HUMAN.md`. Its four questions were answered on 2026-10-07 and became Wave 4's F821, F664 and F833; both quit
+  choices stayed as they are (F529, F673).
+- The save-path rewrite (F526) and long recordings (F533) were planned but not done here.
+- Installed to `/Applications` on 2026-10-07.
+
 ## Feature — meeting storage, and Shrink, 2026-10-02 (F795, F796)
 
 The user asked to see how much space each meeting takes and to make meetings as small as possible. A finished
