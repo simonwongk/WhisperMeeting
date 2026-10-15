@@ -606,10 +606,11 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     ///     15:37:46  Released PreventUserIdleSystemSleep "Recording meeting audio" (held 01:03:01)
     ///     15:37:51  Entering Sleep state due to 'Clamshell Sleep'
     ///
-    /// The stream is bound to one display (`:139`), so closing the lid kills it; releasing the
-    /// assertion in response removed the only thing keeping the machine awake, before a single byte
-    /// had been finalized. The assertion is still released in `reset()`, which runs on stop and
-    /// cancel — once the recording has actually been dealt with.
+    /// The stream is bound to one display (the `SCContentFilter(display:…)` built in `makeStream()`),
+    /// so closing the lid kills it; releasing the assertion in response removed the only thing
+    /// keeping the machine awake, before a single byte had been finalized. The assertion is still
+    /// released in `reset()`, which runs on stop and cancel — once the recording has actually been
+    /// dealt with.
     ///
     /// The cost of holding it: if the stream dies and the user never stops the recording, the Mac
     /// will not idle-sleep. That is the right side to err on — a battery cost against losing the
