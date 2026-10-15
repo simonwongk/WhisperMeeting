@@ -192,6 +192,46 @@ func aPrimaryReplacedDuringASaveIsNotTrusted() throws {
     #expect(kept.contains(swapped), "an undecodable backup, remembered as decoded from bytes that were never decoded, was replaced without being copied aside")
 }
 
+/// Step 3's record alone, with no rotation after it (the review of Wave 7 lane Y, P3): a save reads
+/// the primary, has it replaced under it, and then loses its compare-and-swap, so step 9 never
+/// overwrites the record. In the test above step 9's record of the installed primary hid a wrong
+/// step-3 record, and only `rotate`'s proof was exercised — a mutant with step 3's stats taken after
+/// the read survived it. Here that mutant remembers the replaced, undecodable primary as decoded, and
+/// the next save replaces it without the F187 quarantine.
+@Test("A save that loses its compare-and-swap after a swap under its read leaves no false record of the primary (F908)")
+func aSaveThatLosesAfterASwapUnderItsReadLeavesNoFalseRecord() throws {
+    let run = UUID().uuidString
+    let library = try seededLibrary(run: run)
+    defer { try? FileManager.default.removeItem(at: library.directory) }
+    let primaryPath = library.primaryURL.path
+    let swaps = SwapOnce()
+    let armed = Flag()
+    var io = StoreFileIO.live
+    io.read = { url, phase in
+        let bytes = try StoreFileIO.live.read(url, phase)
+        if url.path == primaryPath, armed.isSet, swaps.take() {
+            try Data(repeating: UInt8(ascii: "x"), count: bytes.count).write(to: url, options: .atomic)
+        }
+        return bytes
+    }
+    let store = library.store(io: io)
+    let loaded = try #require(try store.load())
+    _ = try store.save(loaded.value + [CountedEntry(run: run, title: "entry 6")], expecting: loaded.token)
+    armed.raise()
+    // A stale token: this save reads the primary (swapped under it) and then loses the race.
+    #expect(throws: (any Error).self) {
+        _ = try store.save(loaded.value + [CountedEntry(run: run, title: "entry 7")], expecting: loaded.token)
+    }
+    #expect(!swaps.available, "fixture: the losing save never read the primary")
+    let swapped = try Data(contentsOf: library.primaryURL)
+    try #require(swapped.allSatisfy { $0 == UInt8(ascii: "x") }, "fixture: the primary was not replaced")
+
+    let third = try store.save(loaded.value)
+
+    let kept = try third.quarantined.map { try Data(contentsOf: library.directory.appendingPathComponent($0)) }
+    #expect(kept.contains(swapped), "an undecodable primary, remembered as decoded from bytes that were never decoded, was replaced without being copied aside")
+}
+
 // MARK: - Element-wise encoding
 
 /// Every shape the meeting index has: nested objects and arrays, empty ones, optionals both ways,
