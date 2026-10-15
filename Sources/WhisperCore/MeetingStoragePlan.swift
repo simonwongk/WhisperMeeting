@@ -174,6 +174,17 @@ public enum MeetingStoragePlan {
         }
     }
 
+    /// The other `recording.<ext>` files with one track of two channels, which a resume checks the copy
+    /// against channel by channel before it removes them (F1001), as an encode checks such a recording:
+    /// the encode's mono mix sums the channels, so a voice in opposite polarity on the two is not in the
+    /// copy. A mono leftover is removed as before.
+    public static func twoChannelRecordingsToVerify(_ disk: DiskFacts) -> [FolderEntry] {
+        otherRecordings(in: disk.entries, recordingName: disk.recordingName).filter { other in
+            guard !other.isEmpty, let tracks = disk.otherRecordingTracks[other.name] else { return false }
+            return tracks.count == 1 && tracks[0].channels == 2
+        }
+    }
+
     /// **The switch for Shrink of a recording that needs mixing — off (F980).** Wave 6 built it (F942):
     /// mix every track and channel into the copy, then show with `RecordingMixer.audit` and
     /// `RecordingMixPlan.firstFinding` that the copy holds each one before deleting the original. Its

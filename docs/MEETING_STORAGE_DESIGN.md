@@ -124,6 +124,25 @@ verified and the index saved.
      always caught from 9.4 s; of speech, a lost 1–2 s is never caught, 7 s in 10 of 15 placements, 10 s in 13 of 13.
      Shorter losses are not caught: the check is a backstop against an encoder losing a stretch. The refusal names the
      first stretch it found ("missing sound the recording has at about 0:10") and nothing after it.
+   - And, for a two-channel recording, each channel's own sound (F1001, 2026-10-15). The encode's mono mix sums the
+     channels, so a mid/side recording (left A + B, right A − B), or left B with right A − B, lost B in the copy while
+     both level checks above passed on A: the review of Wave 7 lane S deleted both originals. Over a window the two
+     channels' sums look exactly like two independent voices', so `RecordingMixer.channelPresence` measures frequency
+     by frequency instead: it reads the channels at 16 kHz in step with the copy, in 256 ms frames, half-overlapping,
+     and for each 3.9 Hz bin from 80 Hz to 4 kHz, summed over half a second, takes each channel's energy and the
+     projection onto it of the channels' mono mix — computed from the recording, each channel at a half, as the
+     encode mixes — and the mix's energy and the copy's projection onto the mix. A bin under a quarter of what is
+     expected holds sound that link does not. `RecordingMixPlan.firstChannelNotInCopy` refuses, per five-second
+     window in which a channel sounds (a tenth of its own level), when more than a quarter of a channel's energy is
+     not in the mix (it cancels against the other channel), or more than a tenth of the mix's is not in the copy; and
+     when it cannot measure. Measured (F1001's log): the review's probes read 0.5 and 1.0; equal-level speech in
+     mid/side, the two talking over each other throughout, 0.29 in its worst window; ordinary stereo — a voice per
+     channel, one silent channel, identical or panned channels, correlated music, a phone's or a roomed A/B pair's
+     spacing, a Haas widening, ten ffmpeg-made files — at most 0.16, and every good copy's mix at most 0.003, against
+     0.12–0.5 for a copy of the left channel alone. It refuses an echo-free pair of microphones a metre apart (0.34:
+     the comb filter's notches fall on every other harmonic), and it does not catch a side voice 6 dB under the middle
+     one that talks over it throughout (0.09–0.2). A resume checks a two-channel leftover against the copy the same way
+     before removing it. Mono recordings, every capture's included, are not measured.
    - For a mixed recording (F942) the level checks above are replaced, because levels cannot show a track lost while
      another sounds over it, nor a track whose channels cancel when combined: the review deleted an original both ways
      (review of F942, R2 and M8). Instead `RecordingMixer.audit` reads every channel of every track again, the way the

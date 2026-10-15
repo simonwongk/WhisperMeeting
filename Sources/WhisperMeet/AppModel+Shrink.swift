@@ -203,7 +203,8 @@ extension AppModel {
             let mixWAV = folder.appendingPathComponent(".shrink-\(token).mix.wav")
             let mixed = MeetingStoragePlan.needsMix(disk)
             let encode = encodeForShrink, decode = decodeForShrink, mix = mixForShrink, free = availableBytesForShrink
-            let audit = auditForShrink
+            let audit = auditForShrink, presence = channelPresenceForShrink
+            let twoChannels = disk.channelCount == 2
             let flush = flushForShrink
             let declaredLength = disk.durationSeconds
             let needed = MeetingStoragePlan.totalBytes([
@@ -269,6 +270,14 @@ extension AppModel {
                             original: original.windowLevels, compressed: copy.windowLevels, originalLevel: original.level
                         ) {
                             throw ShrinkFailure.soundLost(at: Double(window) * MeetingStoragePlan.levelWindowSeconds)
+                        }
+                        // And each channel's own sound, of a two-channel recording (F1001): the encode's mono
+                        // mix sums the channels, so a voice in opposite polarity on the two (mid/side) is gone
+                        // from the copy while the other voice keeps both level checks above within their band.
+                        // Two by the header or by the decode: where they disagree, the measure's count refuses.
+                        if twoChannels || original.channelWindowLevels.count == 2 {
+                            try await Self.checkChannelsInCopy(original: original, recording: recordingURL, copy: tempM4A,
+                                                               measure: presence, subject: nil)
                         }
                     }
                     // On stable storage before anything is committed or removed (final review).
@@ -362,6 +371,31 @@ extension AppModel {
             }.value
             if let checked { return .failed(title: meeting.title, message: checked.localizedDescription) }
         }
+        if MeetingStoragePlan.isResume(disk) {
+            // F1001: and a two-channel leftover, which the encode's own mono mix made the copy from, has
+            // each channel's sound found in the copy before it is removed, as an encode checks it: a
+            // mid/side leftover's side voice is in it and not in the copy.
+            let leftovers = MeetingStoragePlan.twoChannelRecordingsToVerify(disk)
+            let copyURL = store.recordingURL(for: meeting)
+            let decode = decodeForShrink, presence = channelPresenceForShrink
+            let checked: ShrinkFailure? = leftovers.isEmpty ? nil : await Task.detached(priority: .userInitiated) {
+                for leftover in leftovers {
+                    let url = folder.appendingPathComponent(leftover.name)
+                    let original: DecodedAudio.Decoded
+                    do { original = try await decode(url) } catch { return .leftoverUnchecked(name: leftover.name) }
+                    do {
+                        try await Self.checkChannelsInCopy(original: original, recording: url, copy: copyURL,
+                                                           measure: presence, subject: leftover.name)
+                    } catch let failure as ShrinkFailure {
+                        return failure
+                    } catch {
+                        return .leftoverUnchecked(name: leftover.name)
+                    }
+                }
+                return nil
+            }.value
+            if let checked { return .failed(title: meeting.title, message: checked.localizedDescription) }
+        }
 
         // Delete (design, step 7), in the planner's order, only names on its list — and of those, only
         // what the checks above ran on, unchanged since (F949). A file that appeared or changed during
@@ -388,6 +422,26 @@ extension AppModel {
                        after: MeetingStoragePlan.totalBytes(after.entries), unremoved: unremoved)
     }
 
+    /// Throws unless the mono `copy` is shown to hold each channel's own sound of the two-channel `recording`
+    /// (F1001), measured by `measure` and judged by `RecordingMixPlan.firstChannelNotInCopy` against the
+    /// recording's own decode, `original`. `subject` is a resume's leftover's name, or nil for an encode's
+    /// recording. Fail-closed: a measure that cannot be made, or does not have the decode's channels, throws.
+    nonisolated static func checkChannelsInCopy(
+        original: DecodedAudio.Decoded, recording: URL, copy: URL,
+        measure: @Sendable (_ original: URL, _ copy: URL) async throws -> RecordingMixPlan.ChannelPresence,
+        subject: String?
+    ) async throws {
+        let measured: RecordingMixPlan.ChannelPresence
+        do { measured = try await measure(recording, copy) } catch {
+            throw subject.map { ShrinkFailure.leftoverUnchecked(name: $0) } ?? ShrinkFailure.unreadableOriginal
+        }
+        guard let finding = RecordingMixPlan.firstChannelNotInCopy(measured, nativeChannelWindows: original.channelWindowLevels) else {
+            return
+        }
+        throw subject.map { ShrinkFailure.leftoverChannelNotInCopy(name: $0, finding: finding) }
+            ?? ShrinkFailure.channelNotInCopy(finding)
+    }
+
     /// Said whenever a verified `.m4a` is left beside the originals it did not replace.
     static let leftCopyNote = "A compressed copy was left in the meeting's folder; it is not used until a shrink succeeds."
 
@@ -411,6 +465,32 @@ extension AppModel {
         case leftoverNotInCopy(name: String, finding: RecordingMixPlan.Finding)
         /// A resume's leftover, or the copy, could not be read to compare them (F955).
         case leftoverUnchecked(name: String)
+        /// A two-channel recording's channel is not shown to be in the copy (F1001).
+        case channelNotInCopy(RecordingMixPlan.ChannelPresenceFinding)
+        /// The same, of a resume's two-channel leftover (F1001).
+        case leftoverChannelNotInCopy(name: String, finding: RecordingMixPlan.ChannelPresenceFinding)
+
+        /// What a channel finding says, of `owner`'s channels — "the recording's", or "its" for a leftover —
+        /// and the copy, without a capital or a full stop.
+        static func sentence(_ finding: RecordingMixPlan.ChannelPresenceFinding, owner: String) -> String {
+            func name(_ channel: Int) -> String {
+                switch channel {
+                case 0: return "\(owner) left channel"
+                case 1: return "\(owner) right channel"
+                default: return "\(owner) channel \(channel + 1)"
+                }
+            }
+            let at = { (window: Int) in TranscriptFormatter.clock(Double(window) * MeetingStoragePlan.levelWindowSeconds) }
+            switch finding {
+            case let .missing(window, channel):
+                let other = channel == 0 ? "the right channel" : channel == 1 ? "the left channel" : "the other channels"
+                return "sound on \(name(channel)) at about \(at(window)) is not in the compressed copy, because it cancels against \(other) when they are mixed into one"
+            case let .copyMissing(window):
+                return "the compressed copy is missing sound \(owner == "its" ? "it has" : "the recording has") at about \(at(window))"
+            case let .unmeasured(window, channel):
+                return "\(name(channel)) could not be checked against the compressed copy at about \(at(window))"
+            }
+        }
 
         /// What a finding says, about `subject` — "the recording", or a leftover's name — and the copy.
         static func sentence(_ finding: RecordingMixPlan.Finding, subject: String) -> String {
@@ -476,6 +556,11 @@ extension AppModel {
                     + Self.sentence(finding, subject: "“\(name)”") + "."
             case let .leftoverUnchecked(name):
                 return "“\(name)”, which the compressed copy replaced, could not be checked against the copy, so it was kept."
+            case let .channelNotInCopy(finding):
+                let text = Self.sentence(finding, owner: "the recording's")
+                return String(text.prefix(1)).uppercased() + String(text.dropFirst()) + ", so the copy was discarded."
+            case let .leftoverChannelNotInCopy(name, finding):
+                return "“\(name)”, which the compressed copy replaced, was kept: " + Self.sentence(finding, owner: "its") + "."
             }
         }
     }

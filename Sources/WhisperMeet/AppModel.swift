@@ -673,6 +673,12 @@ final class AppModel: ObservableObject {
     var auditForShrink: @Sendable (_ original: URL, _ copy: URL) async throws -> RecordingMixPlan.Audit = {
         try await RecordingMixer.audit(of: $0, against: $1)
     }
+    /// Measures, frequency by frequency, how much of each channel of a two-channel recording the channels'
+    /// mono mix holds, and how much of that mix the copy holds, for `RecordingMixPlan.firstChannelNotInCopy`
+    /// to judge before Shrink deletes the recording (F1001).
+    var channelPresenceForShrink: @Sendable (_ original: URL, _ copy: URL) async throws -> RecordingMixPlan.ChannelPresence = {
+        try await RecordingMixer.channelPresence(of: $0, against: $1)
+    }
     /// How many audio tracks an import's container holds, or nil when it cannot be read (F801).
     var audioTrackCountForShrink: @Sendable (URL) async -> Int? = { await DecodedAudio.audioTrackCount(of: $0) }
     /// What each audio track holds, read when the recording has several or more than two channels, so

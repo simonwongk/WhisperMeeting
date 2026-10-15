@@ -427,6 +427,159 @@ enum RecordingMixer {
         return RecordingMixPlan.Audit(trackChannels: channels, sampleRate: Double(sampleRate), windows: windows, outOfStep: outOfStep)
     }
 
+    /// Measures how much of each channel of a one-track recording a mono copy of it holds, frequency by
+    /// frequency, for `RecordingMixPlan.firstChannelNotInCopy` to judge before Shrink deletes a two-channel
+    /// original (F1001). The recording is read as `audit` reads it — 16 kHz, each channel apart — and the
+    /// copy with AVAudioFile at 16 kHz, in step. Each `RecordingMixPlan.presenceFrameSeconds` frame (a Hann
+    /// window, half-overlapping) of every channel and of the copy is transformed, and the channels' mono mix
+    /// formed from theirs as the encode mixes (`channelWeight`); for each bin in `RecordingMixPlan.presenceBand`,
+    /// the mix's cross-spectrum with each channel and the channel's energy, and the copy's with the mix and the
+    /// mix's energy, are summed over `presenceGroupFrames` frames, never across a window's edge, and each is
+    /// judged by `soundFound`. Every frame of the recording is measured against the mix, its last one padded
+    /// with silence. A frame reaching past the copy's end is not measured against the copy: the length check
+    /// judges the end, and a window wholly past it has no mix energy to judge.
+    static func channelPresence(of original: URL, against copy: URL) async throws -> RecordingMixPlan.ChannelPresence {
+        let (asset, tracks, facts, end) = try await open(original)
+        guard facts.count == 1, let channelCount = facts.first?.channels, channelCount > 0,
+              channelCount <= RecordingMixPlan.mostCheckedChannels else {
+            throw Failure.unreadable("not one track whose channels can be checked one by one")
+        }
+        let copyFile: AVAudioFile
+        do { copyFile = try AVAudioFile(forReading: copy) } catch { throw Failure.unreadable(error.localizedDescription) }
+        guard copyFile.processingFormat.sampleRate == Double(sampleRate), copyFile.processingFormat.channelCount == 1 else {
+            throw Failure.unreadable("the copy is not 16 kHz mono")
+        }
+        let copyReader = MonoReader(file: copyFile)
+        let size = Int(saturating: (RecordingMixPlan.presenceFrameSeconds * Double(sampleRate)).rounded())
+        guard size >= 16, size & (size - 1) == 0,
+              let setup = vDSP_DFT_zrop_CreateSetup(nil, vDSP_Length(size), .FORWARD) else {
+            throw Failure.unreadable("the frame length cannot be transformed")
+        }
+        defer { vDSP_DFT_DestroySetup(setup) }
+        let hop = size / 2, half = size / 2
+        var taper = [Float](repeating: 0, count: size)
+        vDSP_hann_window(&taper, vDSP_Length(size), Int32(vDSP_HANN_NORM))
+        let binWidth = Double(sampleRate) / Double(size)
+        let lowBin = Swift.max(1, Int(saturating: (RecordingMixPlan.presenceBand.lowerBound / binWidth).rounded(.up)))
+        let highBin = Swift.min(half - 1, Int(saturating: (RecordingMixPlan.presenceBand.upperBound / binWidth).rounded(.down)))
+        let bins = Swift.max(0, highBin - lowBin + 1)
+        let perWindow = Swift.max(1, Int(saturating: MeetingStoragePlan.levelWindowSeconds * Double(sampleRate)))
+        let weight = RecordingMixPlan.channelWeight(channels: channelCount)
+
+        // Row `channel` sums the mix's cross-spectrum with that channel and the channel's energy; the last
+        // row, the copy's with the mix and the mix's energy.
+        let rows = channelCount + 1
+        var measures: [[RecordingMixPlan.ChannelPresence.Measure]] = []
+        var crossReal = [[Double]](repeating: [Double](repeating: 0, count: bins), count: rows)
+        var crossImaginary = crossReal, energy = crossReal
+        var groupFrames = 0, groupWindow = 0
+        // Each channel's samples, and the copy's, from timeline frame `bufferStart` on; the next frame starts
+        // at `next`.
+        var lanes = [[Float]](repeating: [], count: channelCount)
+        var copyLane: [Float] = []
+        var bufferStart = 0, next = 0
+        var copyEnd: Int?
+        var handed = 0
+
+        func closeGroup() {
+            defer { groupFrames = 0 }
+            guard groupFrames > 0 else { return }
+            while measures.count <= groupWindow {
+                measures.append([RecordingMixPlan.ChannelPresence.Measure](repeating: .init(energy: 0, missing: 0), count: rows))
+            }
+            for row in 0..<rows {
+                // What the mix gives a channel; and the copy is the mix, as the encode makes it.
+                let expected = row < channelCount ? weight : 1
+                var held = 0.0, lost = 0.0
+                for bin in 0..<bins {
+                    let e = energy[row][bin]
+                    let projection = (crossReal[row][bin] * crossReal[row][bin]
+                        + crossImaginary[row][bin] * crossImaginary[row][bin]).squareRoot()
+                    held += e
+                    if !RecordingMixPlan.soundFound(projection: projection, energy: e, weight: expected) { lost += e }
+                    crossReal[row][bin] = 0; crossImaginary[row][bin] = 0; energy[row][bin] = 0
+                }
+                measures[groupWindow][row].energy += held
+                measures[groupWindow][row].missing += lost
+            }
+        }
+
+        var inReal = [Float](repeating: 0, count: half), inImaginary = inReal
+        var outReal = inReal, outImaginary = inReal
+        /// The spectrum of `size` samples from `samples[offset...]`, tapered.
+        func spectrum(_ samples: [Float], _ offset: Int) -> (real: [Float], imaginary: [Float]) {
+            for k in 0..<half {
+                inReal[k] = samples[offset + 2 * k] * taper[2 * k]
+                inImaginary[k] = samples[offset + 2 * k + 1] * taper[2 * k + 1]
+            }
+            vDSP_DFT_Execute(setup, inReal, inImaginary, &outReal, &outImaginary)
+            return (outReal, outImaginary)
+        }
+
+        /// Measures the frame starting at timeline frame `next`, whose samples are all buffered; against the
+        /// copy too when `withCopy`.
+        func measureFrame(withCopy: Bool) {
+            let window = (next + half) / perWindow
+            if groupFrames > 0, window != groupWindow || groupFrames >= RecordingMixPlan.presenceGroupFrames { closeGroup() }
+            groupWindow = window
+            let offset = next - bufferStart
+            let spectra = lanes.map { spectrum($0, offset) }
+            let c = spectrum(copyLane, offset)
+            for bin in 0..<bins {
+                let k = lowBin + bin
+                // The channels' mono mix, as the encode makes it: each channel at `weight`.
+                var mr = 0.0, mi = 0.0
+                for x in spectra { mr += weight * Double(x.real[k]); mi += weight * Double(x.imaginary[k]) }
+                for (channel, x) in spectra.enumerated() {
+                    let xr = Double(x.real[k]), xi = Double(x.imaginary[k])
+                    // mix × conj(channel)
+                    crossReal[channel][bin] += mr * xr + mi * xi
+                    crossImaginary[channel][bin] += mi * xr - mr * xi
+                    energy[channel][bin] += xr * xr + xi * xi
+                }
+                // copy × conj(mix)
+                guard withCopy else { continue }
+                let cr = Double(c.real[k]), ci = Double(c.imaginary[k])
+                crossReal[channelCount][bin] += cr * mr + ci * mi
+                crossImaginary[channelCount][bin] += ci * mr - cr * mi
+                energy[channelCount][bin] += mr * mr + mi * mi
+            }
+            groupFrames += 1
+        }
+
+        /// Measures every frame that starts inside the recording and whose samples are buffered.
+        func measureReady(upTo available: Int) {
+            while next + size <= available, next < handed {
+                measureFrame(withCopy: copyEnd.map { next + size <= $0 } ?? true)
+                next += hop
+            }
+            let drop = Swift.min(next - bufferStart, copyLane.count)
+            if drop > 0 {
+                for channel in lanes.indices { lanes[channel].removeFirst(Swift.min(drop, lanes[channel].count)) }
+                copyLane.removeFirst(drop)
+                bufferStart += drop
+            }
+        }
+
+        _ = try readInStep(asset: asset, tracks: tracks, channels: [channelCount], audioEnd: end) { start, count, stretch in
+            for (channel, samples) in (stretch.first ?? []).enumerated() where channel < channelCount {
+                lanes[channel].append(contentsOf: samples)
+            }
+            let (copied, valid) = try copyReader.read(count)
+            copyLane.append(contentsOf: copied)
+            if copyEnd == nil, valid < count { copyEnd = start + valid }
+            handed = start + count
+            measureReady(upTo: handed)
+        }
+        // The recording's last frames, past its end silence, so every one of its samples is measured.
+        for channel in lanes.indices { lanes[channel].append(contentsOf: repeatElement(0, count: size)) }
+        copyLane.append(contentsOf: repeatElement(0, count: size))
+        measureReady(upTo: bufferStart + copyLane.count)
+        closeGroup()
+        return RecordingMixPlan.ChannelPresence(channels: channelCount, windows: measures.map { Array($0.prefix(channelCount)) },
+                                                mix: measures.map { $0[channelCount] })
+    }
+
     // MARK: - Reading
 
     /// The asset, its audio tracks, what they hold, and where its audio ends; refuses what cannot be mixed.
