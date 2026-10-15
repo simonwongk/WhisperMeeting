@@ -211,14 +211,14 @@ chmod 644 "$staging_directory/refine_server.py"
 
 # F439: the three `--help` checks above cannot fail on a broken mlx_lm install. All three helpers
 # call `parser.parse_args()` (which `--help` short-circuits via argparse's own `sys.exit(0)`)
-# BEFORE their deferred `from mlx_lm import ...` — summarize_local.py:201/215,
-# correct_local.py:130/144, refine_server.py:276/281 — precisely so the pure functions above them
-# stay importable in tests without mlx_lm installed. That means `--help` exits before ANY of the
-# three ever imports mlx_lm, so a `pip install mlx-lm==$mlx_lm_version` that resolved a broken or
-# incompatible mlx/transitive release would pass every check here and only fail once a real
-# summarize/correct/refine request ran against the now-live (and un-rollback-able, since the
-# previous working Summarizer/ was already replaced) runtime. Import for real, matching every
-# module all three helpers actually import.
+# BEFORE their deferred `from mlx_lm import ...`, both inside each helper's `main()` (through
+# `parse_args()` in summarize_local.py and correct_local.py, inline in refine_server.py) —
+# precisely so the pure functions above them stay importable in tests without mlx_lm installed.
+# That means `--help` exits before ANY of the three ever imports mlx_lm, so a `pip install
+# mlx-lm==$mlx_lm_version` that resolved a broken or incompatible mlx/transitive release would
+# pass every check here and only fail once a real summarize/correct/refine request ran against the
+# now-live (and un-rollback-able, since the previous working Summarizer/ was already replaced)
+# runtime. Import for real, matching every module all three helpers actually import.
 "$staging_directory/venv/bin/python" -c '
 import mlx.core
 from mlx_lm import load, stream_generate
