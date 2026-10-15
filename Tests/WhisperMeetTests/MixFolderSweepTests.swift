@@ -112,4 +112,8 @@ func mixFoldersAreNamedForTheirProcess() throws {
     #expect(app.contains("OwnedTemporaryFolders.name(prefix: AppModel.diarizationFolderPrefix)"), "speaker analysis does not name its workspace for this process")
     #expect(app.contains("if sweeps { OwnedTemporaryFolders.removeAbandoned(in: scratch, prefix: Self.mixFolderPrefix) }"), "the engine run does not sweep dead runs' mix folders")
     #expect(app.contains("OwnedTemporaryFolders.removeAbandoned(in: scratch, prefix: AppModel.diarizationFolderPrefix)"), "speaker analysis does not sweep dead runs' workspaces")
+    // F937's rule for the default analysis, which only the real diarizer reaches: a test process never
+    // sweeps the real temporary folder.
+    #expect(app.contains("if TestProcess.allowsRealAccess(to: AppModel.diarizationFolderSweepRefusal) {"),
+            "speaker analysis would sweep the real temporary folder from a test process")
 }

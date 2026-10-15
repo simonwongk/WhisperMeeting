@@ -2244,9 +2244,12 @@ final class AppModel: ObservableObject {
         // may have left behind, and it runs on every exit path including a throw.
         // Named for this process, and the workspaces of processes that have exited removed first,
         // as the engine run's mix folder is (F965): a crash mid-analysis left a mix or a transcode the
-        // size of the recording's decode behind.
+        // size of the recording's decode behind. A test process never sweeps the real temporary
+        // folder (F937), so there the sweep is refused and recorded (`TestProcess`, F442).
         let scratch = FileManager.default.temporaryDirectory
-        OwnedTemporaryFolders.removeAbandoned(in: scratch, prefix: AppModel.diarizationFolderPrefix)
+        if TestProcess.allowsRealAccess(to: AppModel.diarizationFolderSweepRefusal) {
+            OwnedTemporaryFolders.removeAbandoned(in: scratch, prefix: AppModel.diarizationFolderPrefix)
+        }
         let workspace = scratch.appendingPathComponent(
             OwnedTemporaryFolders.name(prefix: AppModel.diarizationFolderPrefix), isDirectory: true)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
@@ -5671,6 +5674,7 @@ final class AppModel: ObservableObject {
     nonisolated static let diarizationFolderPrefix = "WhisperMeet-Diarization-"
     /// What `TestProcess` records when a test's engine run declines to sweep the real temporary folder.
     nonisolated static let mixFolderSweepRefusal = "temporary folder sweep (WhisperMeet-Mix-)"
+    nonisolated static let diarizationFolderSweepRefusal = "temporary folder sweep (WhisperMeet-Diarization-)"
 
     /// The longest a conversion left to finish in the background (F912) may go without its output
     /// growing before it is killed and listed as an unfinished import
