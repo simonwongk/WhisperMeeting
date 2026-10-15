@@ -60,7 +60,9 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// characters in place also fits 王经理 for 张经理 and 数据集 for 数据库, which the review of F536
 /// found pre-ticked in seven of eight ordinary sentences. A homophone can still be a different real
 /// word or another person's name (公事 for 公式, 张薇 for 张伟), which is why a Chinese near-miss
-/// arrives unticked and needs its own tick (`ProposalReview`). A Chinese window is only proposed where
+/// arrives unticked and needs its own tick (`ProposalReview`) — and a two-character term that is a
+/// person's name, as the caller's segmenter tells one (`ChinesePersonName`, F921), gets no
+/// sound-alike row at all. A Chinese window is only proposed where
 /// `GlossaryCorrector.apply` would apply it — `ReplacementBoundary` with the caller's
 /// `CJKWordEvidence` (F594) — so a window cutting
 /// through a word is not offered. A Latin term's windows split a token where Latin meets Chinese
@@ -107,7 +109,7 @@ public enum GlossaryCorrector {
         isCancelled: @escaping @Sendable () -> Bool,
         progress: @escaping @Sendable (Double) -> Void
     ) -> [GlossaryCorrection]? {
-        let prepared = PreparedVocabulary(vocabulary, knownTerms: evidence.knownTerms)
+        let prepared = PreparedVocabulary(vocabulary, knownTerms: evidence.knownTerms, segmenter: evidence.segmenter)
         let tracker = ProgressTracker(total: segments.count, report: progress)
         var perSegment = [[GlossaryCorrection]](repeating: [], count: segments.count)
         perSegment.withUnsafeMutableBufferPointer { slots in
@@ -154,7 +156,9 @@ public enum GlossaryCorrector {
         var results: [GlossaryCorrection] = []
         for term in prepared.terms where !term.ids.isEmpty {
             if term.isCJK {
-                guard let chinese,
+                // A person's name gets no sound-alike row at all (F921): the text cannot tell a
+                // mishearing of 张伟 from the person 张薇, and renaming a person is the worse error.
+                guard !term.isPersonName, let chinese,
                       let phrase = bestCJKWindow(for: term, in: chinese, text: text, segmented: segmented,
                                                  evidence: segmentEvidence, sounds: &sounds) else { continue }
                 results.append(GlossaryCorrection(segmentIndex: segmentIndex, from: phrase, to: term.term))
@@ -538,6 +542,9 @@ public enum GlossaryCorrector {
         /// Those words normalized, for the F972 gate: windows of more than three are compared only
         /// where the segment holds at least half of them.
         let words: [String]
+        /// A two-character Chinese term that is a person's name by `ChinesePersonName` (F921):
+        /// never proposed for a sound-alike window.
+        let isPersonName: Bool
     }
 
     private final class PreparedVocabulary: @unchecked Sendable {
@@ -548,17 +555,19 @@ public enum GlossaryCorrector {
         /// Chinese in it can.
         let knownCJKTerms: [String]
 
-        init(_ vocabulary: [String], knownTerms: [String]) {
+        init(_ vocabulary: [String], knownTerms: [String], segmenter: CJKWordEvidence.Segmenter?) {
             knownCJKTerms = knownTerms.filter { ReplacementBoundary.hasCJK($0) }
             let normalized = vocabulary.map(GlossaryCorrector.normalize)
             let table = CharacterTable(normalized)
             self.table = table
             terms = zip(vocabulary, normalized).map { term, normalized in
                 let words = GlossaryCorrector.latinWords(of: term)
+                let isCJK = ReplacementBoundary.hasCJK(term)
                 return PreparedTerm(
                     term: term, normalized: normalized, ids: table.ids(normalized),
-                    isCJK: ReplacementBoundary.hasCJK(term), characters: Array(normalized),
-                    wordCount: words.count, words: words.filter { !$0.isEmpty }
+                    isCJK: isCJK, characters: Array(normalized),
+                    wordCount: words.count, words: words.filter { !$0.isEmpty },
+                    isPersonName: isCJK && ChinesePersonName.isLikely(term, segmenter: segmenter)
                 )
             }
             hasCJKTerms = terms.contains(where: \.isCJK)

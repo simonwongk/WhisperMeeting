@@ -83,6 +83,38 @@ func fourCharacterTermNeedsMoreThanHalf() {
     #expect(corrections == [GlossaryCorrection(segmentIndex: 2, from: "产品经历", to: "产品经理")])
 }
 
+@Test("A sound-alike window is never proposed for a two-character term that is a person's name: a surname and a given name the segmenter does not read as one word (F921)")
+func soundAlikeWindowsAreNotProposedForNames() {
+    // The Wave 5 review measured 张薇 → 张伟, 刘阳 → 刘洋, 王方 → 王芳, 黎明 → 李明 and 留洋 → 刘洋
+    // among 15 wrong rows in 40 everyday sentences: other people, and other words, renamed. The
+    // text cannot tell a mishearing of 张伟 from the person 张薇, so no row is made for a name at
+    // all; NLTokenizer reads a two-character name as surname | given name (张 | 伟) and a word that
+    // begins with a surname character whole (周五, 王国, 李子), which is how a name is told.
+    let segmenter = dictionarySegmenter([
+        "明天", "来", "开会", "出差", "负责", "财务", "黎明", "时分", "我们", "出发", "年轻", "留洋", "多年",
+        "周五", "会议", "经理", "改到", "下午", "周无", "会意",
+    ])
+    let vocabulary = ["张伟", "刘洋", "王芳", "李明", "周五", "会议", "张经理"]
+    let evidence = CJKWordEvidence(segmenter: segmenter, knownTerms: vocabulary)
+    let segments = [
+        seg("张薇明天来开会"), seg("刘阳出差了"), seg("王方负责财务"), seg("黎明时分我们出发"), seg("他年轻时留洋多年"),
+        seg("我们周无见"), seg("明天的会意改到下午"), seg("对，张经里"),
+    ]
+    let corrections = GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, evidence: evidence)
+    // The words 周五 and 会议, and the title 张经理 (surname | 经理, a word), are proposed as before.
+    #expect(corrections == [
+        GlossaryCorrection(segmentIndex: 5, from: "周无", to: "周五"),
+        GlossaryCorrection(segmentIndex: 6, from: "会意", to: "会议"),
+        GlossaryCorrection(segmentIndex: 7, from: "张经里", to: "张经理"),
+    ])
+    // Without a segmenter nothing can tell a name from a word, and the rows are made as before.
+    #expect(GlossaryCorrector.corrections(vocabulary: ["张伟"], segments: [seg("张薇明天来开会")])
+        == [GlossaryCorrection(segmentIndex: 0, from: "张薇", to: "张伟")])
+    // A term the segmenter reads whole is a word, whatever character it begins with.
+    #expect(GlossaryCorrector.corrections(vocabulary: ["周五"], segments: [seg("我们周无见")], evidence: evidence)
+        == [GlossaryCorrection(segmentIndex: 0, from: "周无", to: "周五")])
+}
+
 @Test("A row's sentence is the words around the place apply changes, cut at a space, marked where the line goes on (F817)")
 func proposalContextIsTheChangedPlaceInItsSentence() {
     let chinese = GlossaryCorrection(segmentIndex: 0, from: "会意", to: "会议")

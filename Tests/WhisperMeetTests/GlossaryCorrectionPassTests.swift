@@ -232,7 +232,9 @@ func reviewSheetIsKeyedBySet() throws {
 func twoCharacterHomophonesThroughTheApp() async throws {
     let (model, root) = try makeModel("two-character")
     defer { try? FileManager.default.removeItem(at: root) }
-    model.cjkWordSegmenter = dictionarySegmenterForApp(["明天", "的", "会意", "改到", "下午", "我们", "见", "公事公办", "这", "是", "公事"])
+    // 周五 is in the dictionary because NLTokenizer reads it whole: split as 周 | 五 it would read as
+    // a surname and a given name, a person's name, which gets no sound-alike row (F921).
+    model.cjkWordSegmenter = dictionarySegmenterForApp(["明天", "的", "会意", "改到", "下午", "我们", "见", "公事公办", "这", "是", "公事", "周五"])
     model.store.addVocabulary(["会议", "周五", "公式"])
     let id = addMeeting(model, lines: ["明天的会意改到下午", "我们周无见", "公事公办", "这是公事"])
 
