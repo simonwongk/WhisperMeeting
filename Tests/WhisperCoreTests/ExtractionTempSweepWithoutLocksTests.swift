@@ -144,3 +144,29 @@ func theTempFileNamesItsOwner() {
         #expect(InterruptedLinkImportExtraction.temporaryFileOwner(name) == nil, "\(name)")
     }
 }
+
+@Test("On a volume without flock, the real kernel probe is asked with the sweep's own descriptor closed: an abandoned temp is removed, one this process holds open is kept (F976)")
+func theNoLockSweepAsksTheRealKernelWithItsOwnDescriptorClosed() throws {
+    // The tests above inject `openState`; this one asks the kernel, as the app does. The kernel's
+    // answer counts every process of this user, this one included (`RecordingFolderLiveness`), so a
+    // sweep that still held the file open from its lock attempt would read every temp as held and
+    // never remove one — the review of Wave 7 lane I found exactly that with the stub in place.
+    for answer in [ENOTSUP, EOPNOTSUPP] {
+        let folder = try makeFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let abandoned = try plant(ownedName(by: exitedProcess), in: folder, modified: hourAgo)
+        let held = try plant(ownedName(by: exitedProcess), in: folder, modified: hourAgo)
+        try #require(RecordingFolderLiveness.openState(of: abandoned.path) == .notHeld, "fixture: something holds the file")
+        let holder = open(held.path, O_RDONLY | O_CLOEXEC)
+        try #require(holder >= 0)
+        defer { close(holder) }
+        try #require(RecordingFolderLiveness.openState(of: held.path) != .notHeld, "fixture: the kernel does not see the test's descriptor")
+
+        InterruptedLinkImportExtraction.removeAbandonedTemporaryFiles(in: folder, tryLock: { _ in answer })
+
+        #expect(!FileManager.default.fileExists(atPath: abandoned.path),
+                "errno \(answer): kept an abandoned temp — the sweep's own descriptor answered the kernel probe")
+        #expect(FileManager.default.fileExists(atPath: held.path),
+                "errno \(answer): removed a temp a process still holds open")
+    }
+}

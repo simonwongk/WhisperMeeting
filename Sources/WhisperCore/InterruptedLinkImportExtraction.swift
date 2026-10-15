@@ -237,12 +237,17 @@ extension InterruptedLinkImportExtraction {
             let path = url.path
             let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
             guard descriptor >= 0 else { continue }
-            defer { AdvisoryLockDescriptor.unlockAndClose(descriptor) }
             let lock = tryLock(descriptor)
             if lock == 0 {
+                // Removed while the lock is held, so no run can take the file between the two.
                 unlink(path)
+                AdvisoryLockDescriptor.unlockAndClose(descriptor)
                 continue
             }
+            // Closed before anything else is asked: the kernel probe below counts every process of
+            // this user, this one included, so a descriptor still open here would answer for the file
+            // and every temp on a volume without `flock` would read as held.
+            AdvisoryLockDescriptor.unlockAndClose(descriptor)
             // Held by a running conversion (`EWOULDBLOCK`), or any answer but "this volume cannot
             // lock": kept.
             guard lock == ENOTSUP || lock == EOPNOTSUPP else { continue }
