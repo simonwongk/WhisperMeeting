@@ -218,7 +218,10 @@ public enum GlossaryCorrector {
     /// least half the term's words (F972)** — one for a three-word term, two for four or five, ten
     /// for twenty — as whole normalized words. A term of four or more words, which has no window
     /// of its own length elsewhere, is then not compared with such a line at all; a three-word
-    /// term keeps F65's windows of up to three there. A mishearing keeps most of a phrase's words,
+    /// term keeps F65's windows of up to three there, and gets its fourth only where one of those
+    /// already scored — so "ask Pria Ram an Eyer now" is proposed whole rather than leaving "Eyer"
+    /// (F968's stray word, back with the gate until round 2 of Wave 7), and a line on which nothing
+    /// scored still builds no fourth window. A mishearing keeps most of a phrase's words,
     /// so the gate costs a row only for a phrase misheard in more than half its words; what it
     /// saves is building every line's windows up to the longest phrase in the vocabulary (the Wave
     /// 6 review measured +22% on ordinary lines and +78% on long ones with 50 phrases of 10–20
@@ -227,12 +230,16 @@ public enum GlossaryCorrector {
         for term: PreparedTerm, in windows: LatinWindows, text: String, scratch: inout LCSScratch
     ) -> Placement? {
         let allowance: Int
+        // A three-word term on a line holding none of its words: its fourth window only if one of
+        // up to three scored (below).
+        var fourthIfScored = false
         if term.wordCount + 1 <= maxWindow {
             allowance = maxWindow
         } else if windows.holds(atLeast: max(1, term.wordCount / 2), of: term.words) {
             allowance = term.wordCount + 1
         } else if term.wordCount <= maxWindow {
             allowance = maxWindow
+            fourthIfScored = true
         } else {
             return nil
         }
@@ -241,17 +248,26 @@ public enum GlossaryCorrector {
         var best: (similarity: Double, window: LatinWindows.Window)?
         // A window equal to the term is scored like any other: it has more words than the term, or
         // the term would be present (above), and the LCS ratio gives it 1.
-        for window in windows.all[..<windows.end(ofSize: allowance)]
-        where !window.containsCJK && !window.ids.isEmpty {
-            let longer = max(window.ids.count, term.ids.count)
-            // The LCS is at most the shorter length, so this ratio bounds the score: skip a window
-            // that cannot reach the threshold, or cannot beat the best already found (F536).
-            let bound = Double(min(window.ids.count, term.ids.count)) / Double(longer)
-            guard bound >= similarityThreshold, bound > (best?.similarity ?? 0) else { continue }
-            let score = Double(scratch.lcs(window.ids, term.ids)) / Double(longer)
-            if score >= similarityThreshold, score > (best?.similarity ?? 0) {
-                best = (score, window)
+        func score(_ candidates: ArraySlice<LatinWindows.Window>) {
+            for window in candidates where !window.containsCJK && !window.ids.isEmpty {
+                let longer = max(window.ids.count, term.ids.count)
+                // The LCS is at most the shorter length, so this ratio bounds the score: skip a window
+                // that cannot reach the threshold, or cannot beat the best already found (F536).
+                let bound = Double(min(window.ids.count, term.ids.count)) / Double(longer)
+                guard bound >= similarityThreshold, bound > (best?.similarity ?? 0) else { continue }
+                let score = Double(scratch.lcs(window.ids, term.ids)) / Double(longer)
+                if score >= similarityThreshold, score > (best?.similarity ?? 0) {
+                    best = (score, window)
+                }
             }
+        }
+        score(windows.all[..<windows.end(ofSize: allowance)])
+        if fourthIfScored, best != nil {
+            // F968's split word on a line sharing none of the term's words ("ask Pria Ram an Eyer
+            // now"): the four-word windows are built and scored, in F65's order after the shorter
+            // ones, only where a row exists already, so F972's saving holds on every other line.
+            windows.extend(to: term.wordCount + 1)
+            score(windows.all[windows.end(ofSize: allowance)..<windows.end(ofSize: term.wordCount + 1)])
         }
         guard let window = best?.window else { return nil }
         return placedPhrase(window, term: term.term, in: text)

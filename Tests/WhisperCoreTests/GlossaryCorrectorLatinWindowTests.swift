@@ -242,7 +242,7 @@ func mishearingWithAnExtraWordLeavesNoStrayWord() {
     check("Kubernetes", "we deployed cooper netties today", from: "cooper netties", applied: "we deployed Kubernetes today")
 }
 
-@Test("A term of four or more words is compared only with a line that holds at least half its words; a three-word term gets its fourth window only there (F972)")
+@Test("A term of four or more words is compared only with a line that holds at least half its words; a three-word term gets its fourth window there, or where a shorter one scored (F972, F968)")
 func longTermsAreComparedOnlyWhereTheLineHoldsHalfTheirWords() {
     func rows(_ term: String, _ text: String) -> [GlossaryCorrection] {
         GlossaryCorrector.corrections(vocabulary: [term], segments: [seg(text)])
@@ -260,11 +260,16 @@ func longTermsAreComparedOnlyWhereTheLineHoldsHalfTheirWords() {
     #expect(rows("Bank of New York", "the Bonk off Noo Yolk said yes").isEmpty)
     check("Bank of New York", "the Bonk of Noo York said yes", from: "Bonk of Noo York", applied: "the Bank of New York said yes")
     check("Bank of New York", "the Bonk of New York said yes", from: "Bonk of New York", applied: "the Bank of New York said yes")
-    // A three-word term keeps F65's windows of up to three on every line; its fourth (F968) needs
-    // one of its words in the line, so a mishearing sharing none is compared as before F968.
+    // A three-word term keeps F65's windows of up to three on every line; its fourth (F968) is
+    // built where the line holds one of its words, or where a window of up to three already
+    // scored for it — so a mishearing split across four words and sharing none of the term's is
+    // proposed whole (until round 2 of Wave 7 it was "Pria Ram an", which left "Eyer" behind),
+    // while a line on which nothing scored builds no fourth window.
     check("Priya Raman Iyer", "ask Pria Ram an Iyer now", from: "Pria Ram an Iyer", applied: "ask Priya Raman Iyer now")
     check("Priya Raman Iyer", "ask Pria Ramen Eyer now", from: "Pria Ramen Eyer", applied: "ask Priya Raman Iyer now")
-    check("Priya Raman Iyer", "ask Pria Ram an Eyer now", from: "Pria Ram an", applied: "ask Priya Raman Iyer Eyer now")
+    check("Priya Raman Iyer", "ask Pria Ram an Eyer now", from: "Pria Ram an Eyer", applied: "ask Priya Raman Iyer now")
+    // Its four words "pr iy ar am" would score 8/14, but no three of them reach half the term.
+    #expect(rows("Priya Raman Iyer", "ask pr iy ar am now").isEmpty)
 }
 
 @Test("A multi-word term already in the segment proposes nothing, whatever follows it (F820)")
