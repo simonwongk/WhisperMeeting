@@ -59,87 +59,48 @@ private func disk(_ name: String, bytes: Int64 = 900_000_000) -> MeetingStorageP
                                  entries: [Entry(name: name, bytes: bytes)])
 }
 
-@Test("Mixing Shrink is off as shipped, until F980 proves its check of a mixed copy (F942, F980)")
-func shrinkMixingSwitchIsOff() {
-    #expect(MeetingStoragePlan.shrinkMixesRecordings == false)
-}
-
-@Test("As shipped, Shrink refuses a recording it would mix, saying it isn't available yet (F942, F980)")
-func shrinkRefusesWhatItWouldMixWhileHeldBack() {
-    let idle = MeetingStoragePlan.LiveFacts()
-    var call = disk("recording.mov")
-    call.audioTrackCount = 2
-    call.channelCount = 1
-    call.audioTracks = [Track(channels: 1), Track(channels: 1)]
-    #expect(MeetingStoragePlan.unavailability(disk: call, live: idle) == .mixingNotAvailableYet(tracks: 2, channels: 2))
-    #expect(MeetingStoragePlan.Unavailability.mixingNotAvailableYet(tracks: 2, channels: 2).message
-        == "This recording has 2 audio tracks; shrinking it isn't available yet, so its audio is kept as it is.")
-    var surround = disk("recording.wav", bytes: 1_382_400_000)
-    surround.channelCount = 6
-    surround.audioTracks = [Track(channels: 6)]
-    #expect(MeetingStoragePlan.unavailability(disk: surround, live: idle) == .mixingNotAvailableYet(tracks: 1, channels: 6))
-    #expect(MeetingStoragePlan.Unavailability.mixingNotAvailableYet(tracks: 1, channels: 6).message
-        == "This recording has 6 channels; shrinking it isn't available yet, so its audio is kept as it is.")
-    var many = surround
-    many.channelCount = 24
-    many.audioTracks = [Track(channels: 24)]
-    #expect(MeetingStoragePlan.unavailability(disk: many, live: idle) == .mixingNotAvailableYet(tracks: 1, channels: 24))
-    // Alternates and unread tracks keep their own reasons, which mixing would not change.
-    var languages = call
-    languages.audioTracks = [Track(channels: 1, alternateGroup: 0, language: "eng"), Track(channels: 1, alternateGroup: 0, language: "fra")]
-    #expect(MeetingStoragePlan.unavailability(disk: languages, live: idle) == .alternateAudioTracks(count: 2))
-    var unread = call
-    unread.audioTracks = nil
-    #expect(MeetingStoragePlan.unavailability(disk: unread, live: idle) == .multipleAudioTracks(count: 2))
-    // One track of one or two channels is the encode's own, and still shrinks.
-    var stereo = disk("recording.wav")
-    stereo.channelCount = 2
-    #expect(MeetingStoragePlan.unavailability(disk: stereo, live: idle) == nil)
-}
-
-@Test("With the switch on, Shrink mixes a recording whose tracks it read, and refuses alternates and the unread (F942, F953)")
+@Test("Shrink mixes a recording whose tracks it read, and refuses alternates and the unread (F942, F953, F980)")
 func shrinkMixesWhatItCanRead() {
-    // The held-back path, which F980 starts from.
     let idle = MeetingStoragePlan.LiveFacts()
     var call = disk("recording.mov")
     call.audioTrackCount = 2
     call.channelCount = 1
     call.audioTracks = [Track(channels: 1), Track(channels: 1)]
     #expect(MeetingStoragePlan.needsMix(call))
-    #expect(MeetingStoragePlan.unavailability(disk: call, live: idle, mixing: true) == nil)
+    #expect(MeetingStoragePlan.unavailability(disk: call, live: idle) == nil)
 
     var poly = disk("recording.wav", bytes: 1_382_400_000)
     poly.channelCount = 4
     poly.audioTracks = [Track(channels: 4)]
-    #expect(MeetingStoragePlan.unavailability(disk: poly, live: idle, mixing: true) == nil, "F953: whatever the layout")
+    #expect(MeetingStoragePlan.unavailability(disk: poly, live: idle) == nil, "F953: whatever the layout")
     var many = poly
     many.channelCount = 24
     many.audioTracks = [Track(channels: 24)]
-    #expect(MeetingStoragePlan.unavailability(disk: many, live: idle, mixing: true) == .tooManyChannelsToCheck(count: 24),
+    #expect(MeetingStoragePlan.unavailability(disk: many, live: idle) == .tooManyChannelsToCheck(count: 24),
             "more than the copy's check fits one by one (review R2)")
     #expect(MeetingStoragePlan.Unavailability.tooManyChannelsToCheck(count: 24).message.contains("24 channels"))
 
     var languages = call
     languages.audioTracks = [Track(channels: 1, alternateGroup: 0, language: "eng"), Track(channels: 1, alternateGroup: 0, language: "fra")]
-    #expect(MeetingStoragePlan.unavailability(disk: languages, live: idle, mixing: true) == .alternateAudioTracks(count: 2))
+    #expect(MeetingStoragePlan.unavailability(disk: languages, live: idle) == .alternateAudioTracks(count: 2))
     #expect(MeetingStoragePlan.Unavailability.alternateAudioTracks(count: 2).message.contains("in different languages"))
 
     // Fail-closed: not read, or read as something that needs no mix while the counts say it does.
     var unread = call
     unread.audioTracks = nil
-    #expect(MeetingStoragePlan.unavailability(disk: unread, live: idle, mixing: true) == .multipleAudioTracks(count: 2))
+    #expect(MeetingStoragePlan.unavailability(disk: unread, live: idle) == .multipleAudioTracks(count: 2))
     var disagreeing = poly
     disagreeing.audioTracks = [Track(channels: 2)]
-    #expect(MeetingStoragePlan.unavailability(disk: disagreeing, live: idle, mixing: true) == .multipleChannels(count: 4))
+    #expect(MeetingStoragePlan.unavailability(disk: disagreeing, live: idle) == .multipleChannels(count: 4))
     var unreadable = call
     unreadable.audioTracks = [Track(channels: 0), Track(channels: 1)]
-    #expect(MeetingStoragePlan.unavailability(disk: unreadable, live: idle, mixing: true) == .multipleAudioTracks(count: 2))
+    #expect(MeetingStoragePlan.unavailability(disk: unreadable, live: idle) == .multipleAudioTracks(count: 2))
 
     // One track of one or two channels is the encode's own business, as before.
     var stereo = disk("recording.wav")
     stereo.channelCount = 2
     #expect(!MeetingStoragePlan.needsMix(stereo))
-    #expect(MeetingStoragePlan.unavailability(disk: stereo, live: idle, mixing: true) == nil)
+    #expect(MeetingStoragePlan.unavailability(disk: stereo, live: idle) == nil)
 }
 
 // MARK: - Review R2: showing that a mixed copy holds every track and channel
@@ -309,22 +270,26 @@ func alignmentPicksEachTracksStep() {
     twoB[RecordingMixPlan.alignmentFrames - 2] = 3; twoB[RecordingMixPlan.alignmentFrames + 7] = 4
     // Energies of 1 at every lag: a projection counts from 0.95 × weight × 0.6 of the track's energy there.
     let ones = [Double](repeating: 1, count: span)
-    let steps: [Int?] = RecordingMixPlan.alignment(projectionsByLag: [one, two, twoB], energiesByLag: [ones, ones, ones], trackChannels: [1, 2])
+    let steps: [Int?] = RecordingMixPlan.alignment(projectionsByLag: [one, two, twoB], energiesByLag: [ones, ones, ones], copySquares: 0, trackChannels: [1, 2])
     #expect(steps == [5, -2])
     // Nothing positive: a silent track, or one in opposite polarity everywhere, is not found.
     let negative = [Double](repeating: -1, count: span)
-    #expect(RecordingMixPlan.alignment(projectionsByLag: [negative], energiesByLag: [ones], trackChannels: [1]) == [nil])
-    #expect(RecordingMixPlan.alignment(projectionsByLag: [[Double](repeating: 0, count: span)], energiesByLag: [ones], trackChannels: [1]) == [nil])
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [negative], energiesByLag: [ones], copySquares: 0, trackChannels: [1]) == [nil])
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [[Double](repeating: 0, count: span)], energiesByLag: [ones], copySquares: 0, trackChannels: [1]) == [nil])
     // Nor a projection under the fit a present track makes: 0.5 of an energy of 1 is under 0.57; 0.6 is found.
     var faint = [Double](repeating: 0, count: span)
     faint[RecordingMixPlan.alignmentFrames + 3] = 0.5
-    #expect(RecordingMixPlan.alignment(projectionsByLag: [faint], energiesByLag: [ones], trackChannels: [1]) == [nil])
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [faint], energiesByLag: [ones], copySquares: 0, trackChannels: [1]) == [nil])
     faint[RecordingMixPlan.alignmentFrames + 3] = 0.6
-    #expect(RecordingMixPlan.alignment(projectionsByLag: [faint], energiesByLag: [ones], trackChannels: [1]) == [3])
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [faint], energiesByLag: [ones], copySquares: 0, trackChannels: [1]) == [3])
+    // An anchor that is not a measurable part of the copy is not one: the same 0.6 of an energy of 1, beside
+    // a copy energy of 300 (1/300 of it, past 24 dB), is not found; beside 200, it is.
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [faint], energiesByLag: [ones], copySquares: 300, trackChannels: [1]) == [nil])
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [faint], energiesByLag: [ones], copySquares: 200, trackChannels: [1]) == [3])
     // A wider search, for a track not found in the windows before: the span follows the projections given.
     var wide = [Double](repeating: 0, count: 2 * 48 + 1)
     wide[48 - 40] = 2
-    #expect(RecordingMixPlan.alignment(projectionsByLag: [wide], energiesByLag: [[Double](repeating: 1, count: 2 * 48 + 1)], trackChannels: [1]) == [-40])
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [wide], energiesByLag: [[Double](repeating: 1, count: 2 * 48 + 1)], copySquares: 0, trackChannels: [1]) == [-40])
     #expect(RecordingMixPlan.widestAlignment == 256 && RecordingMixPlan.alignmentReach == 4_800)
     // A track that drifted past the reach is refused before anything else is judged.
     let drifted = RecordingMixPlan.Audit(trackChannels: [1, 1], sampleRate: 16_000, windows: [], outOfStep: (window: 7, track: 1))

@@ -83,10 +83,8 @@ invalidated after Stop, import, Shrink, Rebuild Audio and delete. Sizes are form
     but **not** for AAC output: a right-only stereo file encoded straight to AAC with `-c 1 --mix` decoded to silence.
   - The two-step path kept it (RMS 4240 against 4242 for the mixed WAV). Native captures are mono, so this matters for
     stereo imports.
-  - **Step 0, for a recording with several audio tracks or more than two channels (F942, 2026-10-12) — held back
-    until F980.** As shipped, such a recording is refused (*Refusals*): `MeetingStoragePlan.shrinkMixesRecordings`,
-    the switch, is off, because the second review of F942 deleted originals through step 4's check of a mix. With
-    the switch on, the recording is first mixed into a 16 kHz mono WAV, `.shrink-<uuid>.mix.wav`, by `RecordingMixer`, by a capture's rule: each track's
+  - **Step 0, for a recording with several audio tracks or more than two channels (F942, 2026-10-12; on since
+    F980, 2026-10-14).** The recording is first mixed into a 16 kHz mono WAV, `.shrink-<uuid>.mix.wav`, by `RecordingMixer`, by a capture's rule: each track's
     channels averaged into its own signal, as a capture averages a microphone's channels (F659), each track placed at
     its own time, and the tracks summed as a capture sums its two (`FloatTrackMixer.limitedSample`: 0.95 of the sum
     while it fits, a smooth limiter above, never full scale). Steps 1 and 2 then run on the mix. Before F942 such a
@@ -126,23 +124,33 @@ verified and the index saved.
    - For a mixed recording (F942) the level checks above are replaced, because levels cannot show a track lost while
      another sounds over it, nor a track whose channels cancel when combined: the review deleted an original both ways
      (review of F942, R2 and M8). Instead `RecordingMixer.audit` reads every channel of every track again, the way the
-     mixer reads them, in step with the copy, and `RecordingMixPlan.firstFinding` judges each five-second window:
-     every channel the recording's own decode hears was read for the mix; every track that sounds keeps at least a
-     quarter of its sound when its channels are combined (a track in opposite polarity is refused); the copy keeps at
-     least a quarter of the mix's level; a least-squares fit of the copy's waveform onto the tracks gives every track
-     that is a measurable part of the copy at least 0.6 of what the mix gives it; a fit onto every channel gives each
-     channel that sounds apart from the others at least a quarter; and every track that sounds was measured somewhere.
-     Anything else keeps the original. Measured through the real mix and encode (round 2 probes): tracks and channels
-     in the copy fit at 0.82 to 0.95 of what the mix gives them, also 23 dB under another track, and a lost track or
-     channel within 0.015 of 0. More than 16 channels are not fitted one by one, and are refused up front.
+     mixer reads them, in step with the copy, and `RecordingMixPlan.firstFinding` judges each **one-second** window
+     by one rule (F980, 2026-10-14): *the original is deleted only when every track's and every channel's sound is
+     provably in the copy; what the audit cannot prove is a refusal.* In each window: nothing measured is NaN or
+     infinite, in the recording's own decode, the audit's read or the copy (D2); every channel the recording's own
+     decode hears was read for the mix; every track that sounds keeps a quarter of its sound when its channels are
+     combined, and the tracks a quarter when summed (a track or tracks in opposite polarity are refused); the copy
+     keeps the mix's level within the band and follows its waveform at 0.6 of the mix's gain; a least-squares fit of
+     the copy onto the tracks gives every track that sounds, and whose sound is at least a quarter its own, 0.6 of
+     the gain where it is within 24 dB of the copy — and where such a track is quieter than that, the window is
+     refused as too quiet to show (F978), not passed; the same channel by channel. "Sounds" is a tenth of the same
+     track's or channel's level over the whole recording (D1: the review's quiet cancelling track was judged nowhere
+     under a tenth of the recording's). Sound two tracks share (identical tracks; OBS's master beside its stems) is
+     proven as the sum it is heard in, by the whole mix's fit. Every window is judged, the last partial one and a
+     recording shorter than a window included.
+     Before anything is summed, each track is aligned to the copy: AVAssetReader does not read an ffmpeg-made file
+     the same way twice, and its reads drift along a file, each track on its own, about 0.4 frames a second without
+     bound. The audit follows each track within ±16 frames of where it stood a window before, widening while it is
+     not found, to 0.3 s in all (past that, refused as out of step), and re-aligns each track against the copy less
+     the other tracks' fitted contributions, where only its own image remains, keeping the result only where it
+     explains the copy better. Measured through the real mix and a 32 kbps encode at one-second windows (F980's
+     log): a present track 24 dB under another fits at 0.95 to 1.03 and a dropped one within 0.30 of 0; at 30 dB a
+     dropped one once fitted at 0.46, which is why 24 dB is the line. Ten Shrinks in a row of each ffmpeg two-track
+     file, and of OBS's three-track layout, all succeed, and a three-minute drifting file shrinks. More than 16
+     channels are not fitted one by one, and are refused up front.
      For a mix, the expected length is the mix's own, every track's end included; the mixer refuses a decode that
      stops more than 0.5 s short of where the audio tracks end — not the movie's length, which counts its picture
-     (review of F942, R1). **Held back with step 0 (F980).** The second review of F942 found two ways past this
-     check with the real mixer: a quiet track whose stereo channels cancel, under a tenth of the whole recording's
-     level, gets none of these checks even where it sounds alone (D1); and one NaN channel of a float WAV silenced
-     the mix while the check read the NaN as silence (D2) — round 1's level band had refused a non-finite level,
-     and replacing it reopened that. It also refused good copies of ffmpeg-made files about half the time, because
-     AVAssetReader does not read such a file the same way twice, and copies of near-identical tracks.
+     (review of F942, R1).
    - A truncated or corrupt encode fails here. On failure the temp files are removed and nothing else changes.
 5. **Is it worth it?**
    - Let *R* be the total size of the files step 7 would remove, and *E* the size of the encoded `.m4a`.
@@ -193,10 +201,9 @@ in the same order. It does not encode again. The "damaged" and "nothing to gain"
 they are about the recording that would be encoded, and here there is none. A meeting whose recording is `meeting.m4a`
 or `meeting-recovered.m4a` and that has nothing left to remove shows "Already shrunk".
 
-A leftover with several audio tracks or more than two channels is kept as shipped (F955, F980): a copy made before
-F942 holds only the first track or channel, and the leftover then holds the last copy of the rest, which a resume
-used to delete; showing that a copy holds it is step 4's check of a mix, held back until F980. With the switch on,
-such a leftover is removed only after the copy is checked against it with that check. A leftover whose tracks are
+A leftover with several audio tracks or more than two channels (F955): a copy made before F942 holds only the first
+track or channel, and the leftover then holds the last copy of the rest, which a resume used to delete; so such a
+leftover is removed only after the copy is checked against it with step 4's check of a mix (F980). A leftover whose tracks are
 alternatives, or cannot be read, is kept either way, and so, outside a resume, is any other `recording.<ext>` with
 more tracks than a plain encode keeps, since nothing compares it with the copy there.
 
@@ -213,10 +220,10 @@ re-made when the action runs. The reasons, in the order a person can act on them
 - **The recording file is missing.**
 - **The recording has more than one audio track, or more than two channels** (F801, F942, F980). An import keeps
   the container it came in, and a movie or MPEG-4 file can carry a track per side of a call; a "poly" WAV can carry a
-  microphone per channel. As shipped every such recording is refused, because the mixing Shrink of step 0 is held
-  back until F980: "This recording has 2 audio tracks; shrinking it isn't available yet, so its audio is kept as it
-  is." (or "…6 channels; …"). With the switch on, such a recording is mixed into the copy (step 0), whatever its
-  layout (F953). Refused either way: audio tracks in different languages that are alternatives of each other
+  microphone per channel. Such a recording is mixed into the copy (step 0), whatever its layout (F953), and the copy
+  is checked against every track and channel before the original goes (step 4); a copy that check cannot prove is
+  refused after the encode, with the reason ("…is too quiet beside the others at about 0:05 to show that the
+  compressed copy holds it there…"). Refused before anything is encoded: audio tracks in different languages that are alternatives of each other
   ("…in different languages, alternatives to each other…"), and a recording whose tracks could not be read, where the plain encode
   would keep track 1, or channel 1 of a WAV with no layout ("…can't be read to mix them into one…", saying how many
   tracks or channels). See the 2026-10-09 amendment and the F942 amendment below.
@@ -431,11 +438,10 @@ follows; the user has not reviewed this yet.
 The user answered the question above on 2026-10-12: keep refusing for now, and mix all tracks into one for both
 transcription and Shrink. Wave 6 built the mixing, for both.
 
-**Shrink's half is held back (F980, the same day).** The second review of F942 found Shrink's check of a mixed copy
-still deleting originals whose sound was not in the copy (step 4), so the integrator decided, following the user's
-"keep refusing for now": Shrink refuses every recording that needs mixing until F980 proves the check, and a resume
-keeps such a leftover. Transcription mixes as described here, since it deletes nothing. The mixing Shrink described
-below is in place behind `MeetingStoragePlan.shrinkMixesRecordings`, which is off, and its tests run with it on.
+**Shrink's half was held back from 2026-10-12 to 2026-10-14 (F980).** The second review of F942 found Shrink's
+check of a mixed copy still deleting originals whose sound was not in the copy (step 4), so the integrator decided,
+following the user's "keep refusing for now": Shrink refused every recording that needs mixing until F980 proved the
+check against the review's probes. F980 rewrote the check to the rule in step 4 and turned Shrink's half on.
 
 - **What is mixed.** A recording with several audio tracks, or one track of more than two channels
   (`RecordingMixPlan`). One track of one or two channels is not: the encode's `--mix` mixes stereo (F796), as the
@@ -462,15 +468,14 @@ below is in place behind `MeetingStoragePlan.shrinkMixesRecordings`, which is of
   of N channels with one speaking is heard at 1/N of that voice, as a capture would hear it.
 - **What it costs.** The tracks cannot be separated again once the original is deleted: per-speaker tracks are gone
   for good. The confirmation says so ("…mixed into one; they can't be separated again afterwards").
-- **How it is checked.** Step 4's checks of a mix, above (round 2: fits of the copy's waveform onto every track and
-  channel, and a refusal of a track whose channels cancel). What they cannot show is a quiet track masked under a
-  loud one in a stretch where it is more than 24 dB down: AAC itself spends the fewest bits there, so such a stretch
-  is judged only by the copy's level against the mix's; a track that is never measurable anywhere is refused. Nor,
-  the second review found, a quiet track under a tenth of the recording's level (D1), nor a NaN channel (D2), nor a
-  stretch shorter than half a second; and it refuses good copies of ffmpeg-made files and of near-identical tracks.
-  F980 collects these; until it is done, Shrink does not mix.
-- **Resume mode** encodes nothing. As shipped it keeps a leftover with several tracks or more than two channels; with
-  the switch on it checks the copy against it before removing it (F955, under *Resuming* above).
+- **How it is checked.** Step 4's check of a mix, above (F980). What a 32 kbps copy cannot be shown to hold is
+  refused, not passed: a track or channel more than 24 dB under the copy where it sounds (AAC spends the fewest bits
+  there, and the fit cannot tell a present one from a dropped one at 30 dB), so a recording with a voice that quiet
+  beside another, or a 5.1 movie whose surround channels carry only quiet ambience, keeps its original with the
+  reason on screen. Shared sound (identical tracks, OBS's master beside its stems) is proven as the sum; a channel
+  that shares more than three quarters of its sound with the others is proven only as part of that sum.
+- **Resume mode** encodes nothing. It checks the copy against a leftover with several tracks or more than two channels
+  before removing it (F955, under *Resuming* above).
 
 ## Amendment for F911 (2026-10-10)
 

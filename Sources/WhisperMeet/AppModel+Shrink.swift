@@ -49,7 +49,7 @@ extension AppModel {
     /// Why Shrink can't run for this meeting now, or nil when it can.
     func shrinkUnavailability(for meeting: MeetingRecord) -> MeetingStoragePlan.Unavailability? {
         guard let disk = storageFacts[meeting.id] else { return nil }
-        return MeetingStoragePlan.unavailability(disk: disk, live: liveShrinkFacts(for: meeting.id), mixing: shrinkMixesRecordings)
+        return MeetingStoragePlan.unavailability(disk: disk, live: liveShrinkFacts(for: meeting.id))
     }
 
     func requestShrink(ids: [UUID]) {
@@ -57,7 +57,7 @@ extension AppModel {
         var current: Int64 = 0, predicted: Int64 = 0
         for id in ids {
             guard let meeting = store.meeting(id: id), let disk = storageFacts[id] else { continue }
-            if let reason = MeetingStoragePlan.unavailability(disk: disk, live: liveShrinkFacts(for: id), mixing: shrinkMixesRecordings) {
+            if let reason = MeetingStoragePlan.unavailability(disk: disk, live: liveShrinkFacts(for: id)) {
                 skipped.append(.init(title: meeting.title, reason: reason)); continue
             }
             eligible.append(meeting)
@@ -170,7 +170,7 @@ extension AppModel {
         }
         let disk = await diskFacts(for: meeting)
         storageFacts[id] = disk
-        if let reason = MeetingStoragePlan.unavailability(disk: disk, live: liveShrinkFacts(for: id), mixing: shrinkMixesRecordings) {
+        if let reason = MeetingStoragePlan.unavailability(disk: disk, live: liveShrinkFacts(for: id)) {
             return .refused(title: meeting.title, reason: reason)
         }
         // Read-only and restoring are refused above, each with its own reason (final review: this
@@ -197,9 +197,7 @@ extension AppModel {
             let tempM4A = folder.appendingPathComponent(".shrink-\(token).m4a")
             let tempWAV = folder.appendingPathComponent(".shrink-\(token).wav")
             // F942: a recording with several audio tracks or more than two channels is mixed into this
-            // 16 kHz mono WAV first, every channel of every track, and the mix is what is encoded. Reached
-            // only with `shrinkMixesRecordings` on: while it is off (F980), `unavailability` refuses such a
-            // recording above, and a resume keeps a leftover that would need it.
+            // 16 kHz mono WAV first, every channel of every track, and the mix is what is encoded.
             let mixWAV = folder.appendingPathComponent(".shrink-\(token).mix.wav")
             let mixed = MeetingStoragePlan.needsMix(disk)
             let encode = encodeForShrink, decode = decodeForShrink, mix = mixForShrink, free = availableBytesForShrink
@@ -334,8 +332,7 @@ extension AppModel {
             // F955: a resume encodes nothing, but before it removes a leftover with several tracks or more
             // than two channels it checks the copy against it as an encode checks a mix (F942, review R2):
             // a copy a build before F942 made kept only the first track or channel, and the leftover then
-            // holds the last copy of the rest. Reached only with `shrinkMixesRecordings` on; while it is off
-            // (F980), `unavailability` keeps every such leftover.
+            // holds the last copy of the rest.
             let leftovers = MeetingStoragePlan.otherRecordingsToVerify(disk)
             let copyURL = store.recordingURL(for: meeting)
             let decode = decodeForShrink, audit = auditForShrink

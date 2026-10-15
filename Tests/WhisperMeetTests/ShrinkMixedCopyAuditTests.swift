@@ -53,12 +53,17 @@ private func shifted(_ samples: [Float], by frames: Int, until: Int = .max, then
 }
 
 /// A voice-like signal: `tones`, irregularly spaced across speech's band, at `amplitude` each, `seconds` long,
-/// silent outside `[from, to)`. Broadband, so that no shift within a few periods of one tone fits it again —
-/// a single tone lines up with itself every period, and four did at 0.6 of their level 31 frames off.
+/// silent outside `[from, to)`, each tone swelling and fading at its own syllabic rate (2–7 Hz). Broadband and
+/// unsteady, as speech is, so that no shift within a few periods of one tone fits it again — a single tone
+/// lines up with itself every period, four steady ones did at 0.6 of their level 31 frames off, and twelve
+/// steady ones still let a track lock a window early in one run of three (`gates/19-anchor-run.log`).
 private func fixtureVoice(_ tones: [Double], amplitude: Double = 0.03, seconds: Double, from: Double = 0, to: Double = .infinity) -> [Float] {
     var sum = [Float](repeating: 0, count: Int(seconds * 48_000))
-    for tone in tones {
-        for (n, value) in fixtureTone(frequency: tone, amplitude: amplitude, seconds: seconds, from: from, to: to).enumerated() { sum[n] += value }
+    for (index, tone) in tones.enumerated() {
+        let rate = 2 + 5 * Double(index) / Double(Swift.max(1, tones.count - 1)), phase = Double(index) * 0.7
+        for (n, value) in fixtureTone(frequency: tone, amplitude: amplitude, seconds: seconds, from: from, to: to).enumerated() {
+            sum[n] += value * Float(0.55 + 0.45 * sin(2 * Double.pi * rate * Double(n) / 48_000 + phase))
+        }
     }
     return sum
 }
@@ -81,7 +86,7 @@ private func drifting(_ samples: [Float], to frames: Int) -> [Float] {
 func shrinkAuditKeepsAQuietTrackWhoseChannelsCancel() async throws {
     // The review's N1 at 0.015 (−36.5 dBFS): under a tenth of the recording's level, so the audit never
     // judged it, and the real mixer cancelled it even where it sounded alone.
-    let f = try await MixFixture(recordingExtension: "mov", duration: 20, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mov", duration: 20) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.5)], seconds: 20, audibleTo: 10),
                                                FixtureTrack(channels: [(800, 0.015), (800, -0.015)], seconds: 20)])
     }
@@ -106,7 +111,7 @@ func shrinkAuditKeepsAFloatWAVWithANaNChannel() async throws {
     for (label, from, to) in [("throughout", 0.0, 15.0), ("from 5 s to 10 s", 5.0, 10.0)] {
         var channels = [300.0, 500.0, 700.0, 900.0].map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 15, rate: 16_000) }
         for n in Int(from * 16_000)..<Int(to * 16_000) { channels[3][n] = .nan }
-        let f = try await MixFixture(recordingExtension: "wav", duration: 15, mixing: true) { url in
+        let f = try await MixFixture(recordingExtension: "wav", duration: 15) { url in
             try fixtureFloatWAV(channels, rate: 16_000).write(to: url)
         }
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -140,7 +145,7 @@ func shrinkAuditAcceptsACopyAFewFramesOutOfStep() async throws {
                                                              ("0 then 4 frames from 2.5 s", 0, 4), ("12 then 8 frames from 2.5 s", 12, 8),
                                                              ("0 to 60 frames, growing", -1, nil)]
     for c in cases {
-        let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
+        let f = try await MixFixture(recordingExtension: "mov", duration: 8) { url in
             try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.3)], seconds: 8),
                                                    FixtureTrack(channels: [(800, 0.3)], seconds: 8)])
         }
@@ -170,7 +175,7 @@ func shrinkAuditRefusesACopyFarOutOfStep() async throws {
     // Twice the frames the audit aligns over from the start, and more: not a read's drift but a copy that is
     // not in time with the recording, which cannot be shown to hold it. Pins the first window's bound. Not
     // pure tones, which line up again a whole period away (800 Hz every 20 frames): voice-like signals.
-    let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mov", duration: 8) { url in
         try await writeFixtureRawTracks(to: url, [[fixtureVoice(voiceA, seconds: 8)], [fixtureVoice(voiceB, seconds: 8)]])
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -194,20 +199,21 @@ func shrinkAuditAcceptsTracksThatShareTheirSound() async throws {
     // sum. The review refused all of these, the encode's noise deciding an undetermined coefficient. The
     // voices are voice-like, not one tone: the mixer's own read puts a shared sound's two images in the copy
     // a few frames apart, and a sustained pure tone shifted a few frames reads as a different sound, where a
-    // voice does not (`gates/15-cases-probe.log`).
+    // voice does not (`gates/15-cases-probe.log`). Not here: a near-duplicate track a third of a frame late
+    // (the review's "0.98 one sample late"), whose only distinct part is a high-frequency phase difference a
+    // 32 kbps copy cannot carry — the audit reads it as shared or as distinct with the read's jitter, and
+    // shrinks or refuses accordingly, which is the rule but not a test (`gates/20-voice-run.log`).
     let voice = fixtureVoice(voiceA, seconds: 12)
     let other = fixtureVoice(voiceB, amplitude: 0.02, seconds: 12, from: 5)
-    let oneLate: [Float] = [0] + voice.dropLast().map { 0.98 * $0 }
     let master: [Float] = zip(voice, other).map { $0 + $1 }
     // Each case names a tone of each voice, where it sounds, and the least amplitude the copy must hold it at.
     let cases: [(label: String, tracks: [[[Float]]], tones: [(Double, Double, Double, Double)])] = [
-        ("identical tracks", [[voice], [voice]], [(voiceA[0], 1, 11, 0.045)]),
-        ("0.98 of the other, one sample late", [[voice], [oneLate]], [(voiceA[0], 1, 11, 0.045)]),
-        ("stereo dual-mono track + mono track", [[voice, voice], [other]], [(voiceA[0], 1, 4, 0.022), (voiceB[0], 6, 11, 0.015)]),
-        ("OBS: master + microphone + desktop", [[master], [voice], [other]], [(voiceA[0], 1, 4, 0.045), (voiceB[0], 6, 11, 0.03)]),
+        ("identical tracks", [[voice], [voice]], [(voiceA[0], 1, 11, 0.025)]),
+        ("stereo dual-mono track + mono track", [[voice, voice], [other]], [(voiceA[0], 1, 4, 0.012), (voiceB[0], 6, 11, 0.008)]),
+        ("OBS: master + microphone + desktop", [[master], [voice], [other]], [(voiceA[0], 1, 4, 0.025), (voiceB[0], 6, 11, 0.016)]),
     ]
     for c in cases {
-        let f = try await MixFixture(recordingExtension: "mov", duration: 12, mixing: true) { url in
+        let f = try await MixFixture(recordingExtension: "mov", duration: 12) { url in
             try await writeFixtureRawTracks(to: url, c.tracks)
         }
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -240,7 +246,7 @@ func shrinkAuditRefusesWhatItCannotShowUnderAnotherTrack() async throws {
                                                FixtureTrack(channels: [(800, 0.0158)], seconds: 20)])
     }
     for lossy in [true, false] {
-        let f = try await MixFixture(recordingExtension: "mov", duration: 20, mixing: true, write: masked)
+        let f = try await MixFixture(recordingExtension: "mov", duration: 20, write: masked)
         defer { try? FileManager.default.removeItem(at: f.root) }
         if lossy {
             let standIn = f.root.appendingPathComponent("lost-where-masked.mov")
@@ -260,7 +266,7 @@ func shrinkAuditRefusesWhatItCannotShowUnderAnotherTrack() async throws {
         #expect(!f.exists("recording.m4a"), "\(label)")
     }
     // 20 dB under throughout: measurable in the copy, fitted, shown — and shrunk.
-    let f = try await MixFixture(recordingExtension: "mov", duration: 12, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mov", duration: 12) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.5)], seconds: 12),
                                                FixtureTrack(channels: [(800, 0.05)], seconds: 12)])
     }
@@ -282,7 +288,7 @@ func shrinkAuditRefusesWhatItCannotShowUnderAnotherTrack() async throws {
 func shrinkAuditJudgesARecordingShorterThanAWindow() async throws {
     // 0.4 s: under the half second the audit used to skip. The review deleted both of the first two.
     for (label, cancels, lossy) in [("antiphase track", true, false), ("mixer drops track 2", false, true), ("good", false, false)] {
-        let f = try await MixFixture(recordingExtension: "mov", duration: 0.4, mixing: true) { url in
+        let f = try await MixFixture(recordingExtension: "mov", duration: 0.4) { url in
             try await writeFixtureTracks(to: url, [FixtureTrack(channels: cancels ? [(300, 0.3), (300, -0.3)] : [(300, 0.3)], seconds: 0.4),
                                                    FixtureTrack(channels: [(800, 0.3)], seconds: 0.4)])
         }
@@ -318,7 +324,7 @@ func shrinkAuditJudgesTheLastPartialWindow() async throws {
     // Track 2 sounds only from 10.0 s to 10.4 s of a 10.4 s recording: a 0.4 s last window after two whole
     // ones, which the audit used to skip. The review deleted the original under a mixer that dropped it.
     for lossy in [true, false] {
-        let f = try await MixFixture(recordingExtension: "mov", duration: 10.4, mixing: true) { url in
+        let f = try await MixFixture(recordingExtension: "mov", duration: 10.4) { url in
             try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 10.4, audibleTo: 9),
                                                    FixtureTrack(channels: [(800, 0.3)], seconds: 0.4, startSeconds: 10)])
         }
@@ -351,7 +357,7 @@ func shrinkAuditJudgesTheLastPartialWindow() async throws {
 func shrinkAuditChecksSixteenChannelsAndRefusesSeventeen() async throws {
     for count in [16, 17] {
         let tones = (0..<count).map { 300.0 + 100.0 * Double($0) }
-        let f = try await MixFixture(recordingExtension: "wav", duration: 4, mixing: true) { url in
+        let f = try await MixFixture(recordingExtension: "wav", duration: 4) { url in
             try fixturePolyWAV(tones.map { fixtureTone(frequency: $0, amplitude: 0.8 / Double(count), seconds: 4) }).write(to: url)
         }
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -383,7 +389,7 @@ func shrinkAuditKeepsTracksThatCancelEachOther() async throws {
     // copy, which is missing it.
     for (label, k) in [("track 2 = −track 1", -1.0), ("track 2 = −0.9 × track 1", -0.9)] {
         let voice = fixtureTone(frequency: 300, amplitude: 0.3, seconds: 8)
-        let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
+        let f = try await MixFixture(recordingExtension: "mov", duration: 8) { url in
             try await writeFixtureRawTracks(to: url, [[voice], [voice.map { Float(k) * $0 }]])
         }
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -411,7 +417,7 @@ func shrinkAuditAcceptsDCClippingAndLoudTracks() async throws {
         ("two tracks at 0.9 at once", [[fixtureTone(frequency: 300, amplitude: 0.9, seconds: 8)], [fixtureTone(frequency: 800, amplitude: 0.9, seconds: 8)]], [(300, 0.3), (800, 0.3)]),
     ]
     for c in cases {
-        let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
+        let f = try await MixFixture(recordingExtension: "mov", duration: 8) { url in
             try await writeFixtureRawTracks(to: url, c.tracks)
         }
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -437,7 +443,7 @@ func shrinkAuditJudgesTracksOfDifferentLengthsAndOffsets() async throws {
                   FixtureTrack(channels: [(800, 0.1)], seconds: 3.8, startSeconds: 3.3),
                   FixtureTrack(channels: [(1_200, 0.05)], seconds: 2.1, startSeconds: 9.9)]
     for lossy in [false, true] {
-        let f = try await MixFixture(recordingExtension: "mov", duration: 12, mixing: true) { url in
+        let f = try await MixFixture(recordingExtension: "mov", duration: 12) { url in
             try await writeFixtureTracks(to: url, layout)
         }
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -472,7 +478,7 @@ func shrinkAuditJudgesTracksOfDifferentLengthsAndOffsets() async throws {
 @MainActor
 func shrinkAuditMixesQuad() async throws {
     let tones = [300.0, 500.0, 700.0, 900.0]
-    let f = try await MixFixture(recordingExtension: "mp4", duration: 6, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mp4", duration: 6) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: tones.map { ($0, 0.2) }, seconds: 6)])
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -491,7 +497,7 @@ func shrinkAuditMixesQuad() async throws {
 @Test("A copy that is noise at the right level is not the recording, and the original is kept (F980)")
 @MainActor
 func shrinkAuditKeepsACopyThatIsNoiseAtTheRightLevel() async throws {
-    let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mov", duration: 8) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.3)], seconds: 8),
                                                FixtureTrack(channels: [(800, 0.3)], seconds: 8)])
     }

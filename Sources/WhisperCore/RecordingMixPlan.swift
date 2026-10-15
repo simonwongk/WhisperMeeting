@@ -244,7 +244,11 @@ public enum RecordingMixPlan {
     /// once found itself 123 frames on in a speck of a near-silent copy and pulled the next window's sound
     /// into this one (`gates/11-n9-probe.log`); measured against the energy at its place, which was none,
     /// the speck passed. A track the copy lost is never found, keeps its place, and fails its fit there,
-    /// which is right.
+    /// which is right. And what anchors the alignment must be a measurable part of the copy's energy in
+    /// the window, `copySquares`, at `measurableShare` as the judgement measures it: the few onset frames of
+    /// a track that starts at a window's end once found themselves, 38 frames early, in the copy's AAC
+    /// pre-echo of that onset — a fine fit against their own tiny energy (`gates/18-shared-probe.log`) —
+    /// and the track then stood 38 frames off where it really began.
     ///
     /// The channels of one track are decoded together, so they share a lag; the choice uses the whole
     /// track's sound, never one quiet channel's, so a channel the copy lacks cannot pick itself a
@@ -252,13 +256,15 @@ public enum RecordingMixPlan {
     /// the copy, its cancellation no longer shows in the aligned sums — but then those sums hold far more
     /// sound than the copy, and the copy's level refuses it (`copyMissingSound`); where the aligned tracks
     /// still cancel, `tracksCancel` does. Either way the original is kept.
-    public static func alignment(projectionsByLag: [[Double]], energiesByLag: [[Double]], trackChannels: [Int]) -> [Int?] {
+    public static func alignment(projectionsByLag: [[Double]], energiesByLag: [[Double]], copySquares: Double,
+                                 trackChannels: [Int]) -> [Int?] {
         var first = 0
         return trackChannels.map { count -> Int? in
             defer { first += count }
             guard count > 0, first < projectionsByLag.count else { return nil }
             let span = (projectionsByLag[first].count - 1) / 2
-            let least = gain * channelWeight(channels: count) * minimumFit
+            let expected = gain * channelWeight(channels: count)
+            let least = expected * minimumFit
             var best: (lag: Int, value: Double)?
             for index in 0..<(2 * span + 1) {
                 let lag = index - span
@@ -267,7 +273,8 @@ public enum RecordingMixPlan {
                     value += projectionsByLag[channel][index]
                     energy += channel < energiesByLag.count && index < energiesByLag[channel].count ? energiesByLag[channel][index] : 0
                 }
-                guard value.isFinite, energy.isFinite, energy > 0, value >= least * energy else { continue }
+                guard value.isFinite, energy.isFinite, energy > 0, value >= least * energy,
+                      expected * expected * energy >= copySquares * measurableShare else { continue }
                 if best == nil || value > best!.value || (value == best!.value && abs(lag) < abs(best!.lag)) { best = (lag, value) }
             }
             return best?.lag
@@ -438,7 +445,7 @@ public enum RecordingMixPlan {
         // The reading kept every channel the recording has: the recording's own decode measures each
         // channel per `MeetingStoragePlan.levelWindowSeconds`, so the audit's windows are summed per that
         // stretch to compare, and a finding names the stretch's first audit window.
-        let perNative = Swift.max(1, Int((MeetingStoragePlan.levelWindowSeconds / auditWindowSeconds).rounded()))
+        let perNative = Swift.max(1, Int(saturating: (MeetingStoragePlan.levelWindowSeconds / auditWindowSeconds).rounded()))
         var readEnergy: [[Double]] = [], readFrames: [Double] = []
         for (index, window) in audit.windows.enumerated() {
             let group = index / perNative

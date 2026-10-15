@@ -9,11 +9,10 @@ import Testing
 // have been deleted with the original; F953 noted that this also refused positioned 5.1 audio. The
 // user's decision (2026-10-12): mix every track into one, for transcription and for Shrink. Wave 6 built
 // a Shrink that mixes every channel of every track into its copy and checks the copy against each of
-// them; its second review found that check still deleting originals (D1, D2), so as shipped Shrink
-// refuses every recording that needs mixing until F980 (`MeetingStoragePlan.shrinkMixesRecordings`, off).
-// The tests up to the F980 section run that held-back path with the switch on (`mixing: true`), so F980
-// starts from it; the F980 section runs the shipped refusal. Driven through the calls the Shrink button
-// makes, with the real mixer, encoder and decoder.
+// them; its second review found that check still deleting originals (D1, D2), so Shrink refused every
+// recording that needs mixing until F980 (2026-10-14) proved the check against the review's probes
+// (`ShrinkMixedCopyAuditTests`) and turned it on. Driven through the calls the Shrink button makes, with
+// the real mixer, encoder and decoder.
 
 private final class CallFlag: @unchecked Sendable {
     private let lock = NSLock()
@@ -32,9 +31,7 @@ struct MixFixture {
     let folder: URL
     let recording: URL
 
-    /// `mixing` sets `shrinkMixesRecordings`, the switch for Shrink of a recording that needs mixing: off
-    /// as shipped (F980); on for the tests that run the held-back path.
-    init(recordingExtension ext: String, duration: TimeInterval, mixing: Bool = false,
+    init(recordingExtension ext: String, duration: TimeInterval,
          write: (URL) async throws -> Void) async throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("F942-shrink-\(UUID().uuidString)")
         id = UUID()
@@ -50,7 +47,6 @@ struct MixFixture {
             status: .completed, transcriptText: "Hi."))
         // The free-space figure is the host's; these tests are about what is kept.
         model.availableBytesForShrink = { _ in .max }
-        model.shrinkMixesRecordings = mixing
     }
 
     func exists(_ name: String) -> Bool {
@@ -86,7 +82,7 @@ struct MixFixture {
 func shrinkMixesATwoTrackImport() async throws {
     // A call saved one side per track, the two sides taking turns: the quiet side for the first four
     // seconds, then the loud side.
-    let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mov", duration: 8) { url in
         try await writeFixtureTracks(to: url, [
             FixtureTrack(channels: [(300, 0.05)], seconds: 8, audibleTo: 4),
             FixtureTrack(channels: [(800, 0.4)], seconds: 8, audibleFrom: 4),
@@ -115,7 +111,7 @@ func shrinkMixesAFourChannelImport() async throws {
     // F801 review R5's fixture: four simultaneous feeds at one level, a floor microphone and three
     // interpreters. The encode once kept channel 1 and deleted the rest; then Shrink refused it.
     let tones = [300.0, 500.0, 700.0, 900.0]
-    let f = try await MixFixture(recordingExtension: "wav", duration: 6, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: 6) { url in
         try fixturePolyWAV(tones.map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 6) }).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -137,7 +133,7 @@ func shrinkMixesAFourChannelImport() async throws {
 @MainActor
 func shrinkMixesAFivePointOneImport() async throws {
     let tones = [300.0, 500.0, 700.0, 900.0, 1_100.0, 1_300.0]
-    let f = try await MixFixture(recordingExtension: "wav", duration: 6, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: 6) { url in
         try fixturePolyWAV(tones.map { fixtureTone(frequency: $0, amplitude: 0.1, seconds: 6) }, mask: 0x3F).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -177,7 +173,7 @@ private func panelChannels() -> [[Float]] {
 @MainActor
 func shrinkKeepsAnOriginalWhoseTrackCancels() async throws {
     // The review's probe B, through the real mixer.
-    let f = try await MixFixture(recordingExtension: "mov", duration: 10, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mov", duration: 10) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2), (300, -0.2)], seconds: 10),
                                                FixtureTrack(channels: [(800, 0.2)], seconds: 10)])
     }
@@ -197,7 +193,7 @@ func shrinkKeepsAnOriginalWhoseTrackCancels() async throws {
 @MainActor
 func shrinkKeepsAnOriginalWhoseTrackTheMixLostUnderAnother() async throws {
     // The review's probe I: track 2 speaks over track 1, never alone.
-    let f = try await MixFixture(recordingExtension: "mov", duration: 20, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mov", duration: 20) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 20),
                                                FixtureTrack(channels: [(800, 0.1)], seconds: 20, audibleFrom: 2, audibleTo: 18)])
     }
@@ -225,7 +221,7 @@ func shrinkKeepsAnOriginalWhoseChannelsTheMixLostBesideOthers() async throws {
     // R5's four simultaneous feeds at one level, given to a mixer with R5's fault (afconvert keeps channel 1):
     // every level matches, so only a fit of each channel shows the other three gone.
     let tones = [300.0, 500.0, 700.0, 900.0]
-    let f = try await MixFixture(recordingExtension: "wav", duration: 6, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: 6) { url in
         try fixturePolyWAV(tones.map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 6) }).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -245,7 +241,7 @@ func shrinkKeepsAnOriginalWhoseChannelsTheMixLostBesideOthers() async throws {
 @Test("A mix that lost a channel is caught where that channel speaks, and the original is kept (F942)")
 @MainActor
 func shrinkRefusesAMixThatLostAChannel() async throws {
-    let f = try await MixFixture(recordingExtension: "wav", duration: 20, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: 20) { url in
         try fixturePolyWAV(panelChannels()).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -273,7 +269,7 @@ func shrinkRefusesAMixThatLostAChannel() async throws {
 @Test("The same panel through the real mixer is shrunk with every speaker in the copy (F942 control)")
 @MainActor
 func shrinkMixesAPanelWhoseMicrophonesTakeTurns() async throws {
-    let f = try await MixFixture(recordingExtension: "wav", duration: 20, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: 20) { url in
         try fixturePolyWAV(panelChannels()).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -298,7 +294,7 @@ func shrinkMixesAPanelWhoseMicrophonesTakeTurns() async throws {
 @Test("A recording measured with fewer channels than were mixed keeps its original (F942 review, M2)")
 @MainActor
 func shrinkKeepsAnOriginalMeasuredWithFewerChannelsThanMixed() async throws {
-    let f = try await MixFixture(recordingExtension: "wav", duration: 20, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: 20) { url in
         try fixturePolyWAV(panelChannels()).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -321,7 +317,7 @@ func shrinkKeepsAnOriginalMeasuredWithFewerChannelsThanMixed() async throws {
 @Test("A movie whose picture runs past its sound is shrunk from the mix of its tracks (F942 review R1)")
 @MainActor
 func shrinkMixesAMovieWhosePictureOutlastsItsSound() async throws {
-    let f = try await MixFixture(recordingExtension: "mp4", duration: 8, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mp4", duration: 8) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 6, audibleTo: 3),
                                                FixtureTrack(channels: [(800, 0.2)], seconds: 6, audibleFrom: 3)],
                                      videoSeconds: 8)
@@ -340,7 +336,7 @@ func shrinkMixesAMovieWhosePictureOutlastsItsSound() async throws {
 @Test("Audio tracks in two languages are not mixed into one copy, and nothing is encoded (F942)")
 @MainActor
 func shrinkRefusesAlternateTracks() async throws {
-    let f = try await MixFixture(recordingExtension: "mov", duration: 3, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mov", duration: 3) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 3),
                                                FixtureTrack(channels: [(800, 0.2)], seconds: 3)],
                                      alternates: true, languages: ["eng", "fra"])
@@ -364,7 +360,7 @@ func shrinkRefusesAlternateTracks() async throws {
 @Test("Tracks ffmpeg put in one alternate group, untagged, are mixed into the copy (F942 review R3)")
 @MainActor
 func shrinkMixesTracksFFmpegGrouped() async throws {
-    let f = try await MixFixture(recordingExtension: "mp4", duration: 8, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mp4", duration: 8) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 8, audibleTo: 4),
                                                FixtureTrack(channels: [(800, 0.2)], seconds: 8, audibleFrom: 4)],
                                      alternates: true)
@@ -383,7 +379,7 @@ func shrinkMixesTracksFFmpegGrouped() async throws {
 @Test("The confirmation says that several tracks are mixed into one and cannot be separated again (F942)")
 @MainActor
 func shrinkConfirmationSaysTheTracksAreMixed() async throws {
-    let f = try await MixFixture(recordingExtension: "mov", duration: 3, mixing: true) { url in
+    let f = try await MixFixture(recordingExtension: "mov", duration: 3) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 3),
                                                FixtureTrack(channels: [(800, 0.2)], seconds: 3)])
     }
@@ -395,99 +391,4 @@ func shrinkConfirmationSaysTheTracksAreMixed() async throws {
     let message = AppModel.shrinkConfirmationMessage(request)
     #expect(message.contains("mixed into one"), "\(message)")
     #expect(message.contains("can't be separated"), "\(message)")
-}
-
-// MARK: - F980: Shrink of a recording that needs mixing is held back
-
-// The second review of F942 found the audit of a mixed copy still letting Shrink delete an original whose
-// sound was not in the copy, with the real mixer: D1, a quiet track whose stereo channels cancel, judged only
-// above a tenth of the whole recording's level, even where it sounds alone; D2, one NaN channel of a float
-// WAV, which silenced the mix while the audit read NaN as silence. The integrator's decision, following the
-// user's answer to F942 ("keep refusing now, mix later"): Shrink refuses every recording that needs mixing
-// until F980 proves the audit; transcription keeps mixing, since it deletes nothing. These run the shipped
-// behaviour; the tests above run the held-back path.
-
-@Test("Shrink refuses a recording that needs mixing, before anything is mixed or encoded (F942, F980)")
-@MainActor
-func shrinkRefusesEveryRecordingThatNeedsMixing() async throws {
-    let poly = [300.0, 500.0, 700.0, 900.0].map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 4) }
-    let surround = [300.0, 500.0, 700.0, 900.0, 1_100.0, 1_300.0].map { fixtureTone(frequency: $0, amplitude: 0.1, seconds: 4) }
-    let cases: [(label: String, ext: String, holds: String, write: (URL) async throws -> Void)] = [
-        ("two tracks", "mov", "2 audio tracks", { url in
-            try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 4),
-                                                   FixtureTrack(channels: [(800, 0.2)], seconds: 4)])
-        }),
-        ("four channels, no layout", "wav", "4 channels", { url in try fixturePolyWAV(poly).write(to: url) }),
-        ("5.1", "wav", "6 channels", { url in try fixturePolyWAV(surround, mask: 0x3F).write(to: url) }),
-    ]
-    for c in cases {
-        let f = try await MixFixture(recordingExtension: c.ext, duration: 4, write: c.write)
-        defer { try? FileManager.default.removeItem(at: f.root) }
-        let mixed = CallFlag(), encoded = CallFlag()
-        f.model.mixForShrink = { _, _ in mixed.set(); throw CancellationError() }
-        f.model.encodeForShrink = { _, _, _ in encoded.set() }
-        let original = try Data(contentsOf: f.recording)
-
-        let reason = try await f.reason()
-        #expect(reason?.message == "This recording has \(c.holds); shrinking it isn't available yet, so its audio is kept as it is.",
-                "\(c.label): \(String(describing: reason))")
-        await f.shrink()
-
-        let alert = f.model.alertMessage ?? "nil"
-        #expect(alert.contains("isn't available yet"), "\(c.label): \(alert)")
-        #expect(!mixed.value && !encoded.value, "\(c.label): nothing is mixed or encoded")
-        #expect(try Data(contentsOf: f.recording) == original, "\(c.label)")
-        #expect(!f.exists("recording.m4a"), "\(c.label)")
-    }
-}
-
-@Test("A quiet track whose channels cancel, alone for half the recording, keeps its original (F942 second review D1, F980)")
-@MainActor
-func shrinkKeepsAnOriginalWithAQuietTrackWhoseChannelsCancel() async throws {
-    // The review's N1 at 0.015: track 1 speaks for the first 10 s; track 2 is stereo in opposite polarity,
-    // under a tenth of the recording's level, and alone from 10 s. The audit let its loss through.
-    let f = try await MixFixture(recordingExtension: "mov", duration: 20) { url in
-        try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.5)], seconds: 20, audibleTo: 10),
-                                               FixtureTrack(channels: [(800, 0.015), (800, -0.015)], seconds: 20)])
-    }
-    defer { try? FileManager.default.removeItem(at: f.root) }
-    let original = try Data(contentsOf: f.recording)
-
-    await f.shrink()
-
-    let alert = f.model.alertMessage ?? "nil"
-    #expect(f.exists("recording.mov"), "\(alert)")
-    #expect(try Data(contentsOf: f.recording) == original, "\(alert)")
-    #expect(!f.exists("recording.m4a"), "\(alert)")
-}
-
-@Test("A float WAV with a NaN channel keeps its original (F942 second review D2, F980)")
-@MainActor
-func shrinkKeepsAnOriginalWithANaNChannel() async throws {
-    // The review's N2: four channels at 16 kHz, the fourth NaN throughout. The mix came out silent and the
-    // audit, reading NaN as silence, let a 3.8 MB original go for a 12 KB copy.
-    var channels = [300.0, 500.0, 700.0, 900.0].map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 15, rate: 16_000) }
-    channels[3] = [Float](repeating: .nan, count: channels[3].count)
-    let f = try await MixFixture(recordingExtension: "wav", duration: 15) { url in
-        try fixtureFloatWAV(channels, rate: 16_000).write(to: url)
-    }
-    defer { try? FileManager.default.removeItem(at: f.root) }
-    let original = try Data(contentsOf: f.recording)
-
-    await f.shrink()
-
-    let alert = f.model.alertMessage ?? "nil"
-    #expect(f.exists("recording.wav"), "\(alert)")
-    #expect(try Data(contentsOf: f.recording) == original, "\(alert)")
-    #expect(!f.exists("recording.m4a"), "\(alert)")
-}
-
-@Test("The app's Shrink starts with mixing off, as the plan's switch is (F980)")
-@MainActor
-func appShrinkStartsWithMixingOff() throws {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("F980-switch-\(UUID().uuidString)")
-    defer { try? FileManager.default.removeItem(at: root) }
-    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
-                         defaults: UserDefaults(suiteName: testSuiteName())!)
-    #expect(model.shrinkMixesRecordings == false)
 }

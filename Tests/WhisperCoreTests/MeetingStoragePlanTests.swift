@@ -423,17 +423,14 @@ func resumeLeftoverTracksDecideWhatIsChecked() {
     resume.otherRecordingTracks = ["recording.mov": [RecordingMixPlan.Track(channels: 2)]]
     #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle) == nil)
     #expect(MeetingStoragePlan.otherRecordingsToVerify(resume).isEmpty)
-    // Two tracks: as shipped, kept, while Shrink of a recording that needs mixing is held back (F980).
+    // Two tracks: allowed, and the resume checks the copy against it before removing it (F955, F980).
     resume.otherRecordingTracks = ["recording.mov": [RecordingMixPlan.Track(channels: 1), RecordingMixPlan.Track(channels: 1)]]
-    #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle)
-            == .otherRecordingHasMoreTracks(name: "recording.mov", tracks: 2, channels: 2))
-    // With the switch on: allowed, and the resume checks the copy against it before removing it.
-    #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle, mixing: true) == nil)
+    #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle) == nil)
     #expect(MeetingStoragePlan.otherRecordingsToVerify(resume).map(\.name) == ["recording.mov"])
     // Alternates are never mixed, so no copy holds them both: kept, saying why.
     resume.otherRecordingTracks = ["recording.mov": [RecordingMixPlan.Track(channels: 1, alternateGroup: 0, language: "eng"),
                                                      RecordingMixPlan.Track(channels: 1, alternateGroup: 0, language: "fra")]]
-    #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle, mixing: true)
+    #expect(MeetingStoragePlan.unavailability(disk: resume, live: idle)
             == .otherRecordingHasMoreTracks(name: "recording.mov", tracks: 2, channels: 2))
     #expect(MeetingStoragePlan.Unavailability.otherRecordingHasMoreTracks(name: "recording.mov", tracks: 2, channels: 2)
         .message.contains("“recording.mov”, which has 2 audio tracks"))

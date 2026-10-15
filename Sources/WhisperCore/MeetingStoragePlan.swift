@@ -174,23 +174,11 @@ public enum MeetingStoragePlan {
         }
     }
 
-    /// **The switch for Shrink of a recording that needs mixing — off (F980).** Wave 6 built it (F942):
-    /// mix every track and channel into the copy, then show with `RecordingMixer.audit` and
-    /// `RecordingMixPlan.firstFinding` that the copy holds each one before deleting the original. Its
-    /// second review deleted originals whose sound was not in the copy anyway, with the real mixer: a quiet
-    /// track whose stereo channels cancel, judged only above a tenth of the whole recording's level (D1),
-    /// and a float WAV with one NaN channel, which silenced the mix while the audit read NaN as silence
-    /// (D2); and it refused good ffmpeg-made copies about half the time. So until F980 proves the audit,
-    /// Shrink refuses every recording that needs mixing (`mixingNotAvailableYet`), and a resume keeps a
-    /// leftover that would need it — the integrator's decision of 2026-10-12, following the user's answer
-    /// to F942, "keep refusing now, mix later". Transcription keeps mixing: it deletes nothing. The mixing
-    /// Shrink stays in place behind this switch, so F980 starts from it and its tests keep running; a test
-    /// pins that it is off.
-    public static let shrinkMixesRecordings = false
-
     /// Whether Shrink mixes this recording into its copy rather than encoding it as it is (F942): it
     /// has several audio tracks, or more than two channels. One or two channels of one track are mixed
-    /// by the encode itself (F796). While `shrinkMixesRecordings` is off, such a recording is refused.
+    /// by the encode itself (F796). Before the original is deleted, the copy is shown to hold every
+    /// track and channel (`RecordingMixPlan.firstFinding`); this was held back behind a switch from
+    /// 2026-10-12 until F980 proved that audit against the second review's deletions and false refusals.
     public static func needsMix(_ disk: DiskFacts) -> Bool {
         (disk.audioTrackCount ?? 1) > 1 || (disk.channelCount ?? 0) > 2
     }
@@ -361,10 +349,6 @@ public enum MeetingStoragePlan {
         /// A mix of more channels than Shrink checks one by one in its copy (`RecordingMixPlan.mostCheckedChannels`,
         /// review of F942, R2): not shown to hold them all, so not shrunk.
         case tooManyChannelsToCheck(count: Int)
-        /// The recording needs mixing — several audio tracks, or more than two channels — and Shrink of such
-        /// a recording is held back until F980 (`shrinkMixesRecordings`). `tracks` and `channels` are what
-        /// was read: the tracks, and their channels in all.
-        case mixingNotAvailableYet(tracks: Int, channels: Int)
         /// Another `recording.<ext>` in the folder is not shown to hold no more audio than the
         /// recording, and Shrink would delete or replace it (F911) — a link import's complete download
         /// beside the shorter WAV an interrupted extraction finished. `seconds` is its length, nil when
@@ -404,9 +388,6 @@ public enum MeetingStoragePlan {
                 return "This recording has \(count) channels, and they can't be read to mix them into one. A shrunk copy would keep only some of them, and the others would be deleted with the original, so it isn't shrunk."
             case let .tooManyChannelsToCheck(count):
                 return "This recording has \(count) channels, more than Shrink checks one by one when it mixes them into one copy, so it isn't shrunk."
-            case let .mixingNotAvailableYet(tracks, channels):
-                let holds = tracks > 1 ? "\(tracks) audio tracks" : "\(channels) channels"
-                return "This recording has \(holds); shrinking it isn't available yet, so its audio is kept as it is."
             case let .otherRecordingMayHoldMore(name, seconds?):
                 return "This meeting's folder also holds “\(name)”, which runs \(TranscriptFormatter.clock(seconds)), longer than this recording. Shrinking would delete it, so it isn't shrunk."
             case let .otherRecordingMayHoldMore(name, nil):
@@ -437,10 +418,8 @@ public enum MeetingStoragePlan {
     }
 
     /// Why Shrink can't run now, or nil when it can. Facts about the meeting come first, because they
-    /// never clear on their own; busy states come last. `mixing` is `shrinkMixesRecordings` everywhere but
-    /// the tests that run the held-back mixing Shrink (F980).
-    public static func unavailability(disk: DiskFacts, live: LiveFacts,
-                                      mixing: Bool = shrinkMixesRecordings) -> Unavailability? {
+    /// never clear on their own; busy states come last.
+    public static func unavailability(disk: DiskFacts, live: LiveFacts) -> Unavailability? {
         guard disk.inOwnFolder, let output = outputName(forRecordingNamed: disk.recordingName) else {
             return .unsupportedRecording
         }
@@ -450,15 +429,15 @@ public enum MeetingStoragePlan {
             return .otherRecordingMayHoldMore(name: other.name, seconds: disk.otherRecordingSeconds[other.name])
         }
         // F955: and its tracks and channels, which its length cannot show. A leftover a mix must hold is
-        // removed by a resume only after the copy is checked against it (`otherRecordingsToVerify`), and
-        // only while mixing Shrink is on (F980); anything else of that kind is kept.
+        // removed by a resume only after the copy is checked against it (`otherRecordingsToVerify`);
+        // anything else of that kind is kept.
         let resume = isResume(disk)
         for other in otherRecordings(in: disk.entries, recordingName: disk.recordingName) where !other.isEmpty {
             guard let tracks = disk.otherRecordingTracks[other.name] else { continue }
             switch RecordingMixPlan.decision(for: tracks) {
             case .asItIs:
                 continue
-            case let .mixEveryChannel(channels) where mixing && resume && channels <= RecordingMixPlan.mostCheckedChannels:
+            case let .mixEveryChannel(channels) where resume && channels <= RecordingMixPlan.mostCheckedChannels:
                 continue
             case .mixEveryChannel, .unsupported:
                 return .otherRecordingHasMoreTracks(name: other.name, tracks: tracks.count,
@@ -483,12 +462,9 @@ public enum MeetingStoragePlan {
             // recording whose tracks were not read — fail-closed, because the plain encode would keep
             // track 1, or of a WAV with more than two channels and no layout, channel 1 (F801 review R5).
             // Refused, not warned about, because the loss would be permanent and the confirmation is
-            // one click. And while mixing Shrink is held back (F980), a recording it would mix is refused
-            // too; alternates and unread tracks keep their own reasons, which mixing would not change.
+            // one click.
             if needsMix(disk) {
                 switch disk.audioTracks.map(RecordingMixPlan.decision(for:)) {
-                case let .mixEveryChannel(channels)? where !mixing:
-                    return .mixingNotAvailableYet(tracks: disk.audioTracks?.count ?? 1, channels: channels)
                 case let .mixEveryChannel(channels)? where channels > RecordingMixPlan.mostCheckedChannels:
                     // More than the check of a mixed copy fits one by one (review R2): not shown, so kept.
                     return .tooManyChannelsToCheck(count: channels)

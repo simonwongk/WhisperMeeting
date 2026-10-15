@@ -5,10 +5,9 @@ import os
 import WhisperCore
 
 /// Mixes every channel of every audio track of a recording into one 16 kHz mono 16-bit WAV (F942), for
-/// the engines and speaker analysis — and for Shrink, which is held back until F980
-/// (`MeetingStoragePlan.shrinkMixesRecordings`) — and measures a mono copy against the tracks it was made
-/// from (`audit`), so that Shrink, once F980 proves that check, deletes nothing a mix or an encode lost. `RecordingMixPlan` decides when, combines
-/// a track's channels (`channelWeight`) and judges the measurement; this reads and writes.
+/// the engines, speaker analysis and Shrink, and measures a mono copy against the tracks it was made from
+/// (`audit`), so that Shrink deletes nothing a mix or an encode lost (F980). `RecordingMixPlan` decides
+/// when, combines a track's channels (`channelWeight`) and judges the measurement; this reads and writes.
 ///
 /// **How it reads.** One `AVAssetReader` with an `AVAssetReaderTrackOutput` per audio track, each asked
 /// for 32-bit float at 16 kHz with the track's own channel count, and for more than two channels a
@@ -320,8 +319,11 @@ enum RecordingMixer {
                 for (k, value) in padded[channel].enumerated() { running += Double(value) * Double(value); prefix[k + 1] = running }
                 energiesByLag.append((0..<count).map { prefix[$0 + n] - prefix[$0] })
             }
+            var copySquares: Float = 0
+            vDSP_dotpr(c, 1, c, 1, &copySquares, vDSP_Length(n))
             func align(_ projections: [[Double]], _ energies: [[Double]], _ tracks: [Int]) -> [Int?] {
-                RecordingMixPlan.alignment(projectionsByLag: projections, energiesByLag: energies, trackChannels: tracks)
+                RecordingMixPlan.alignment(projectionsByLag: projections, energiesByLag: energies, copySquares: Double(copySquares),
+                                           trackChannels: tracks)
             }
             var steps = align(projectionsByLag, energiesByLag, channels)
             /// The window's sums with each channel shifted by its track's step: `padded[i]` from `span + step`.
@@ -396,8 +398,6 @@ enum RecordingMixer {
                 lags.append(place[track])
             }
             let final = sums(steps)
-            var copySquares: Float = 0
-            vDSP_dotpr(c, 1, c, 1, &copySquares, vDSP_Length(n))
             windows.append(.init(frames: Double(n), gram: final.gram, projection: final.projection, copySquares: Double(copySquares), lags: lags))
         }
 
