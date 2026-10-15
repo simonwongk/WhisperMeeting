@@ -351,9 +351,9 @@ enum RecordingMixer {
             // projection can lock onto the other track's image of it: the joint fit then sees it at half.
             // So each track is aligned again against the copy less the other tracks' fitted contributions,
             // where only its own image remains (F978's residual test), and the new alignment is kept only
-            // where it explains the copy better than the first — a pure tone's image half a period on would
-            // otherwise pass for it. A track the copy lost finds nothing there, keeps its place, and fails
-            // its fit, which is right.
+            // where the track the copy follows least then follows it better, and nothing is explained worse
+            // — a pure tone's image half a period on would otherwise pass for it. A track the copy lost finds
+            // nothing there, keeps its place, and fails its fit, which is right.
             // Twice: the second pass takes the others out at their improved places.
             for _ in 0..<2 where channels.count > 1 {
                 let first = sums(steps)
@@ -383,7 +383,13 @@ enum RecordingMixer {
                 }
                 guard again != steps else { break }
                 let second = sums(again)
-                guard RecordingMixPlan.trackFit(gram: second.gram, projection: second.projection, trackChannels: channels).explained > fit.explained else { break }
+                let after = RecordingMixPlan.trackFit(gram: second.gram, projection: second.projection, trackChannels: channels)
+                // Kept only if the track the copy follows least now follows it better: the explained energy
+                // alone cannot tell a right move from a wrong one between near-collinear tracks, since any
+                // mix of them explains the copy, and a stem once moved to a wrong lag on that criterion while
+                // another's fit collapsed (gates/22-final-targeted.log).
+                func least(_ coefficients: [Double]) -> Double { coefficients.filter(\.isFinite).min() ?? -.infinity }
+                guard least(after.coefficients) > least(fit.coefficients), after.explained >= fit.explained else { break }
                 steps = again
             }
             var lags: [Int] = []

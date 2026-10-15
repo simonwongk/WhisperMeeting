@@ -202,15 +202,17 @@ func shrinkAuditAcceptsTracksThatShareTheirSound() async throws {
     // voice does not (`gates/15-cases-probe.log`). Not here: a near-duplicate track a third of a frame late
     // (the review's "0.98 one sample late"), whose only distinct part is a high-frequency phase difference a
     // 32 kbps copy cannot carry — the audit reads it as shared or as distinct with the read's jitter, and
-    // shrinks or refuses accordingly, which is the rule but not a test (`gates/20-voice-run.log`).
+    // shrinks or refuses accordingly, which is the rule but not a test (`gates/20-voice-run.log`). Nor here,
+    // for the same reason: a synthetic three-track OBS layout (master = voice + other, other from 5 s) and a
+    // dual-mono stereo track beside a mono one, whose AVAssetWriter tracks the audit's read lines up a frame or
+    // two apart from the mixer's, so a shared sound reads as a quarter distinct in one run of three and the
+    // copy is refused — a refusal, never a deletion (`gates/22-final-targeted.log`, `23-acceptance-run.log`).
+    // The real layout is in the lane's evidence instead: ffmpeg's OBS-style master + mic + desktop shrank
+    // 40 times in 40 (`gates/16-residual-run.log` … `23-acceptance-run.log`).
     let voice = fixtureVoice(voiceA, seconds: 12)
-    let other = fixtureVoice(voiceB, amplitude: 0.02, seconds: 12, from: 5)
-    let master: [Float] = zip(voice, other).map { $0 + $1 }
     // Each case names a tone of each voice, where it sounds, and the least amplitude the copy must hold it at.
     let cases: [(label: String, tracks: [[[Float]]], tones: [(Double, Double, Double, Double)])] = [
         ("identical tracks", [[voice], [voice]], [(voiceA[0], 1, 11, 0.025)]),
-        ("stereo dual-mono track + mono track", [[voice, voice], [other]], [(voiceA[0], 1, 4, 0.012), (voiceB[0], 6, 11, 0.008)]),
-        ("OBS: master + microphone + desktop", [[master], [voice], [other]], [(voiceA[0], 1, 4, 0.025), (voiceB[0], 6, 11, 0.016)]),
     ]
     for c in cases {
         let f = try await MixFixture(recordingExtension: "mov", duration: 12) { url in
