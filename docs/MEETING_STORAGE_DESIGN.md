@@ -83,8 +83,11 @@ invalidated after Stop, import, Shrink, Rebuild Audio and delete. Sizes are form
     but **not** for AAC output: a right-only stereo file encoded straight to AAC with `-c 1 --mix` decoded to silence.
   - The two-step path kept it (RMS 4240 against 4242 for the mixed WAV). Native captures are mono, so this matters for
     stereo imports.
-  - **Step 0, for a recording with several audio tracks or more than two channels (F942, 2026-10-12; on since
-    F980, 2026-10-14).** The recording is first mixed into a 16 kHz mono WAV, `.shrink-<uuid>.mix.wav`, by `RecordingMixer`, by a capture's rule: each track's
+  - **Step 0, for a recording with several audio tracks or more than two channels (F942, 2026-10-12) — held back.**
+    As shipped, such a recording is refused (*Refusals*): `MeetingStoragePlan.shrinkMixesRecordings`, the switch, is
+    off. F980 rewrote step 4's check of a mix and no probe of either review deletes an original through it, but a good
+    copy of tracks that share their sound is still refused in some runs, so the switch stays off until that is fixed
+    (see the F942 amendment). With the switch on, the recording is first mixed into a 16 kHz mono WAV, `.shrink-<uuid>.mix.wav`, by `RecordingMixer`, by a capture's rule: each track's
     channels averaged into its own signal, as a capture averages a microphone's channels (F659), each track placed at
     its own time, and the tracks summed as a capture sums its two (`FloatTrackMixer.limitedSample`: 0.95 of the sum
     while it fits, a smooth limiter above, never full scale). Steps 1 and 2 then run on the mix. Before F942 such a
@@ -146,7 +149,10 @@ verified and the index saved.
      explains the copy better. Measured through the real mix and a 32 kbps encode at one-second windows (F980's
      log): a present track 24 dB under another fits at 0.95 to 1.03 and a dropped one within 0.30 of 0; at 30 dB a
      dropped one once fitted at 0.46, which is why 24 dB is the line. Ten Shrinks in a row of each ffmpeg two-track
-     file, and of OBS's three-track layout, all succeed, and a three-minute drifting file shrinks. More than 16
+     file, and of an ffmpeg-made OBS three-track layout, all succeed, and a three-minute drifting file shrinks; but
+     AVAssetWriter-made fixtures whose tracks share their sound are refused in some runs — the OBS layout and a
+     dual-mono track beside a mono one about one run in three, identical tracks about one in eight — because the
+     audit's read lines such tracks up a frame or two apart from the mixer's. More than 16
      channels are not fitted one by one, and are refused up front.
      For a mix, the expected length is the mix's own, every track's end included; the mixer refuses a decode that
      stops more than 0.5 s short of where the audio tracks end — not the movie's length, which counts its picture
@@ -202,8 +208,9 @@ they are about the recording that would be encoded, and here there is none. A me
 or `meeting-recovered.m4a` and that has nothing left to remove shows "Already shrunk".
 
 A leftover with several audio tracks or more than two channels (F955): a copy made before F942 holds only the first
-track or channel, and the leftover then holds the last copy of the rest, which a resume used to delete; so such a
-leftover is removed only after the copy is checked against it with step 4's check of a mix (F980). A leftover whose tracks are
+track or channel, and the leftover then holds the last copy of the rest, which a resume used to delete; so as shipped
+such a leftover is kept, and with the switch on it is removed only after the copy is checked against it with step 4's
+check of a mix (F980). A leftover whose tracks are
 alternatives, or cannot be read, is kept either way, and so, outside a resume, is any other `recording.<ext>` with
 more tracks than a plain encode keeps, since nothing compares it with the copy there.
 
@@ -220,8 +227,10 @@ re-made when the action runs. The reasons, in the order a person can act on them
 - **The recording file is missing.**
 - **The recording has more than one audio track, or more than two channels** (F801, F942, F980). An import keeps
   the container it came in, and a movie or MPEG-4 file can carry a track per side of a call; a "poly" WAV can carry a
-  microphone per channel. Such a recording is mixed into the copy (step 0), whatever its layout (F953), and the copy
-  is checked against every track and channel before the original goes (step 4); a copy that check cannot prove is
+  microphone per channel. As shipped every such recording is refused, because the mixing Shrink of step 0 is held
+  back: "This recording has 2 audio tracks; shrinking it isn't available yet, so its audio is kept as it is." (or
+  "…6 channels; …"). With the switch on, such a recording is mixed into the copy (step 0), whatever its layout
+  (F953), and the copy is checked against every track and channel before the original goes (step 4); a copy that check cannot prove is
   refused after the encode, with the reason ("…is too quiet beside the others at about 0:05 to show that the
   compressed copy holds it there…"). Refused before anything is encoded: audio tracks in different languages that are alternatives of each other
   ("…in different languages, alternatives to each other…"), and a recording whose tracks could not be read, where the plain encode
@@ -438,10 +447,13 @@ follows; the user has not reviewed this yet.
 The user answered the question above on 2026-10-12: keep refusing for now, and mix all tracks into one for both
 transcription and Shrink. Wave 6 built the mixing, for both.
 
-**Shrink's half was held back from 2026-10-12 to 2026-10-14 (F980).** The second review of F942 found Shrink's
-check of a mixed copy still deleting originals whose sound was not in the copy (step 4), so the integrator decided,
-following the user's "keep refusing for now": Shrink refused every recording that needs mixing until F980 proved the
-check against the review's probes. F980 rewrote the check to the rule in step 4 and turned Shrink's half on.
+**Shrink's half is held back (F980).** The second review of F942 found Shrink's check of a mixed copy still
+deleting originals whose sound was not in the copy (step 4), so the integrator decided on 2026-10-12, following the
+user's "keep refusing for now": Shrink refuses every recording that needs mixing until its check is proven. F980
+rewrote the check to the rule in step 4, and every probe of both reviews now keeps its original; its last runs on
+2026-10-15 still refused good copies of tracks that share their sound in some runs, which was the integrator's
+condition for leaving the switch off. The mixing Shrink described below is in place behind
+`MeetingStoragePlan.shrinkMixesRecordings`, which is off, and its tests run with it on.
 
 - **What is mixed.** A recording with several audio tracks, or one track of more than two channels
   (`RecordingMixPlan`). One track of one or two channels is not: the encode's `--mix` mixes stereo (F796), as the
@@ -474,8 +486,8 @@ check against the review's probes. F980 rewrote the check to the rule in step 4 
   beside another, or a 5.1 movie whose surround channels carry only quiet ambience, keeps its original with the
   reason on screen. Shared sound (identical tracks, OBS's master beside its stems) is proven as the sum; a channel
   that shares more than three quarters of its sound with the others is proven only as part of that sum.
-- **Resume mode** encodes nothing. It checks the copy against a leftover with several tracks or more than two channels
-  before removing it (F955, under *Resuming* above).
+- **Resume mode** encodes nothing. As shipped it keeps a leftover with several tracks or more than two channels; with
+  the switch on it checks the copy against it before removing it (F955, under *Resuming* above).
 
 ## Amendment for F911 (2026-10-10)
 
