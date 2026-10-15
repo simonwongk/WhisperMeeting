@@ -351,9 +351,7 @@ func cancellationDuringLaunchHandoff() async throws {
     // launched on a *different* cooperative thread (the detached launch task), and waitUntilExit()
     // spins a run loop on this thread that the child's termination wake-up never reaches — a wedge
     // under suite load (the same F115 hazard the production `run()` paths dodge via armedExitStream).
-    for _ in 0..<500 where process.isRunning { try? await Task.sleep(for: .milliseconds(10)) }
-
-    #expect(!process.isRunning)
+    try await pollUntil("the child to be reaped") { !process.isRunning }
 }
 
 private struct LocalWhisperFixture {

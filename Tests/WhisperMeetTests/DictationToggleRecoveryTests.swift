@@ -49,9 +49,7 @@ func refusedToggleStartStillStartsOnNextPress() async throws {
     microphoneBusy = false
     monitor.handleKeyStateChange(false)
     monitor.handleKeyStateChange(true)
-    for _ in 0..<40 where controller.status != .listening {
-        try await Task.sleep(for: .milliseconds(5))
-    }
+    try await pollUntil("the next press to start a capture") { controller.status == .listening }
 
     #expect(recorder.isRecording)
     #expect(controller.status == .listening)
@@ -104,18 +102,13 @@ func watchdogFinalizeDoesNotInvertToggle() async throws {
 
     // First toggle press → capture starts → watchdog fires immediately → discard back to idle.
     monitor.handleKeyStateChange(true)
-    for _ in 0..<60 where controller.status != .idle {
-        try await Task.sleep(for: .milliseconds(5))
-    }
-    #expect(controller.status == .idle)
+    try await pollUntil("the watchdog to discard back to idle") { controller.status == .idle }
     #expect(!recorder.isRecording)
 
     // Next press must START a new capture, not fire a swallowed end edge.
     monitor.handleKeyStateChange(false)
     monitor.handleKeyStateChange(true)
-    for _ in 0..<60 where controller.status != .listening {
-        try await Task.sleep(for: .milliseconds(5))
-    }
+    try await pollUntil("the next press to start a new capture") { controller.status == .listening }
 
     #expect(recorder.isRecording)
     #expect(controller.status == .listening)

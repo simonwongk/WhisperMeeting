@@ -664,9 +664,7 @@ func aDeviceChangeEndsTheSessionInAStatedState() async throws {
     let cancelsBefore = recorder.cancelCount
 
     recorder.simulateCaptureInterruption()
-    for _ in 0..<200 where controller.status == .listening {
-        try await Task.sleep(for: .milliseconds(5))
-    }
+    try await pollUntil("the interruption to end the capture") { controller.status != .listening }
 
     guard case .error(let message) = controller.status else {
         Issue.record("expected a stated failure, got \(controller.status)")
@@ -707,9 +705,7 @@ func aBrokenCaptureIsNotReportedAsNothingHeard() async throws {
     try #require(controller.status == .listening)
     monitor.onPressEnd?()
 
-    for _ in 0..<200 where controller.status == .listening {
-        try await Task.sleep(for: .milliseconds(5))
-    }
+    try await pollUntil("the release to end the capture") { controller.status != .listening }
     guard case .error = controller.status else {
         Issue.record("a broken converter must not read as 'nothing heard': \(controller.status)")
         return
@@ -747,9 +743,7 @@ func silenceIsStillSilence() async throws {
     try #require(controller.status == .listening)
     monitor.onPressEnd?()
 
-    for _ in 0..<200 where controller.status == .listening {
-        try await Task.sleep(for: .milliseconds(5))
-    }
+    try await pollUntil("the release to end the capture") { controller.status != .listening }
     #expect(controller.status == .idle, "\(controller.status)")
     let entries = DictationLogStore(directory: directory).log.entries
     #expect(entries.count == 1)

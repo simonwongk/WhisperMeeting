@@ -163,9 +163,7 @@ func coldRefinerNeverBlocksFirstDictation() async throws {
     #expect(refiner.warmUpCount == 0)
 
     monitor.onPressEnd?()
-    for _ in 0..<300 where controller.logStore.log.entries.isEmpty {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the dictation to be logged") { !controller.logStore.log.entries.isEmpty }
 
     let entry = controller.logStore.log.entries.first
     #expect(entry?.text == "raw first dictation")
@@ -173,12 +171,8 @@ func coldRefinerNeverBlocksFirstDictation() async throws {
     #expect(refiner.attemptCount == 0)
     // The load starts only after the session has fully dismissed to idle, ready to benefit the
     // next dictation without contending with the raw delivery or a rapid next press.
-    for _ in 0..<300 where controller.status != .idle {
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    for _ in 0..<100 where refiner.warmUpCount == 0 {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the session to dismiss to idle") { controller.status == .idle }
+    try await pollUntil("the refiner to warm") { refiner.warmUpCount >= 1 }
     #expect(refiner.warmUpCount == 1)
 }
 
@@ -220,24 +214,16 @@ func rapidNextDictationCancelsColdRefiner() async throws {
     monitor.onPressStart?()
     try await Task.sleep(for: .milliseconds(20))
     monitor.onPressEnd?()
-    for _ in 0..<300 where controller.status != .idle {
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    for _ in 0..<100 where refiner.warmUpCount == 0 {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the session to dismiss to idle") { controller.status == .idle }
+    try await pollUntil("the refiner to warm") { refiner.warmUpCount >= 1 }
     #expect(refiner.warmUpCount == 1)
 
     // The first idle warm is deliberately blocked. A new press must terminate it during capture
     // rather than let an 8B model cold-load beside this second ASR request.
     monitor.onPressStart?()
-    for _ in 0..<100 where refiner.evictCount == 0 {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the blocked warm to be evicted") { refiner.evictCount >= 1 }
     monitor.onPressEnd?()
-    for _ in 0..<300 where controller.logStore.log.entries.count < 2 {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the second dictation to be logged") { controller.logStore.log.entries.count >= 2 }
 
     #expect(refiner.evictCount == 1)
     #expect(refiner.attemptCount == 0)

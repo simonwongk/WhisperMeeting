@@ -225,9 +225,7 @@ private struct Harness {
     /// Waits for the transcription a capture was handed to. The polled status is the subject — the
     /// dictation was delivered — and an exhausted budget fails as the wait it is.
     func waitForDelivery() async throws {
-        for _ in 0..<2_000 where controller.status == .transcribing {
-            try await Task.sleep(for: .milliseconds(5))
-        }
+        try await pollUntil("the transcription to end") { controller.status != .transcribing }
         try #require(controller.status == .delivering, "the dictation was not delivered: \(controller.status)")
     }
 }

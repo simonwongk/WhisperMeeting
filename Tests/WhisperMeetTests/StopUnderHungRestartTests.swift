@@ -43,8 +43,12 @@ private final class Gate: @unchecked Sendable {
         while !released { try? await Task.sleep(for: .milliseconds(5)) }
     }
 
-    func waitUntilEntered() async {
-        for _ in 0..<2_000 where !entered { try? await Task.sleep(for: .milliseconds(5)) }
+    /// A precondition for what the test asserts next, so it is required (F957): 30 s is a ceiling
+    /// a passing run never reaches, and a hung restart that never arrives fails here by name.
+    func waitUntilEntered() async throws {
+        let deadline = ContinuousClock.now + .seconds(30)
+        while !entered, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        try #require(entered, "the restart seam was never entered")
     }
 
     func release() { lock.withLock { _released = true } }
@@ -124,7 +128,7 @@ func aHungRestartIsCancelledByStop() async throws {
 
     // Start the restart and let it reach the gate, where it stays.
     let restarting = Task { await model.handleCaptureInterruption(trigger: .streamFailed, gap: 1, now: Date()) }
-    await gate.waitUntilEntered()
+    try await gate.waitUntilEntered()
     try #require(model.isRestartingCapture, "the fixture must actually be mid-restart")
     try #require(model.recorder.pendingRestartPaddingForTesting > 0, "a second of silence is owed")
     let generationBefore = model.recorder.sessionGenerationForTesting
@@ -177,7 +181,7 @@ func anAbandonedRestartPaysNoPadding() async throws {
     await model.startRecording()
     model.recorder.handleStreamFailure(AudioCaptureError.noDisplayAvailable)
     let restarting = Task { await model.handleCaptureInterruption(trigger: .streamFailed, gap: 1, now: Date()) }
-    await gate.waitUntilEntered()
+    try await gate.waitUntilEntered()
     try #require(model.recorder.pendingRestartPaddingForTesting > 0, "the fixture must owe silence")
 
     #expect(model.recorder.abandonInFlightRestart(), "a restart was in flight, so it was abandoned")

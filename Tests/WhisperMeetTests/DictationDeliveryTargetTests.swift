@@ -165,10 +165,7 @@ private struct DeliveryHarness {
         monitor.onPressStart?()
         whileSpeaking()
         monitor.onPressEnd?()
-        for _ in 0..<1_000 where controller.status == .transcribing {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        try #require(controller.status != .transcribing, "the dictation never delivered")
+        try await pollUntil("the dictation to deliver") { controller.status != .transcribing }
     }
 }
 

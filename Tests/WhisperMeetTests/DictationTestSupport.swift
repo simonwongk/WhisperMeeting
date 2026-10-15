@@ -1,7 +1,23 @@
 import AppKit
 import Foundation
+import Testing
 import WhisperCore
 @testable import WhisperMeet
+
+/// Polls `condition` — the assertion's own subject, or a precondition the test needs next — until it
+/// holds or `timeoutSeconds` pass, then requires it (F956, F957). A ceiling, not a budget: a passing
+/// run returns the moment the condition holds, and a loaded host only makes the wait longer, never a
+/// false failure. The dictation tests used to count iterations of a 10 ms sleep instead, and F956's
+/// 100 × 10 ms was shorter than the 1.1 s done pill it had to wait across. `noIterationBudgetPolls`
+/// (SourceContractGuardTests) fails any test that goes back to counting.
+@MainActor
+func pollUntil(_ what: String, timeoutSeconds: Double = 30, _ condition: () -> Bool) async throws {
+    let deadline = ContinuousClock.now + .seconds(timeoutSeconds)
+    while !condition(), ContinuousClock.now < deadline {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    try #require(condition(), "timed out waiting for \(what)")
+}
 
 /// One private pasteboard for the whole test process (F427). Named uniquely, so it can never be the
 /// user's clipboard; shared rather than one per test because a named pasteboard stays in the

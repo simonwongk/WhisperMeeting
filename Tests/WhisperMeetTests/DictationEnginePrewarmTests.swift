@@ -91,11 +91,8 @@ func pressDownPrewarmsEngine() async throws {
     let engine = WarmUpCountingEngine()
     let (controller, monitor) = makeController(engine: engine, defaults: defaults, directory: directory)
     monitor.onPressStart?()
-    for _ in 0..<100 where engine.warmUpCount == 0 {
-        try await Task.sleep(for: .milliseconds(5))
-    }
+    try await pollUntil("the engine to warm on press") { engine.warmUpCount >= 1 }
     #expect(controller.status == .listening)
-    #expect(engine.warmUpCount >= 1)
 }
 
 @MainActor
@@ -252,9 +249,7 @@ func queuedRefinerWarmUpRechecksMeetingAdmission() async throws {
     controller.gpuUtilization = { nil } // this Mac's GPU load is not the test's (F954)
     controller.configureMeetingTranscriptionRunning { meeting.isRunning }
     controller.setEnabled(true)
-    for _ in 0..<100 where engine.warmUpCount == 0 {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the engine to warm") { engine.warmUpCount >= 1 }
     // Let the recognition task clear its own task marker before enabling the optional model.
     try await Task.sleep(for: .milliseconds(20))
 
@@ -296,18 +291,14 @@ func refinementToggleWaitsForRecognitionWarmUp() async throws {
     controller.refineRuntimeAvailability = { true }
     controller.gpuUtilization = { nil } // this Mac's GPU load is not the test's (F954)
     controller.setEnabled(true)
-    for _ in 0..<100 where engine.warmUpCount == 0 {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the engine to warm") { engine.warmUpCount >= 1 }
 
     controller.refineEnabled = true
     try await Task.sleep(for: .milliseconds(30))
     #expect(refiner.warmUpCount == 0)
 
     engine.releaseWarmUp()
-    for _ in 0..<100 where refiner.warmUpCount == 0 {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the refiner to warm once the engine has") { refiner.warmUpCount >= 1 }
     #expect(refiner.warmUpCount == 1)
 }
 

@@ -53,10 +53,7 @@ private struct Harness {
     /// The refiner must be resident before a dictation consults it (the F200 wiring tests' rule).
     func warmRefiner() async throws {
         controller.setEnabled(true)
-        for _ in 0..<300 where refiner.warmUpCount == 0 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(refiner.warmUpCount >= 1)
+        try await pollUntil("the refiner to warm") { refiner.warmUpCount >= 1 }
         for _ in 0..<5 { await Task.yield() }
     }
 
@@ -64,10 +61,7 @@ private struct Harness {
         monitor.onPressStart?()
         try await Task.sleep(for: .milliseconds(20))
         monitor.onPressEnd?()
-        for _ in 0..<300 where controller.logStore.log.entries.isEmpty {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(!controller.logStore.log.entries.isEmpty)
+        try await pollUntil("the dictation to be logged") { !controller.logStore.log.entries.isEmpty }
     }
 }
 

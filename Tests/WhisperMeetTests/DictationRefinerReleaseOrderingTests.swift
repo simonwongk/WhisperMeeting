@@ -136,35 +136,23 @@ func timedOutRefinerReleasesBeforeNextRecognitionWarmUp() async throws {
     controller.clipboardNotifier = {}
     controller.setEnabled(true)
 
-    for _ in 0..<100 where !order.events.contains("refiner-warm") {
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    #expect(order.events.contains("refiner-warm"))
+    try await pollUntil("the refiner to warm") { order.events.contains("refiner-warm") }
 
     monitor.onPressStart?()
     monitor.onPressEnd?()
-    for _ in 0..<300 where controller.logStore.log.entries.isEmpty {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the dictation to be logged") { !controller.logStore.log.entries.isEmpty }
     #expect(controller.logStore.log.entries.first?.refinement == DictationRefinement.rawTimeout.rawValue)
-    for _ in 0..<300 where controller.status != .idle {
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    #expect(controller.status == .idle)
+    try await pollUntil("the session to dismiss to idle") { controller.status == .idle }
 
     order.reset()
     monitor.onPressStart?()
-    for _ in 0..<100 where refiner.evictCount == 0 {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the refiner's eviction to start") { refiner.evictCount >= 1 }
     #expect(refiner.evictCount == 1)
     #expect(order.events.contains("refiner-evict-start"))
     #expect(!order.events.contains("recognition-warm"))
 
     refiner.releaseEviction()
-    for _ in 0..<100 where !order.events.contains("recognition-warm") {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the next recognition warm-up") { order.events.contains("recognition-warm") }
     let events = order.events
     guard let releaseEnd = events.firstIndex(of: "refiner-evict-end"),
           let recognitionWarm = events.firstIndex(of: "recognition-warm") else {

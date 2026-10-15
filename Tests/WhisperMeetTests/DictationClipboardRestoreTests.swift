@@ -308,9 +308,7 @@ func hotkeyDictationRestoresClipboard() async throws {
     monitor.onPressStart?()
     monitor.onPressEnd?()
     // The polled value is the precondition, so it is required, not merely expected.
-    for _ in 0..<1_000 where controller.logStore.log.entries.isEmpty {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the dictation to be logged") { !controller.logStore.log.entries.isEmpty }
     let entry = try #require(controller.logStore.log.entries.first)
 
     #expect(entry.outcome == .pasted)

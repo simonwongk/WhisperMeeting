@@ -87,30 +87,21 @@ private struct Harness {
     /// Enable, and wait for the background warm-up (and the refiner's, when on) to settle.
     func enableAndSettle() async throws {
         controller.setEnabled(true)
-        for _ in 0..<300 where !engine.events.contains("warmUp") {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await pollUntil("the engine to warm") { engine.events.contains("warmUp") }
         if controller.refineEnabled {
-            for _ in 0..<300 where refiner.warmUpCount == 0 {
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            try await pollUntil("the refiner to warm") { refiner.warmUpCount >= 1 }
         }
         for _ in 0..<5 { await Task.yield() }
     }
 
     func pressAndWait(for event: String) async throws {
         monitor.onPressStart?()
-        for _ in 0..<300 where !engine.events.contains(event) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await pollUntil("the engine's \(event)") { engine.events.contains(event) }
     }
 
     func releaseAndWaitForDelivery() async throws {
         monitor.onPressEnd?()
-        for _ in 0..<300 where controller.logStore.log.entries.isEmpty {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(!controller.logStore.log.entries.isEmpty)
+        try await pollUntil("the dictation to be logged") { !controller.logStore.log.entries.isEmpty }
     }
 }
 
@@ -155,9 +146,7 @@ func pressDownTouchesOnlyAWarmRefiner() async throws {
     let engineTouchedFirst = LockedFlag()
     warm.refiner.onTouch = { engineTouchedFirst.set(engine.events.contains("touch")) }
     try await warm.pressAndWait(for: "touch")
-    for _ in 0..<300 where warm.refiner.touchCount == 0 {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the refiner to be touched") { warm.refiner.touchCount >= 1 }
     #expect(warm.refiner.touchCount == 1)
     #expect(engineTouchedFirst.value == true)
     try await warm.releaseAndWaitForDelivery()

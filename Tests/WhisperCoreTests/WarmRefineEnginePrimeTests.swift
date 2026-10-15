@@ -154,12 +154,9 @@ func warmRefineEngineEvictionForceStopsWedgedHelper() async throws {
     // Wait for a readable pid, not merely for the file: `open(..., "w")` creates it empty before
     // the write flushes, and a cleanup with no pid to signal leaves a TERM-ignoring descendant
     // holding this suite's read open forever.
-    for _ in 0..<200 where recordedRefinePID(pidFile) == nil
-        || recordedRefinePID(childPIDFile) == nil {
-        try await Task.sleep(for: .milliseconds(10))
+    try await pollUntil("both pids to be recorded") {
+        recordedRefinePID(pidFile) != nil && recordedRefinePID(childPIDFile) != nil
     }
-    #expect(recordedRefinePID(pidFile) != nil)
-    #expect(recordedRefinePID(childPIDFile) != nil)
 
     let completion = RefineEvictionCompletion()
     let eviction = Task {
@@ -167,10 +164,9 @@ func warmRefineEngineEvictionForceStopsWedgedHelper() async throws {
         completion.markFinished()
     }
 
-    for _ in 0..<140 where !completion.isFinished {
-        try await Task.sleep(for: .milliseconds(50))
-    }
-    let finishedWithoutManualKill = completion.isFinished
+    // 7 s, as before: production's SIGKILL escalation fires 5 s after the eviction request, and a
+    // helper that ignores TERM is what this measures, so the cap is deliberately close above it.
+    let finishedWithoutManualKill = try await pollUntilOrTimeout(seconds: 7) { completion.isFinished }
     // Signal every recorded pid directly rather than the process group: production's escalation
     // may already have reaped the group leader, and `getpgid` on a dead leader cannot name the
     // surviving tree. Missing the descendant here parks the suite on a read that never ends.

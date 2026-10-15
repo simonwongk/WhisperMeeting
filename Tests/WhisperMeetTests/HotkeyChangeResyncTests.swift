@@ -126,9 +126,6 @@ func rechoosingTheTriggerMidDictationKeepsTheCaptureWatched() async throws {
 
     // And the backstop still works: when the watchdog fires, the capture is finalized.
     watchdog.open()
-    for _ in 0..<500 where recorder.isRecording {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the watchdog to finalize the capture") { !recorder.isRecording }
     #expect(recorder.stopCount == 1)
-    #expect(!recorder.isRecording)
 }

@@ -102,9 +102,7 @@ private struct Harness {
         monitor.onPressStart?()
         try #require(recorder.isRecording, "the first press did not start a capture")
         monitor.onPressEnd?()
-        for _ in 0..<1_000 where controller.logStore.log.entries.count == before {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try await pollUntil("the first dictation to settle") { controller.logStore.log.entries.count != before }
         try #require(controller.logStore.log.entries.count == before + 1, "the first dictation never settled")
     }
 }
@@ -181,16 +179,12 @@ func pressWhileTranscribingFlashesBusy() async throws {
     #expect(harness.monitor.resetToggleCount > 0)
 
     // The flash is brief, and the pill goes back to saying what is still happening.
-    for _ in 0..<300 where harness.overlay.phases.last == .busy {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the busy flash to end") { harness.overlay.phases.last != .busy }
     #expect(harness.overlay.phases.last == .transcribing)
 
     // The refused press must not have dropped the transcript that was in flight.
     engine.openGate()
-    for _ in 0..<1_000 where harness.controller.logStore.log.entries.isEmpty {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await pollUntil("the held transcript to be logged") { !harness.controller.logStore.log.entries.isEmpty }
     let entry = try #require(harness.controller.logStore.log.entries.first)
     #expect(entry.text == "held transcript")
 }

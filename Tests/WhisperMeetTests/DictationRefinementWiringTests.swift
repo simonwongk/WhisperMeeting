@@ -7,17 +7,6 @@ import WhisperCore
 /// (fake recorder/overlay/monitor/engine/refiner). Delivery runs clipboard-only
 /// (`dictationAutoPaste=false`) so no Accessibility or paste events are involved.
 
-/// Polls `condition` — the assertion's own subject — until it holds or 30 s pass, then requires it
-/// (F956). A ceiling, not a budget: a passing run returns as soon as the condition holds.
-@MainActor
-private func waitUntil(_ what: String, timeoutSeconds: Double = 30, _ condition: () -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(timeoutSeconds)
-    while !condition(), Date() < deadline {
-        try await Task.sleep(for: .milliseconds(5))
-    }
-    try #require(condition(), "timed out waiting for \(what)")
-}
-
 @MainActor
 private struct Harness {
     let controller: DictationController
@@ -71,10 +60,7 @@ private struct Harness {
         monitor.onPressStart?()
         try await Task.sleep(for: .milliseconds(20))
         monitor.onPressEnd?()
-        for _ in 0..<300 where controller.logStore.log.entries.isEmpty {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(!controller.logStore.log.entries.isEmpty)
+        try await pollUntil("the dictation to be logged") { !controller.logStore.log.entries.isEmpty }
     }
 
     /// The polish model is deliberately optional: dictation must run once in an idle period before
@@ -82,10 +68,7 @@ private struct Harness {
     /// separate, already-warm refinement path without making a press-down compete with ASR.
     func warmRefiner() async throws {
         controller.setEnabled(true)
-        for _ in 0..<300 where refiner.warmUpCount == 0 {
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        #expect(refiner.warmUpCount >= 1)
+        try await pollUntil("the refiner to warm") { refiner.warmUpCount >= 1 }
         // `warmUp()` increments the fake's counter just before the controller records its ready
         // state on the main actor. Yield that completion before starting the capture below.
         for _ in 0..<5 { await Task.yield() }
@@ -157,9 +140,9 @@ func pressDownDefersRefinerWarmUp() async throws {
     // F956: the warm-up starts only once the done pill has dismissed to `.idle`
     // (`prewarmRefinerWhenSafe`, ≥1.1 s after delivery), so a ~1 s budget after the log entry raced
     // it and lost in a loaded gate. Wait for each step against a ceiling, not a budget, and require it.
-    try await waitUntil("the dictation to be delivered") { !on.controller.logStore.log.entries.isEmpty }
-    try await waitUntil("the session to settle to idle") { on.controller.status == .idle }
-    try await waitUntil("the refiner's warm-up after delivery") { on.refiner.warmUpCount > 0 }
+    try await pollUntil("the dictation to be delivered") { !on.controller.logStore.log.entries.isEmpty }
+    try await pollUntil("the session to settle to idle") { on.controller.status == .idle }
+    try await pollUntil("the refiner's warm-up after delivery") { on.refiner.warmUpCount > 0 }
     #expect(on.refiner.warmUpCount == 1)
 
     let off = try Harness(refineEnabled: false)
@@ -191,8 +174,5 @@ func idleEvictionShutsRefinerDown() async throws {
     defer { harness.tearDown() }
     try await harness.dictateOnce()
     // Delivery → dismiss (1.1 s) → idle-eviction timer (0.05 s) → refiner shutdown.
-    for _ in 0..<300 where harness.refiner.shutdownCount == 0 {
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    #expect(harness.refiner.shutdownCount >= 1)
+    try await pollUntil("the refiner to be shut down") { harness.refiner.shutdownCount >= 1 }
 }

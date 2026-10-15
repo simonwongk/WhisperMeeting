@@ -33,12 +33,7 @@ private final class EvictionCompletion: @unchecked Sendable {
 
 /// Polls `condition` under a 30 s cap and requires it, so a timeout fails as a timeout.
 private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
-    var ticks = 0
-    while !condition(), ticks < 6_000 {
-        try await Task.sleep(nanoseconds: 5_000_000)
-        ticks += 1
-    }
-    try #require(condition(), "timed out waiting for \(what)")
+    try await pollUntil(what, condition)
 }
 
 /// Runs `operation` and reports whether it finished inside the 30 s cap. The operation itself may
@@ -393,9 +388,7 @@ func warmDictationEngineEvictionForceStopsWedgedHelper() async throws {
     // F645: the cap is 30 s (it was 2 s), because this is a precondition and a shell spawn on a
     // loaded machine can be slow; the loop leaves the moment both pids are readable, so a generous
     // cap costs nothing when they are.
-    for _ in 0..<3_000 where recordedPID(pidFile) == nil || recordedPID(childPIDFile) == nil {
-        try await Task.sleep(for: .milliseconds(10))
-    }
+    try await waitUntil("both pids to be recorded") { recordedPID(pidFile) != nil && recordedPID(childPIDFile) != nil }
     #expect(recordedPID(pidFile) != nil)
     #expect(recordedPID(childPIDFile) != nil)
 
@@ -411,10 +404,7 @@ func warmDictationEngineEvictionForceStopsWedgedHelper() async throws {
     // (`requestHelperTermination`), so a 7 s cap left 2 s for a loaded machine to deliver the kill
     // and unwind the eviction; it passed at 5.1–5.3 s with 11 CPU hogs running. Only the failing
     // case waits the full cap.
-    for _ in 0..<600 where !completion.isFinished {
-        try await Task.sleep(for: .milliseconds(50))
-    }
-    let finishedWithoutManualKill = completion.isFinished
+    let finishedWithoutManualKill = try await pollUntilOrTimeout(seconds: 30) { completion.isFinished }
     // Clean up before recording the red expectation: a failure must never leave an intentionally
     // TERM-ignoring descendant alive if the testing library stops executing this function early.
     // Signal every recorded pid directly rather than the process group: production's escalation

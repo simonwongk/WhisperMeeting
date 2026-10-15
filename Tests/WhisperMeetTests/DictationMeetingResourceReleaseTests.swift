@@ -12,12 +12,7 @@ import Testing
 /// 30 s; a suppressed state measured 41-44 s, because each sleep overruns its 5 ms.
 @MainActor
 private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
-    var ticks = 0
-    while !condition(), ticks < 6_000 {
-        try await Task.sleep(nanoseconds: 5_000_000)
-        ticks += 1
-    }
-    try #require(condition(), "timed out waiting for \(what)")
+    try await pollUntil(what, condition)
 }
 
 private final class ResourceReleaseEvents: @unchecked Sendable {
@@ -279,11 +274,9 @@ func meetingPreparationEvictsIdleHelpersConcurrently() async throws {
     )
 
     let release = Task { await controller.releaseIdleModelsForMeetingTranscription() }
-    // Generous budget: a miss here is a false failure on a loaded machine, not a real serial path.
-    for _ in 0..<400 where !gate.bothStarted {
-        try await Task.sleep(for: .milliseconds(5))
-    }
-    #expect(gate.bothStarted)
+    // A ceiling, not a budget: a miss here is a false failure on a loaded machine, not a real
+    // serial path, so the wait is the shared 30 s one.
+    try await waitUntil("both releases to start") { gate.bothStarted }
     gate.release("engine")
     gate.release("refiner")
     await release.value
