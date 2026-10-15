@@ -210,6 +210,10 @@ extension AppModel {
     private func convertInterruptedLinkImportDownload(_ download: URL) async -> LinkImportConversion {
         let finish = finishInterruptedLinkImportExtraction
         let conversion = Task { try await finish(download) }
+        // F961: held from now until it ends, so Quit reaches it while the launch is still waiting for
+        // it — a free task nothing holds is one a quit cannot cancel, and its ffmpeg outlived the app.
+        let token = UUID()
+        runningLinkImportConversions[token] = conversion
         let wait = linkImportConversionWait
         // Whichever ends first: the conversion, or the wait. Not a task group — a group waits for
         // every child before it returns, and a child awaiting `conversion.result` cannot be
@@ -218,8 +222,10 @@ extension AppModel {
         // free tasks race for one continuation instead; the loser finishes later and resumes nothing.
         let ended = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             let first = FirstToFinish()
-            Task {
+            Task { [weak self] in
                 _ = await conversion.result
+                // On the main actor, as this method is: the conversion is let go only once it has ended.
+                self?.runningLinkImportConversions[token] = nil
                 if first.claim() { continuation.resume(returning: true) }
             }
             Task {

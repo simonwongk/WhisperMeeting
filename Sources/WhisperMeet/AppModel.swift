@@ -581,6 +581,13 @@ final class AppModel: ObservableObject {
     /// Interrupted link imports whose recovery conversion outlasted the launch's wait and goes on in
     /// the background (F912), by meeting id, so Quit can stop them. Each removes itself when it ends.
     var deferredLinkImportConversions: [UUID: Task<Void, Never>] = [:]
+    /// Every recovery conversion of an interrupted link import from the moment it starts until it ends
+    /// (F961), by a token of its own, so Quit can stop one the launch is still waiting for: the launch's
+    /// wait is up to `linkImportConversionTimeLimit`, and a quit inside it reached only
+    /// `deferredLinkImportConversions`, which holds a conversion only once the wait has given it up, so
+    /// the ffmpeg ran on to the end of the download after the app was gone. Each removes itself when
+    /// it ends; a conversion the wait gives up stays here as well as there until then.
+    var runningLinkImportConversions: [UUID: Task<URL, Error>] = [:]
     /// What a link import is doing once its audio has downloaded, for the link-import sheet (F895).
     /// Nil before the download has finished and once the import has ended, however it ended.
     @Published private(set) var linkImportStage: LinkImportStage?
@@ -5574,8 +5581,11 @@ final class AppModel: ObservableObject {
     func cancelWorkForQuit() {
         cancelAllInstalls()
         for task in runningLinkImports.values { task.cancel() }
-        // F912: a recovery conversion left to finish in the background is stopped the way a quit
-        // stops an import's (F893); nothing is indexed, and the next launch converts the folder again.
+        // F961, F912: every recovery conversion of an interrupted link import — one the launch is still
+        // waiting for, and one left to finish in the background — is stopped the way a quit stops an
+        // import's (F893): its runner's cancellation handler signals the ffmpeg's process group on
+        // this thread. Nothing is indexed, and the next launch converts the folder again.
+        for task in runningLinkImportConversions.values { task.cancel() }
         for task in deferredLinkImportConversions.values { task.cancel() }
     }
 
