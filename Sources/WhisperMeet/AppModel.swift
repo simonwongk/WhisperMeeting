@@ -1943,12 +1943,16 @@ final class AppModel: ObservableObject {
         // no layout afconvert keeps channel 1 and ffmpeg drops the one it guesses is LFE (of 3, 6 or 8
         // channels; it mixes 4 unevenly). Above the
         // override, so a stubbed engine is handed exactly what a real one would be. The mix is a temp
-        // file of this run's, removed when the run ends; the recording is only read.
-        let mixDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WhisperMeet-Mix-\(UUID().uuidString)", isDirectory: true)
+        // file of this run's, removed when the run ends; the recording is only read. The folder is
+        // named for this process and the folders of processes that have exited are removed first
+        // (F965): the `defer` cannot run when the process dies, and the mix is about 115 MB an hour.
+        let scratch = FileManager.default.temporaryDirectory
+        let mixDirectory = scratch.appendingPathComponent(
+            OwnedTemporaryFolders.name(prefix: Self.mixFolderPrefix), isDirectory: true)
         defer { try? FileManager.default.removeItem(at: mixDirectory) }
         let url = try await Task.detached(priority: .userInitiated) {
-            try await RecordingMixer.mixIfNeeded(url, into: mixDirectory)
+            OwnedTemporaryFolders.removeAbandoned(in: scratch, prefix: Self.mixFolderPrefix)
+            return try await RecordingMixer.mixIfNeeded(url, into: mixDirectory)
         }.value ?? url
         if let override = runTranscriptionEngineWithProgressOverride {
             return try await override(selection, url, onProgress)
@@ -2214,8 +2218,13 @@ final class AppModel: ObservableObject {
         // A directory rather than a bare temp file, matching QwenASRClient's decode-first working
         // directory (F118): cleanup is then one `removeItem` that cannot strand a sibling afconvert
         // may have left behind, and it runs on every exit path including a throw.
-        let workspace = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WhisperMeet-Diarization-\(UUID().uuidString)", isDirectory: true)
+        // Named for this process, and the workspaces of processes that have exited removed first,
+        // as the engine run's mix folder is (F965): a crash mid-analysis left a mix or a transcode the
+        // size of the recording's decode behind.
+        let scratch = FileManager.default.temporaryDirectory
+        OwnedTemporaryFolders.removeAbandoned(in: scratch, prefix: AppModel.diarizationFolderPrefix)
+        let workspace = scratch.appendingPathComponent(
+            OwnedTemporaryFolders.name(prefix: AppModel.diarizationFolderPrefix), isDirectory: true)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: workspace) }
 
@@ -5629,6 +5638,13 @@ final class AppModel: ObservableObject {
     /// since F912 it goes on in the background and the meeting is added when it ends, its own expiry
     /// being its output (`linkImportConversionStallLimit`).
     nonisolated static let linkImportConversionTimeLimit: TimeInterval = 30
+
+    /// The start of the temporary folder an engine run mixes a several-track recording into (F942),
+    /// named for this process (`OwnedTemporaryFolders`) so a later run can remove one a crash or a
+    /// force-quit left — about 115 MB per hour of audio that `executeEngine`'s `defer` cannot remove
+    /// when the process dies (F965). Speaker analysis's workspace is named the same way.
+    nonisolated static let mixFolderPrefix = "WhisperMeet-Mix-"
+    nonisolated static let diarizationFolderPrefix = "WhisperMeet-Diarization-"
 
     /// The longest a conversion left to finish in the background (F912) may go without its output
     /// growing before it is killed and listed as an unfinished import
