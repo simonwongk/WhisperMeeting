@@ -257,9 +257,11 @@ public enum GlossaryCorrector {
     /// applied to the window that was scored, never to an earlier occurrence of its text. `apply`
     /// changes the first genuine occurrence of a row's text unless the row names its place
     /// (`characterOffset`, F950), so the place is named wherever the window is not that first
-    /// occurrence — in "the Kestrol-ish build and the Kestrol." the window is "Kestrol." and
-    /// "Kestrol" first occurs, a whole word to `apply`, in "Kestrol-ish" (until F914 the untrimmed
-    /// "Kestrol." was proposed instead, and the full stop went with it). A trimmed phrase that is
+    /// occurrence — in "the Kestrol/Falcon build and the Kestrol." the window is "Kestrol." and
+    /// "Kestrol" first occurs, a whole word to `apply` (a slash is a word edge), in "Kestrol/Falcon"
+    /// (until F914 the untrimmed "Kestrol." was proposed instead, and the full stop went with it;
+    /// glued by a hyphen the first "Kestrol" is a window of its own since F915, and is the one
+    /// proposed). A trimmed phrase that is
     /// no genuine occurrence where it stands ("Kestrol" inside "Kestrol_": an underscore is part of
     /// the word) gives way to the untrimmed one, as before; and a window that is no genuine
     /// occurrence even untrimmed — inside the correct term, so covered by it — is no row (F820).
