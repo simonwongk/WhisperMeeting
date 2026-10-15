@@ -5419,6 +5419,15 @@ final class AppModel: ObservableObject {
         // Before the probe, let alone the download: the same unindexed-audio trap as a file import,
         // with a network transfer in front of it (F187).
         if let refusal = libraryRefusal("Import") { return .refused(refusal) }
+        // F975: busy from here, before the probe, not from the download. The app is a `WindowGroup`,
+        // so two windows can each have a link sheet, and a Download pressed in the second while the
+        // first import was still looking its link up (seconds, with yt-dlp) was not refused by the
+        // guard above: both imports ran, two downloads competed, and each landed as its own meeting.
+        // Every way out short of the download — a refusal, a failed or stopped probe, the long-media
+        // confirmation — frees it again, so the confirmed restart is not refused by this import.
+        isImporting = true
+        var downloading = false
+        defer { if !downloading { isImporting = false } }
 
         let parsed: MediaSourceURL.Parsed
         do {
@@ -5460,7 +5469,9 @@ final class AppModel: ObservableObject {
             }
         }
 
-        isImporting = true
+        // Past here the import's own paths clear `isImporting` (F975): `adoptImportedRecording` on
+        // success, the catch below on failure or Stop.
+        downloading = true
         pendingLongMediaConfirmation = nil
         mediaDownloadProgress = MediaDownloadProgress()
         let id = UUID()
@@ -5540,9 +5551,9 @@ final class AppModel: ObservableObject {
     /// Every start is held until it ends, not only the latest. The app is a `WindowGroup`, so two
     /// windows can each have a link sheet: holding the latest let a second window's Download — refused
     /// while an import ran — take the running import's place, and Quit then cancelled the refusal
-    /// (review of F893, finding 4). Nor can a start that will be refused be told apart here: `importFromURL`
-    /// sets `isImporting` only after its probe, so a second start during the first one's probe is not
-    /// refused at all, and both run.
+    /// (review of F893, finding 4). Nor is a start that will be refused told apart here: whether it is
+    /// refused is `importFromURL`'s decision, and a refused start's task ends at once and removes itself.
+    /// (Until F975 a second start during the first one's probe was not refused at all, and both ran.)
     func startLinkImport(_ raw: String, confirmedLongDuration: Bool = false) -> Task<LinkImportOutcome, Never> {
         let token = UUID()
         // The task runs on the main actor, so it cannot end before it is recorded below.
