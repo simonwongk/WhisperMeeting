@@ -268,13 +268,19 @@ extension InterruptedLinkImportExtraction {
         }
     }
 
+    /// How long a recovery conversion may go without its output growing before its own watch kills it
+    /// (`finish(outputStallTimeout:)`, F912). The app's `AppModel.linkImportConversionStallLimit` is
+    /// this value, and `abandonedTemporaryFileAge` is derived from it, so the two cannot drift apart.
+    public static let outputStallLimit: TimeInterval = 60
+
     /// How long a conversion's temp file must have gone without growing before the sweep on a volume
-    /// without `flock` may take it for abandoned (F976): ten times the minute after which a conversion
-    /// whose output stops growing is killed by its own watch (`finish(outputStallTimeout:)`, which the
-    /// app sets to 60 s), so a file this old has no run writing it in any process that bounds its
-    /// runs — and an older build's run, which does not, holds the file open, which the kernel probe
-    /// sees. Where the lock works it alone decides, and this is never consulted.
-    static let abandonedTemporaryFileAge: TimeInterval = 600
+    /// without `flock` may take it for abandoned (F976): ten times `outputStallLimit`, after which a
+    /// conversion whose output stops growing is killed by its own watch, so a file this old has no run
+    /// writing it in any process that bounds its runs — and an older build's run, which does not,
+    /// holds the file open, which the kernel probe sees. Where the lock works it alone decides, and
+    /// this is never consulted. The age is the file's modification time against this Mac's clock, so a
+    /// share whose server clock runs more than this far behind can make a fresh file look old (F997).
+    static let abandonedTemporaryFileAge: TimeInterval = 10 * outputStallLimit
 
     /// `flock(2)` with `LOCK_EX | LOCK_NB` on `descriptor`: 0 when the lock was taken, else `errno`.
     static func systemTryLock(_ descriptor: Int32) -> Int32 {

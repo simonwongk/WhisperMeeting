@@ -234,3 +234,13 @@ func theLaunchConversionIsGivenItsTimeLimit() throws {
         .range(of: "var linkImportConversionWait: TimeInterval = AppModel.linkImportConversionTimeLimit")
     #expect(wait != nil, "the launch's wait no longer defaults to linkImportConversionTimeLimit")
 }
+
+@Test("The no-lock sweep's age is ten times the stall limit the app gives a conversion, so a slow live run is never taken for abandoned (F976)")
+func theAbandonedTempAgeIsDerivedFromTheStallLimit() {
+    // `abandonedTemporaryFileAge` (WhisperCore) is safe only because a conversion that writes nothing
+    // for `linkImportConversionStallLimit` (the app's) is killed by its own watch (F912): a temp that
+    // has not grown for ten of those has no bounded run writing it. Raise the stall limit and the age
+    // must follow, or the sweep on a volume without flock could take a live, slow conversion's temp.
+    #expect(InterruptedLinkImportExtraction.abandonedTemporaryFileAge
+            == 10 * AppModel.linkImportConversionStallLimit)
+}

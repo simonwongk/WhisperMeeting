@@ -5681,7 +5681,7 @@ final class AppModel: ObservableObject {
     /// (`InterruptedLinkImportExtraction.finish(outputStallTimeout:)`). Its expiry is its output
     /// rather than a clock: ffmpeg writes the WAV as it converts, at hundreds of times real time, so
     /// a minute with nothing written is a conversion that has stopped, however long the audio is.
-    nonisolated static let linkImportConversionStallLimit: TimeInterval = 60
+    nonisolated static let linkImportConversionStallLimit: TimeInterval = InterruptedLinkImportExtraction.outputStallLimit
 
     /// Startup recovery's word for a link import whose conversion is still running when the launch
     /// stops waiting for it (F912): it goes on in the background, and the meeting is added when it
