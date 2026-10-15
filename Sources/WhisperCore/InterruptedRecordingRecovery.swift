@@ -180,9 +180,12 @@ public enum InterruptedRecordingRecovery {
                 return RecoveredRecording(recordingURL: url, duration: 0, source: source)
             }
         }
-        // An imported recording keeps a single `recording.<ext>` file and no raw source tracks, so
-        // it cannot be rebuilt from `.f32` data — recognize it directly instead of reporting that
-        // there was not enough audio.
+        // An imported recording has no raw source tracks, so it cannot be rebuilt from `.f32` data
+        // — recognize it directly instead of reporting that there was not enough audio. It is
+        // usually one `recording.<ext>` file, but an interrupted link import can leave its download
+        // beside a `recording.wav`: recovery removes that WAV only when it measures shorter than the
+        // download and nothing holds either open (F894), and keeps both when both are complete.
+        // `importedRecordingCandidate` decides which file is the recording (F453).
         if let imported = importedRecording(in: directory) {
             return RecoveredRecording(
                 recordingURL: imported,

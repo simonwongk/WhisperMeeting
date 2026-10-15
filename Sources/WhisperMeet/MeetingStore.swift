@@ -1160,9 +1160,9 @@ final class MeetingStore: ObservableObject {
             return "This recording was rebuilt from its raw microphone and system tracks after an interruption, so the two channels are aligned to the start of the file rather than to each other."
         case .existingCapture:
             return "This meeting was recovered after an interruption. The original recording and its source tracks were preserved."
-        // F305: an import has no source tracks, and the function that detects one says so —
-        // "An imported recording keeps a single `recording.<ext>` file and no raw source tracks"
-        // (`InterruptedRecordingRecovery.swift:146`). It was grouped with `.existingCapture` and so
+        // F305: an import has no source tracks, and the function that detects one says so
+        // (`InterruptedRecordingRecovery.finalizedRecording(in:)`'s import branch: "An imported
+        // recording has no raw source tracks"). It was grouped with `.existingCapture` and so
         // told every recovered import it had kept tracks that never existed. F303 widened the reach
         // by giving the two `.failed` unverified imports this sentence too, where a claim that the
         // recording was "preserved" reads as reassurance about a file macOS declined to verify — so

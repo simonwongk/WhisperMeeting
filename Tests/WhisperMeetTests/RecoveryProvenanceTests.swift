@@ -292,8 +292,8 @@ func emptyImportCarriesProvenance() async throws {
 func importedRecoverySaysNothingAboutSourceTracks() {
     // `provenanceCaveat` grouped `.importedRecording` with `.existingCapture` and told both that
     // "the original recording and its source tracks were preserved". An import has no source
-    // tracks — the function that detects one says so itself: "An imported recording keeps a single
-    // `recording.<ext>` file and no raw source tracks".
+    // tracks — the function that detects one says so itself: "An imported recording has no raw
+    // source tracks".
     //
     // F303 made this reach further by giving every recovered import the sentence, including the two
     // `.failed` unverified ones, where "the original recording … preserved" reads as reassurance
