@@ -144,6 +144,25 @@ func soundAlikeWindowsAreNotProposedForNames() {
         == [GlossaryCorrection(segmentIndex: 0, from: "周无", to: "周五")])
 }
 
+@Test("A Chinese window that is itself a vocabulary term is never proposed toward another term (F916, F921)")
+func aVocabularyTermIsNeverProposedTowardAnother() {
+    // 公司 (gong si) and 公式 (gong shi) sound nearly alike since F916, and both can be terms: a
+    // meeting that says 公司 correctly on thirty lines got thirty rows 公司 → 公式, and back (the
+    // review of Wave 7 lane V). The user listed both spellings, so neither is a mishearing of the
+    // other — and the same holds for an exact homophone pair, 经历 and 经理 both listed.
+    let vocabulary = ["公司", "公式", "经历", "经理"]
+    let segments = [seg("我们公司在北京"), seg("这个公式很复杂"), seg("他的工作经历很丰富"), seg("这是公事公办")]
+    let rows = GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments)
+    // A window that is no term is still proposed toward each term it sounds like, as before.
+    #expect(rows == [
+        GlossaryCorrection(segmentIndex: 3, from: "公事", to: "公司"),
+        GlossaryCorrection(segmentIndex: 3, from: "公事", to: "公式"),
+    ])
+    // With one of the pair listed, the other is a word that sounds like it, and proposed as before.
+    #expect(GlossaryCorrector.corrections(vocabulary: ["公式"], segments: [seg("我们公司在北京")])
+        == [GlossaryCorrection(segmentIndex: 0, from: "公司", to: "公式")])
+}
+
 @Test("A row's sentence is the words around the place apply changes, cut at a space, marked where the line goes on (F817)")
 func proposalContextIsTheChangedPlaceInItsSentence() {
     let chinese = GlossaryCorrection(segmentIndex: 0, from: "会意", to: "会议")

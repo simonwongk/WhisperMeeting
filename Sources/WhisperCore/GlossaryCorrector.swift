@@ -161,6 +161,7 @@ public enum GlossaryCorrector {
                 // mishearing of 张伟 from the person 张薇, and renaming a person is the worse error.
                 guard !term.isPersonName, let chinese,
                       let phrase = bestCJKWindow(for: term, in: chinese, text: text, segmented: segmented,
+                                                 otherTerms: prepared.cjkTermIDs,
                                                  evidence: segmentEvidence, sounds: &sounds) else { continue }
                 results.append(GlossaryCorrection(segmentIndex: segmentIndex, from: phrase, to: term.term))
             } else if let placed = bestLatinWindow(for: term, in: latin, text: text, scratch: &scratch) {
@@ -306,9 +307,13 @@ public enum GlossaryCorrector {
     /// Position for position rather than an LCS: a Chinese mishearing substitutes a character for a
     /// homophone and keeps the length (张经理 → 张经里), and an LCS also credits the window one
     /// character to the left — 请张经 shares 张经 with 张经理 as a subsequence, and comes first.
+    ///
+    /// A window that is itself a vocabulary term is never proposed (F916, F921): the user listed
+    /// that spelling, so it is no mishearing of another term however alike the two sound — 公司 and
+    /// 公式 both listed gave a row 公司 → 公式 on every line that said 公司, and back.
     private static func bestCJKWindow(
         for term: PreparedTerm, in runs: CJKRuns, text: String, segmented: SegmentedText,
-        evidence: () -> CJKWordEvidence, sounds: inout [Character: String]
+        otherTerms: Set<[Int32]>, evidence: () -> CJKWordEvidence, sounds: inout [Character: String]
     ) -> String? {
         let length = term.ids.count
         // Cheap upper bound first: every matched character must occur in the segment somewhere.
@@ -331,7 +336,7 @@ public enum GlossaryCorrector {
                             text[run.indices[start + offset]], of: term.characters[offset], cache: &sounds
                         )
                 }
-                guard soundsAlike else { continue }
+                guard soundsAlike, !otherTerms.contains(Array(run.ids[start..<(start + length)])) else { continue }
                 let range = run.indices[start]..<run.end(of: start + length - 1, in: text)
                 let phrase = String(text[range])
                 let boundary = ReplacementBoundary(heard: phrase, notCoveredBy: term.term, evidence: evidence())
@@ -557,6 +562,9 @@ public enum GlossaryCorrector {
         /// The evidence's known terms that could enclose a Chinese window (F594) — only a term with
         /// Chinese in it can.
         let knownCJKTerms: [String]
+        /// Every Chinese term's characters, so a window that is itself a term is never proposed
+        /// toward another (F916, F921).
+        let cjkTermIDs: Set<[Int32]>
 
         init(_ vocabulary: [String], knownTerms: [String], segmenter: CJKWordEvidence.Segmenter?) {
             knownCJKTerms = knownTerms.filter { ReplacementBoundary.hasCJK($0) }
@@ -574,6 +582,7 @@ public enum GlossaryCorrector {
                 )
             }
             hasCJKTerms = terms.contains(where: \.isCJK)
+            cjkTermIDs = Set(terms.filter(\.isCJK).map(\.ids))
         }
     }
 
