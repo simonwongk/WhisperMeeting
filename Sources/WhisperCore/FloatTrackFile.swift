@@ -164,10 +164,13 @@ public final class FloatTrackFile {
 
     /// Flushes the tail and closes the file. Idempotent.
     ///
-    /// Idempotence is load-bearing, not tidiness: on the capture path `preservePartialTracks()`
-    /// finalizes both tracks on every abort route and the normal stop finalizes them again, so
-    /// `finish` is genuinely called twice. A second flush would be aimed at a closed descriptor,
-    /// which in the worst case has already been reused by another open file.
+    /// Idempotence is load-bearing, not tidiness: on the capture path `AudioCaptureEngine.stop()`
+    /// finishes both tracks (`finishTrackWriters()`), and when that step fails its second
+    /// catch calls `preservePartialTracks()`, which finishes both again — so a track already
+    /// finished is genuinely finished twice. (After the other abort routes' preserve, `stop()` or
+    /// `start()` throws and `reset()` drops the writers, so no normal finish follows.) A second
+    /// flush would be aimed at a closed descriptor, which in the worst case has already been reused
+    /// by another open file.
     public func finish() throws {
         guard !isFinished else { return }
         // Flush first, while the descriptor is still open.
