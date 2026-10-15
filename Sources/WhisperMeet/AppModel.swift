@@ -5924,14 +5924,10 @@ final class AppModel: ObservableObject {
     /// replaced or deleted, and a lock carried onto it protects nothing of the user's — their
     /// recording is the file they imported, which is never touched and keeps its lock. Best effort:
     /// the owner can always clear these two flags, and a copy that somehow kept them is no worse off
-    /// than every import was before.
+    /// than every import was before. The same clearing runs when a delete or a Shrink removes a copy
+    /// an earlier build imported locked (`MeetingStore.clearUserFlags`, F943).
     nonisolated private static func unlockLibraryCopy(at url: URL) {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { return }
-        var cleared: [FileAttributeKey: Any] = [:]
-        if attributes[.immutable] as? Bool == true { cleared[.immutable] = false }
-        if attributes[.appendOnly] as? Bool == true { cleared[.appendOnly] = false }
-        guard !cleared.isEmpty else { return }
-        try? FileManager.default.setAttributes(cleared, ofItemAtPath: url.path)
+        MeetingStore.clearUserFlags(at: url)
     }
 
     /// The recording an import copies: the file itself, or the recording a symbolic link or a Finder

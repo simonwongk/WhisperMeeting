@@ -2259,10 +2259,48 @@ final class MeetingStore: ObservableObject {
             : "\(titles.count) meetings were not deleted because their recording folders are still being written — audio being compressed or rebuilt, or notes updated: \(names). Delete them again once that has finished."
     }
 
-    /// Removes a recording directory. Injectable so the failure path is testable (F146).
+    /// Removes a recording directory. Injectable so the failure path is testable (F146). The only
+    /// folder a delete hands it is the meeting's own `Recordings/<id>` (`ownRecordingFolder(of:)`), so
+    /// the user flags cleared first are on the app's own files (F943).
     var removeRecordingDirectory: (URL) throws -> Void = { url in
         if FileManager.default.fileExists(atPath: url.path) {
+            MeetingStore.clearUserFlags(under: url)
             try FileManager.default.removeItem(at: url)
+        }
+    }
+
+    /// Clears Finder's Locked flag (`uchg`) and the append-only flag (`uappnd`) on the file at `url`,
+    /// when either is set. A file with either cannot be removed: Delete Meeting kept the meeting as one
+    /// that "could not have its recording removed", and Shrink reported a file it could not remove on
+    /// every retry (F804, F943).
+    ///
+    /// The app's call, because the library's copy is the app's own file: the app decides when it is
+    /// replaced or deleted, and a lock carried onto it protects nothing of the user's — their recording
+    /// is the file they imported, which is never touched and keeps its lock. F804 clears the flags on
+    /// the copy an import makes; a meeting imported before F804 still carried them, so a delete and a
+    /// Shrink clear them on the files they remove (F943). Best effort: the owner can always clear these
+    /// two flags, and a file that somehow kept them is no worse off than before. A symbolic link is
+    /// left alone: `setAttributes` would follow it to a file that may be outside the library.
+    nonisolated static func clearUserFlags(at url: URL) {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType != .typeSymbolicLink else { return }
+        var cleared: [FileAttributeKey: Any] = [:]
+        if attributes[.immutable] as? Bool == true { cleared[.immutable] = false }
+        if attributes[.appendOnly] as? Bool == true { cleared[.appendOnly] = false }
+        guard !cleared.isEmpty else { return }
+        try? FileManager.default.setAttributes(cleared, ofItemAtPath: url.path)
+    }
+
+    /// `clearUserFlags(at:)` on `folder` and everything in it, for a delete of the meeting's own folder
+    /// (F943). Links are not followed: a link inside the folder is skipped, and the enumeration does not
+    /// descend through one.
+    nonisolated static func clearUserFlags(under folder: URL) {
+        clearUserFlags(at: folder)
+        guard let items = FileManager.default.enumerator(
+            at: folder, includingPropertiesForKeys: [.isSymbolicLinkKey], options: []
+        ) else { return }
+        for case let item as URL in items {
+            clearUserFlags(at: item)
         }
     }
 

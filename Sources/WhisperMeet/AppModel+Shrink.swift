@@ -372,7 +372,12 @@ extension AppModel {
             willRemoveForShrink(entry.name)
             let url = folder.appendingPathComponent(entry.name)
             do {
-                try await Task.detached { try FileManager.default.removeItem(at: url) }.value
+                try await Task.detached {
+                    // F943: a copy an import made before F804 may still carry Finder's Locked flag,
+                    // which blocks the unlink; it is the app's own file in the meeting's own folder.
+                    MeetingStore.clearUserFlags(at: url)
+                    try FileManager.default.removeItem(at: url)
+                }.value
             } catch {
                 unremoved += 1
             }
