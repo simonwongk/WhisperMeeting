@@ -128,8 +128,8 @@ is green on `2c392fe` (898 s). All 33 closed `fixed`. New tickets F854–F889 we
 **What is not claimed.**
 - Nothing was clicked through on screen; the sitting is F889 in `NEEDS_HUMAN.md`. Its multi-input hardware check (F857) was
   closed on 2026-10-12: the user has no such device.
-- The 139,668 preference files earlier test runs left in `~/Library/Preferences` (counted by F442) were not removed; nothing
-  there was deleted.
+- The 139,668 preference files earlier test runs left in `~/Library/Preferences` (counted by F442) were not removed in this
+  wave; with the user's consent they were deleted during Wave 5 (140,764 files, five belonging to another app kept).
 - Lanes planned for this wave but not run here — link-import recovery (F453, F479, F791, F438), the save path (F526) and
   long recordings (F533) — went to Wave 5.
 - Installed to `/Applications` on 2026-10-08.

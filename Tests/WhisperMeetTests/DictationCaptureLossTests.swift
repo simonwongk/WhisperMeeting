@@ -17,8 +17,9 @@ import Testing
 // real input device, so the input node, the tap install, `engine.start()` and the `isRunning` read
 // never run. The refusals, the drop accounting and the configuration-change response are all
 // reachable, and they are what these three tickets are about. Where a decision on the unreachable
-// path matters, it is a pure rule tested row by row instead: `emptyCaptureFailure` (F368), and
-// `startExit` and `configurationChangeTransition` (F404). Since F404 a DEBUG hardware step stands in
+// path matters, it is a pure rule tested row by row instead: `startExit` and
+// `configurationChangeTransition` (F404). (`emptyCaptureFailure`, F368, is also a pure rule, but its
+// only caller, `stop()`, runs headlessly here, F723.) Since F404 a DEBUG hardware step stands in
 // for those device calls, so the rest of a successful `start()` (its arming, its probe and its exit)
 // and a change handled while it runs are driven for real.
 
