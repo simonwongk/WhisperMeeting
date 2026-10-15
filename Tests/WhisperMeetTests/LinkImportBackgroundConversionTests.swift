@@ -88,7 +88,7 @@ func aConversionPastTheLaunchWaitFinishesInTheBackground() async throws {
     let ended = Gate()
     model.finishInterruptedLinkImportExtraction = { download in
         defer { ended.openUp() }
-        try await gate.wait()
+        try await gate.wait(selfReleaseAfter: 120)
         let finished = download.deletingLastPathComponent().appendingPathComponent("recording.wav")
         try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 8_000), sampleRate: 16_000).write(to: finished)
         return finished
@@ -136,7 +136,7 @@ func aBackgroundConversionThatFailsListsTheUnfinishedImport() async throws {
     let stalled = MediaDownloadError.extractionStalled(60)
     model.finishInterruptedLinkImportExtraction = { _ in
         defer { ended.openUp() }
-        try await gate.wait()
+        try await gate.wait(selfReleaseAfter: 120)
         throw stalled
     }
 
