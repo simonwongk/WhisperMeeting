@@ -22,27 +22,11 @@ if [[ -n "$developer_dir" && -d "$testing_frameworks" ]]; then
 fi
 
 print "[1/5] Checking the candidate diff for whitespace errors"
-if [[ -n "${DIFF_BASE:-}" ]] && git cat-file -e "${DIFF_BASE}^{commit}" 2>/dev/null; then
-  git diff --check "${DIFF_BASE}...HEAD"
-  # AND the working tree, which the range above cannot see.
-  #
-  # `DIFF_BASE...HEAD` is committed history only. CI sets DIFF_BASE and has nothing uncommitted, so
-  # that range is exactly right there. Run locally BEFORE committing — which is the whole point of
-  # a pre-commit gate — it checks the previous commit's diff and silently ignores the change you
-  # are about to make. Observed 2026-09-17: a trailing blank line passed a local gate with
-  # DIFF_BASE set and failed CI at this very step, 14 seconds in. Every other step reads the
-  # working tree, so step 1 was the only one looking at the wrong thing.
-  git diff HEAD --check
-else
-  untracked_files="$(git ls-files --others --exclude-standard)"
-  if [[ -n "$untracked_files" ]]; then
-    print -u2 "Stage new candidate files before running the quality gate so they are included in diff validation:"
-    print -u2 -- "$untracked_files"
-    exit 1
-  fi
-  # Includes both staged and unstaged edits once new candidate files have been staged.
-  git diff HEAD --check
-fi
+# In its own script so Scripts/tests/test_check_whitespace.py can run it over scratch repositories.
+# With DIFF_BASE (CI): the committed range AND the working tree (F191). Without it (the local gate):
+# the working tree AND the commits since origin/main, so a gate run after committing — the usual
+# order — no longer passes an error CI will fail on (F806).
+Scripts/check-whitespace.sh
 
 print "[2/5] Running script regression suites"
 # Globbed, not listed. A hardcoded list is how a test file silently stops running: when this was a
