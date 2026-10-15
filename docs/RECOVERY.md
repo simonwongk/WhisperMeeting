@@ -46,7 +46,11 @@ sweep adds it to the history instead (F936).
 
 Each `Recordings/<meeting-id>/` folder also holds a human-readable `notes.md` mirroring that
 meeting's transcript, summary and action items, regenerated automatically as they change. It is
-write-only insurance — the app never reads it back — and safe to read or copy with any editor.
+insurance, and safe to read or copy with any editor. The app reads it back in only two places, and
+never takes a transcript or summary from it: before rewriting it, to skip a rewrite whose content
+is unchanged, and when it rebuilds the index from the recording folders, which takes a meeting's
+title from the file's `# <title>` first line (see
+[Rebuilding the index from the recording folders](#rebuilding-the-index-from-the-recording-folders)).
 
 A folder may also hold `ask-embeddings.json` and `ask-embeddings.f32`: the search-by-meaning index
 for that meeting's transcript (numbers, not text). Like `notes.md` it is derived — delete it and the
