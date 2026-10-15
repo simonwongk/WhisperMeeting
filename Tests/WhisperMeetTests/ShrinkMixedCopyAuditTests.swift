@@ -52,6 +52,28 @@ private func shifted(_ samples: [Float], by frames: Int, until: Int = .max, then
     return out
 }
 
+/// A voice-like signal: `tones`, irregularly spaced across speech's band, at `amplitude` each, `seconds` long,
+/// silent outside `[from, to)`. Broadband, so that no shift within a few periods of one tone fits it again —
+/// a single tone lines up with itself every period, and four did at 0.6 of their level 31 frames off.
+private func fixtureVoice(_ tones: [Double], amplitude: Double = 0.03, seconds: Double, from: Double = 0, to: Double = .infinity) -> [Float] {
+    var sum = [Float](repeating: 0, count: Int(seconds * 48_000))
+    for tone in tones {
+        for (n, value) in fixtureTone(frequency: tone, amplitude: amplitude, seconds: seconds, from: from, to: to).enumerated() { sum[n] += value }
+    }
+    return sum
+}
+private let voiceA: [Double] = [311, 457, 619, 737, 911, 1_171, 1_409, 1_777, 2_389, 2_917, 3_571, 4_283]
+private let voiceB: [Double] = [353, 419, 541, 823, 953, 1_291, 1_613, 2_011, 2_557, 2_963, 3_803, 4_621]
+
+/// `samples` delayed by a lag that grows evenly from 0 at the start to `frames` at the end, one more frame
+/// each `count / frames` samples (a sample is repeated where the lag steps).
+private func drifting(_ samples: [Float], to frames: Int) -> [Float] {
+    samples.indices.map { n in
+        let lag = n * frames / Swift.max(1, samples.count)
+        return n - lag >= 0 ? samples[n - lag] : 0
+    }
+}
+
 // MARK: - The second review's deletions, with the real mixer (D1, D2)
 
 @Test("A quiet track whose channels cancel, alone for half the recording, keeps its original (F980 D1)")
@@ -111,8 +133,12 @@ func shrinkAuditAcceptsACopyAFewFramesOutOfStep() async throws {
     // in the middle of an audit window (2.5 s in), as a read that drops a buffer does: by 4 frames, the
     // measured step between one second and the next being at most 5 (gates/01-drift-probe.log). One lag
     // serves a window, so a larger step inside one window on an 800 Hz tone is refused, which is safe.
+    // And a drift that grows along the file, as a converter running at a slightly different rate makes
+    // (two reads of three of a three-minute file, 0.4 frames a second, gates/09-long-probe.log): here from
+    // 0 to 60 frames over 8 s, far past one window's search, followed window by window.
     let cases: [(label: String, shift: Int, then: Int?)] = [("1 frame", 1, nil), ("8 frames", 8, nil), ("12 frames", 12, nil),
-                                                             ("0 then 4 frames from 2.5 s", 0, 4), ("12 then 8 frames from 2.5 s", 12, 8)]
+                                                             ("0 then 4 frames from 2.5 s", 0, 4), ("12 then 8 frames from 2.5 s", 12, 8),
+                                                             ("0 to 60 frames, growing", -1, nil)]
     for c in cases {
         let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
             try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.3)], seconds: 8),
@@ -120,7 +146,9 @@ func shrinkAuditAcceptsACopyAFewFramesOutOfStep() async throws {
         }
         defer { try? FileManager.default.removeItem(at: f.root) }
         let (shift, then) = (c.shift, c.then)
-        f.model.encodeForShrink = encodeTransformed { shifted($0, by: shift, until: 40_000, then: then) }
+        f.model.encodeForShrink = encodeTransformed { mix in
+            shift < 0 ? drifting(mix, to: 60) : shifted(mix, by: shift, until: 40_000, then: then)
+        }
 
         await f.shrink()
 
@@ -128,8 +156,10 @@ func shrinkAuditAcceptsACopyAFewFramesOutOfStep() async throws {
         #expect(alert.contains("Shrunk"), "\(c.label): \(alert)")
         if alert.contains("Shrunk") {
             let copy = try f.copy()
-            expectTone(copy, 300, from: 3, to: 7.5, 0.285, c.label)
-            expectTone(copy, 800, from: 3, to: 7.5, 0.285, c.label)
+            // Over a short span for the drifting copy: a tone measured over 4.5 s of drifting phase smears.
+            let to = shift < 0 ? 3.4 : 7.5
+            expectTone(copy, 300, from: 3, to: to, 0.285, within: shift < 0 ? 0.03 : 0.012, c.label)
+            expectTone(copy, 800, from: 3, to: to, 0.285, within: shift < 0 ? 0.03 : 0.012, c.label)
         }
     }
 }
@@ -137,19 +167,11 @@ func shrinkAuditAcceptsACopyAFewFramesOutOfStep() async throws {
 @Test("A copy far out of step with the recording is not accepted: the alignment is bounded (F980 C3)")
 @MainActor
 func shrinkAuditRefusesACopyFarOutOfStep() async throws {
-    // Twice the frames the audit aligns over, and more: not a read's drift but a copy that is not in time with
-    // the recording, which cannot be shown to hold it. Pins the bound. Not pure tones, which line up again
-    // a whole period away (800 Hz every 20 frames): each track is several tones whose periods share no
-    // multiple within the shift, as speech does not.
-    let voices: [[Float]] = [[311.0, 737, 1_171, 2_389], [419.0, 953, 1_613, 2_963]].map { tones in
-        var sum = [Float](repeating: 0, count: 8 * 48_000)
-        for tone in tones {
-            for (n, value) in fixtureTone(frequency: tone, amplitude: 0.08, seconds: 8).enumerated() { sum[n] += value }
-        }
-        return sum
-    }
+    // Twice the frames the audit aligns over from the start, and more: not a read's drift but a copy that is
+    // not in time with the recording, which cannot be shown to hold it. Pins the first window's bound. Not
+    // pure tones, which line up again a whole period away (800 Hz every 20 frames): voice-like signals.
     let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
-        try await writeFixtureRawTracks(to: url, [[voices[0]], [voices[1]]])
+        try await writeFixtureRawTracks(to: url, [[fixtureVoice(voiceA, seconds: 8)], [fixtureVoice(voiceB, seconds: 8)]])
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
     let far = 2 * RecordingMixPlan.alignmentFrames + 8
@@ -169,16 +191,20 @@ func shrinkAuditRefusesACopyFarOutOfStep() async throws {
 @MainActor
 func shrinkAuditAcceptsTracksThatShareTheirSound() async throws {
     // Two tracks holding the same sound cannot be told apart in a copy, and need not be: the copy holds their
-    // sum. The review refused all of these, the encode's noise deciding an undetermined coefficient.
-    let voice = fixtureTone(frequency: 300, amplitude: 0.3, seconds: 12)
-    let other = fixtureTone(frequency: 800, amplitude: 0.2, seconds: 12, from: 5)
+    // sum. The review refused all of these, the encode's noise deciding an undetermined coefficient. The
+    // voices are voice-like, not one tone: the mixer's own read puts a shared sound's two images in the copy
+    // a few frames apart, and a sustained pure tone shifted a few frames reads as a different sound, where a
+    // voice does not (`gates/15-cases-probe.log`).
+    let voice = fixtureVoice(voiceA, seconds: 12)
+    let other = fixtureVoice(voiceB, amplitude: 0.02, seconds: 12, from: 5)
     let oneLate: [Float] = [0] + voice.dropLast().map { 0.98 * $0 }
     let master: [Float] = zip(voice, other).map { $0 + $1 }
+    // Each case names a tone of each voice, where it sounds, and the least amplitude the copy must hold it at.
     let cases: [(label: String, tracks: [[[Float]]], tones: [(Double, Double, Double, Double)])] = [
-        ("identical tracks", [[voice], [voice]], [(300, 1, 11, 0.57)]),
-        ("0.98 of the other, one sample late", [[voice], [oneLate]], [(300, 1, 11, 0.564)]),
-        ("stereo dual-mono track + mono track", [[voice, voice], [other]], [(300, 1, 4, 0.285), (800, 6, 11, 0.19)]),
-        ("OBS: master + microphone + desktop", [[master], [voice], [other]], [(300, 1, 4, 0.57), (800, 6, 11, 0.38)]),
+        ("identical tracks", [[voice], [voice]], [(voiceA[0], 1, 11, 0.045)]),
+        ("0.98 of the other, one sample late", [[voice], [oneLate]], [(voiceA[0], 1, 11, 0.045)]),
+        ("stereo dual-mono track + mono track", [[voice, voice], [other]], [(voiceA[0], 1, 4, 0.022), (voiceB[0], 6, 11, 0.015)]),
+        ("OBS: master + microphone + desktop", [[master], [voice], [other]], [(voiceA[0], 1, 4, 0.045), (voiceB[0], 6, 11, 0.03)]),
     ]
     for c in cases {
         let f = try await MixFixture(recordingExtension: "mov", duration: 12, mixing: true) { url in
@@ -192,7 +218,10 @@ func shrinkAuditAcceptsTracksThatShareTheirSound() async throws {
         #expect(alert.contains("Shrunk"), "\(c.label): \(alert)")
         if alert.contains("Shrunk") {
             let copy = try f.copy()
-            for (frequency, from, to, level) in c.tones { expectTone(copy, frequency, from: from, to: to, level, within: 0.02, c.label) }
+            for (frequency, from, to, least) in c.tones {
+                let measured = fixtureToneAmplitude(copy, rate: 16_000, frequency: frequency, from: from, to: to)
+                #expect(measured >= least, "\(c.label) \(Int(frequency)) Hz [\(from), \(to)): \(measured), at least \(least)")
+            }
         }
     }
 }

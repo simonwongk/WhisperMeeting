@@ -298,21 +298,50 @@ private func auditOf(_ windows: [([[Double]], [Double])], trackChannels: [Int]) 
     return (audit, native)
 }
 
-@Test("A track's lag is where the copy follows it best, the smaller lag on a tie, 0 when nothing projects (F980)")
-func alignmentPicksEachTracksLag() {
+@Test("A track's step is where the copy follows it best, the smaller on a tie, none when nothing projects (F980)")
+func alignmentPicksEachTracksStep() {
     let span = 2 * RecordingMixPlan.alignmentFrames + 1
-    #expect(span == 33, "±16 frames: a millisecond at 16 kHz, past the measured read-to-read drift of up to 11")
+    #expect(span == 33, "±16 frames a window: a millisecond at 16 kHz, past the measured 5 between seconds")
     var one = [Double](repeating: 0, count: span), two = [Double](repeating: 0, count: span)
     one[RecordingMixPlan.alignmentFrames + 5] = 3   // track 1 best at +5
     two[RecordingMixPlan.alignmentFrames - 2] = 1   // track 2's two channels: 4 at −2 and 4 at +7 tie → −2
     var twoB = [Double](repeating: 0, count: span)
     twoB[RecordingMixPlan.alignmentFrames - 2] = 3; twoB[RecordingMixPlan.alignmentFrames + 7] = 4
-    let lags = RecordingMixPlan.alignment(projectionsByLag: [one, two, twoB], trackChannels: [1, 2])
-    #expect(lags == [5, -2])
-    // Nothing positive: a silent track, or one in opposite polarity everywhere, stays at 0.
+    // Energies of 1 at every lag: a projection counts from 0.95 × weight × 0.6 of the track's energy there.
+    let ones = [Double](repeating: 1, count: span)
+    let steps: [Int?] = RecordingMixPlan.alignment(projectionsByLag: [one, two, twoB], energiesByLag: [ones, ones, ones], trackChannels: [1, 2])
+    #expect(steps == [5, -2])
+    // Nothing positive: a silent track, or one in opposite polarity everywhere, is not found.
     let negative = [Double](repeating: -1, count: span)
-    #expect(RecordingMixPlan.alignment(projectionsByLag: [negative], trackChannels: [1]) == [0])
-    #expect(RecordingMixPlan.alignment(projectionsByLag: [[Double](repeating: 0, count: span)], trackChannels: [1]) == [0])
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [negative], energiesByLag: [ones], trackChannels: [1]) == [nil])
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [[Double](repeating: 0, count: span)], energiesByLag: [ones], trackChannels: [1]) == [nil])
+    // Nor a projection under the fit a present track makes: 0.5 of an energy of 1 is under 0.57; 0.6 is found.
+    var faint = [Double](repeating: 0, count: span)
+    faint[RecordingMixPlan.alignmentFrames + 3] = 0.5
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [faint], energiesByLag: [ones], trackChannels: [1]) == [nil])
+    faint[RecordingMixPlan.alignmentFrames + 3] = 0.6
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [faint], energiesByLag: [ones], trackChannels: [1]) == [3])
+    // A wider search, for a track not found in the windows before: the span follows the projections given.
+    var wide = [Double](repeating: 0, count: 2 * 48 + 1)
+    wide[48 - 40] = 2
+    #expect(RecordingMixPlan.alignment(projectionsByLag: [wide], energiesByLag: [[Double](repeating: 1, count: 2 * 48 + 1)], trackChannels: [1]) == [-40])
+    #expect(RecordingMixPlan.widestAlignment == 256 && RecordingMixPlan.alignmentReach == 4_800)
+    // A track that drifted past the reach is refused before anything else is judged.
+    let drifted = RecordingMixPlan.Audit(trackChannels: [1, 1], sampleRate: 16_000, windows: [], outOfStep: (window: 7, track: 1))
+    #expect(RecordingMixPlan.firstFinding(drifted, nativeChannelWindows: [], nativeLevel: 0.1) == .trackOutOfStep(window: 7, track: 1))
+}
+
+@Test("The per-track fit the app re-aligns against gives each track the copy's coefficient for it (F980)")
+func trackFitGivesEachTracksCoefficient() {
+    // A stereo track beside a mono one, the copy holding the mono one at half: the fit says so per track.
+    let tracks = [[sine(300, 0.2), sine(500, 0.2)], [sine(800, 0.2)]]
+    let full = mixedCopy([tracks[0]]), half = mixedCopy([[[Double](repeating: 0, count: 16_000)], tracks[1]]).map { 0.5 * $0 }
+    let copy = full.indices.map { full[$0] + half[$0] }
+    let w = window(tracks.flatMap { $0 }, copy: copy)
+    let fit = RecordingMixPlan.trackFit(gram: w.gram, projection: w.projection, trackChannels: [2, 1]).coefficients
+    #expect(abs(fit[0] / RecordingMixPlan.gain - 1) < 0.01 && abs(fit[1] / RecordingMixPlan.gain - 0.5) < 0.01, "\(fit)")
+    let undefined = RecordingMixPlan.trackFit(gram: [1], projection: [1], trackChannels: [1, 1]).coefficients
+    #expect(undefined.count == 2 && undefined[0].isNaN && undefined[1].isNaN, "mismatched sums: undefined")
 }
 
 @Test("Anything that is not a number refuses: a channel's native level, its reading, or the copy (F980 D2)")

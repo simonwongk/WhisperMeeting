@@ -153,15 +153,27 @@ public enum RecordingMixPlan {
     /// check fits the copy against every channel at once, and its cost grows with their square.
     public static let mostCheckedChannels = 16
 
-    /// The most frames a track, read for the audit, may be out of step with the copy either way: 16, a
-    /// millisecond at 16 kHz. AVAssetReader does not read an ffmpeg-made file the same way twice (second
-    /// review of F942, C3). Measured on files from ffmpeg 8.1.2 (F980, `gates/01-drift-probe.log`): two
-    /// reads of one track differ by up to 11 frames within 6 s and by at most 8 over three minutes, each
-    /// track on its own — so the copy, made from one read, is out of step with the audit's read by a
-    /// different amount per track, up to 22 frames between the two tracks of a three-minute file. The
-    /// audit aligns each track to the copy within this many frames, slice by slice (`alignment`), before it
-    /// fits; a copy further out of step is not shown to be in time with the recording, and is refused.
+    /// The most frames a track's step with the copy may move from one audit window to the next, either
+    /// way: 16, a millisecond at 16 kHz. AVAssetReader does not read an ffmpeg-made file the same way
+    /// twice, and its reads drift (second review of F942, C3). Measured on files from ffmpeg 8.1.2 (F980,
+    /// `gates/01-drift-probe.log`, `09-long-probe.log`): between one second and the next the lag of a track
+    /// against the copy moves by at most 5 frames; over a file it is not bounded — in two reads of three it
+    /// climbed steadily, about 0.4 frames a second (a 25 ppm rate difference in the converter), to 16 and
+    /// past, each track on its own. So the audit follows each track: it searches this far either side of
+    /// where the track stood in the window before (`alignment`), from 0 at the start. A copy out of step
+    /// from the start by more than this is not shown to be in time with the recording, and is refused.
     public static let alignmentFrames = 16
+
+    /// A track that sounded nothing the copy follows in a window (silence, say) keeps its place, and its
+    /// search widens by `alignmentFrames` a window while that lasts, to this many frames at most: the drift
+    /// goes on through its silence, and when it speaks again it must be found. 256 frames is 16 ms; at the
+    /// measured rate that covers ten minutes of silence.
+    public static let widestAlignment = 256
+
+    /// The furthest a track may stand from the copy in all: 4,800 frames, 0.3 s. At the measured rate
+    /// that is more than three hours of drift; a track further out of step than this is refused
+    /// (`Finding.trackOutOfStep`) — the audit cannot tell such a copy from one timed wrongly.
+    public static let alignmentReach = 4_800
 
     /// How long each window of the audit is, and the stretch each track is aligned to the copy over: a
     /// second, not the plain path's five (`MeetingStoragePlan.levelWindowSeconds`). Two reasons. The drift
@@ -181,11 +193,20 @@ public enum RecordingMixPlan {
         /// The rate the tracks and the copy were read at.
         public var sampleRate: Double
         public var windows: [Window]
+        /// The first track that drifted past `alignmentReach` from the copy, and the window where: the
+        /// audit stops following it there, and `firstFinding` refuses with `trackOutOfStep`.
+        public var outOfStep: (window: Int, track: Int)?
 
-        public init(trackChannels: [Int], sampleRate: Double, windows: [Window]) {
+        public init(trackChannels: [Int], sampleRate: Double, windows: [Window], outOfStep: (window: Int, track: Int)? = nil) {
             self.trackChannels = trackChannels
             self.sampleRate = sampleRate
             self.windows = windows
+            self.outOfStep = outOfStep
+        }
+
+        public static func == (lhs: Audit, rhs: Audit) -> Bool {
+            lhs.trackChannels == rhs.trackChannels && lhs.sampleRate == rhs.sampleRate && lhs.windows == rhs.windows
+                && lhs.outOfStep?.window == rhs.outOfStep?.window && lhs.outOfStep?.track == rhs.outOfStep?.track
         }
 
         public struct Window: Sendable, Equatable {
@@ -198,41 +219,58 @@ public enum RecordingMixPlan {
             public var projection: [Double]
             /// Σ c².
             public var copySquares: Double
+            /// The lag each track was aligned at (`alignment`), for the record; nothing is judged by it.
+            public var lags: [Int]
 
-            public init(frames: Double, gram: [Double], projection: [Double], copySquares: Double) {
+            public init(frames: Double, gram: [Double], projection: [Double], copySquares: Double, lags: [Int] = []) {
                 self.frames = frames
                 self.gram = gram
                 self.projection = projection
                 self.copySquares = copySquares
+                self.lags = lags
             }
         }
     }
 
-    /// Per track, the lag within ±`alignmentFrames` at which the copy follows it best in one window: the
-    /// lag where the sum of its channels' projections onto the copy, `projectionsByLag[channel][lag +
-    /// alignmentFrames]`, is largest; the smaller lag on a tie, and 0 for a track that projects nothing
-    /// positive. The channels of one track are decoded together, so they share a lag; the choice uses the
-    /// whole track's sound, never one quiet channel's, so a channel the copy lacks cannot pick itself a
+    /// Per track, the step from where it stood at which the copy follows it in one window, or nil when the
+    /// copy follows it nowhere there: silence, sound the copy does not hold, or sound too faint beside the
+    /// copy's. Each channel's `projectionsByLag[channel]` holds its projections onto the copy at every lag
+    /// from −s to s about the track's place, s being `(count − 1) / 2` — `alignmentFrames` as a rule, wider
+    /// for a track found nowhere in the windows before (`widestAlignment`) — and `energiesByLag[channel]`
+    /// its energy over the window shifted by each of those lags. The step is the lag where the sum over the
+    /// track's channels is largest, the smaller lag on a tie; it counts as found only where that sum reaches
+    /// `minimumFit` of what the mix gives the track there, `gain × channelWeight × Σ energies at that lag` —
+    /// the fit a present track makes. Anything less is noise: a track silent in a window, searched widely,
+    /// once found itself 123 frames on in a speck of a near-silent copy and pulled the next window's sound
+    /// into this one (`gates/11-n9-probe.log`); measured against the energy at its place, which was none,
+    /// the speck passed. A track the copy lost is never found, keeps its place, and fails its fit there,
+    /// which is right.
+    ///
+    /// The channels of one track are decoded together, so they share a lag; the choice uses the whole
+    /// track's sound, never one quiet channel's, so a channel the copy lacks cannot pick itself a
     /// flattering lag. A track in opposite polarity to the copy can: shifted until it looks a little like
     /// the copy, its cancellation no longer shows in the aligned sums — but then those sums hold far more
     /// sound than the copy, and the copy's level refuses it (`copyMissingSound`); where the aligned tracks
     /// still cancel, `tracksCancel` does. Either way the original is kept.
-    public static func alignment(projectionsByLag: [[Double]], trackChannels: [Int]) -> [Int] {
-        let span = 2 * alignmentFrames + 1
+    public static func alignment(projectionsByLag: [[Double]], energiesByLag: [[Double]], trackChannels: [Int]) -> [Int?] {
         var first = 0
-        return trackChannels.map { count in
+        return trackChannels.map { count -> Int? in
             defer { first += count }
-            var best = (lag: 0, value: 0.0)
-            for index in 0..<span {
-                let lag = index - alignmentFrames
-                var value = 0.0
+            guard count > 0, first < projectionsByLag.count else { return nil }
+            let span = (projectionsByLag[first].count - 1) / 2
+            let least = gain * channelWeight(channels: count) * minimumFit
+            var best: (lag: Int, value: Double)?
+            for index in 0..<(2 * span + 1) {
+                let lag = index - span
+                var value = 0.0, energy = 0.0
                 for channel in first..<(first + count) where channel < projectionsByLag.count && index < projectionsByLag[channel].count {
                     value += projectionsByLag[channel][index]
+                    energy += channel < energiesByLag.count && index < energiesByLag[channel].count ? energiesByLag[channel][index] : 0
                 }
-                guard value.isFinite else { continue }
-                if value > best.value || (value == best.value && value > 0 && abs(lag) < abs(best.lag)) { best = (lag, value) }
+                guard value.isFinite, energy.isFinite, energy > 0, value >= least * energy else { continue }
+                if best == nil || value > best!.value || (value == best!.value && abs(lag) < abs(best!.lag)) { best = (lag, value) }
             }
-            return best.lag
+            return best?.lag
         }
     }
 
@@ -248,6 +286,9 @@ public enum RecordingMixPlan {
         case notANumber(window: Int, channel: Int?)
         /// A window whose sums do not match the recording's channel count: not measured, so not judged.
         case unreadableWindow(window: Int)
+        /// A track drifted further from the copy than `alignmentReach`: the audit cannot tell the copy
+        /// from one timed wrongly, so it stopped following the track there.
+        case trackOutOfStep(window: Int, track: Int)
         /// A track's channels cancel when combined into its own signal: one channel in opposite polarity
         /// to another (the review's R2). The mix cannot hold that track's sound.
         case trackCancels(window: Int, track: Int)
@@ -351,6 +392,7 @@ public enum RecordingMixPlan {
             if let window = levels.firstIndex(where: { !$0.isFinite }) { return .notANumber(window: window, channel: channel) }
         }
         guard nativeLevel.isFinite else { return .notANumber(window: 0, channel: nil) }
+        if let out = audit.outOfStep { return .trackOutOfStep(window: out.window, track: out.track) }
         for (index, window) in audit.windows.enumerated() {
             guard window.frames.isFinite, window.gram.count == channels * channels, window.projection.count == channels else {
                 return .unreadableWindow(window: index)
@@ -362,24 +404,8 @@ public enum RecordingMixPlan {
             if let bad = window.gram.firstIndex(where: { !$0.isFinite }) { return .notANumber(window: index, channel: bad / channels) }
         }
 
-        // The tracks' own signals in one window: their Gram matrix and projection, each track's channel
-        // energy, and the energy of its channels' sum.
-        struct TrackSums {
-            var gram: [Double], projection: [Double], channelEnergy: [Double], sum: [Double]
-        }
         func trackSums(_ window: Audit.Window) -> TrackSums {
-            var sums = TrackSums(gram: [Double](repeating: 0, count: tracks * tracks), projection: [Double](repeating: 0, count: tracks),
-                                 channelEnergy: [Double](repeating: 0, count: tracks), sum: [Double](repeating: 0, count: tracks))
-            for i in 0..<channels {
-                sums.projection[trackOf[i]] += weightOf[i] * window.projection[i]
-                sums.channelEnergy[trackOf[i]] += window.gram[i * channels + i]
-                for j in 0..<channels {
-                    let g = window.gram[i * channels + j]
-                    sums.gram[trackOf[i] * tracks + trackOf[j]] += weightOf[i] * weightOf[j] * g
-                    if trackOf[i] == trackOf[j] { sums.sum[trackOf[i]] += g }
-                }
-            }
-            return sums
+            Self.trackSums(gram: window.gram, projection: window.projection, trackChannels: audit.trackChannels)
         }
 
         // Each track's, channel's and the mix's level over the whole recording, which "sounds" is relative to.
@@ -484,6 +510,48 @@ public enum RecordingMixPlan {
             }
         }
         return nil
+    }
+
+    /// The tracks' own signals in one window: their Gram matrix and projection (each track's channels
+    /// combined by `channelWeight`), each track's channels' energy, and the energy of its channels' sum.
+    struct TrackSums {
+        var gram: [Double], projection: [Double], channelEnergy: [Double], sum: [Double]
+    }
+
+    static func trackSums(gram: [Double], projection: [Double], trackChannels: [Int]) -> TrackSums {
+        let channels = trackChannels.reduce(0, +), tracks = trackChannels.count
+        var trackOf: [Int] = []
+        for (track, count) in trackChannels.enumerated() { trackOf += repeatElement(track, count: count) }
+        var sums = TrackSums(gram: [Double](repeating: 0, count: tracks * tracks), projection: [Double](repeating: 0, count: tracks),
+                             channelEnergy: [Double](repeating: 0, count: tracks), sum: [Double](repeating: 0, count: tracks))
+        guard gram.count == channels * channels, projection.count == channels else { return sums }
+        for i in 0..<channels {
+            let wi = channelWeight(channels: trackChannels[trackOf[i]])
+            sums.projection[trackOf[i]] += wi * projection[i]
+            sums.channelEnergy[trackOf[i]] += gram[i * channels + i]
+            for j in 0..<channels {
+                let g = gram[i * channels + j]
+                sums.gram[trackOf[i] * tracks + trackOf[j]] += wi * channelWeight(channels: trackChannels[trackOf[j]]) * g
+                if trackOf[i] == trackOf[j] { sums.sum[trackOf[i]] += g }
+            }
+        }
+        return sums
+    }
+
+    /// The coefficient the copy gives each track's own signal in one window, from a least-squares fit onto
+    /// every track at once — `gain` for a track the copy holds as the mix made it — and how much of the
+    /// copy's energy that fit explains, so the app can take each track out of the copy, align the others
+    /// against what remains, and keep the alignment that explains the copy best (`RecordingMixer.audit`).
+    /// NaN coefficients and nothing explained where the sums do not match the tracks.
+    public static func trackFit(gram: [Double], projection: [Double], trackChannels: [Int]) -> (coefficients: [Double], explained: Double) {
+        let channels = trackChannels.reduce(0, +), tracks = trackChannels.count
+        guard gram.count == channels * channels, projection.count == channels else {
+            return ([Double](repeating: .nan, count: tracks), 0)
+        }
+        let sums = trackSums(gram: gram, projection: projection, trackChannels: trackChannels)
+        let fit = leastSquares(gram: sums.gram, projection: sums.projection, size: tracks)
+        let explained = zip(fit.solution, sums.projection).reduce(0.0) { $0 + $1.0 * $1.1 }
+        return (fit.solution, explained.isFinite ? explained : 0)
     }
 
     /// Solves `(G + λI) β = p` for the coefficients of a least-squares fit, `G` the regressors' Gram

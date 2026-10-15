@@ -424,6 +424,8 @@ extension AppModel {
                 return "the compressed copy holds values that are not numbers at about \(at(window)), so it can't be checked against \(subject)"
             case let .unreadableWindow(window):
                 return "\(subject) could not be measured at about \(at(window)) to check the copy"
+            case let .trackOutOfStep(window, track):
+                return "audio track \(track + 1) of \(subject) drifted too far out of step with the compressed copy to check it, at about \(at(window))"
             case let .trackCancels(window, track):
                 return "audio track \(track + 1) of \(subject) cancels itself when its channels are mixed into one, at about \(at(window))"
             case let .tracksCancel(window):
