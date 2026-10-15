@@ -1325,8 +1325,10 @@ final class MeetingStore: ObservableObject {
         /// banner, out of the list, and either answer makes it to the copy it keeps (F885).
         ///
         /// Its mutation may therefore run on more than one copy of a record, so it must decide from
-        /// the copy it is given, never from a value read off the list beforehand — the review found
-        /// three that did (cancellation, failure, rebuild) and they now read their own copy. A result
+        /// the copy it is given. It may carry a value read off the list beforehand — the summary
+        /// closure's payload, `apply(result:)`'s `audioDurationAtStart` — as what the work produced
+        /// or saw, but never take one as the record's current state: the review found three that did
+        /// (cancellation, failure, rebuild) and they now read their own copy. A result
         /// never renames a meeting, which is what lets the offer's message, written when it was made,
         /// keep naming the right meetings.
         case result
@@ -3359,8 +3361,10 @@ final class MeetingStore: ObservableObject {
     /// It once made two per OK, and the second found the notice the first had just put back and
     /// released it. So the notice is not put back inside the dismissal: the message goes to nil
     /// and the notice returns on the next turn (`reshowPendingNotice`). A second call in the same
-    /// turn therefore finds nil, not the notice, and cannot count it as read; and the alert is
-    /// presented afresh rather than asked to re-present while it is still being dismissed.
+    /// turn therefore finds nil, not the notice, and cannot count it as read. Whether SwiftUI then
+    /// sees the returning notice as a new presentation or as a change while the alert is still
+    /// closing depends on whether that main-actor `Task` runs before its next update, which nothing
+    /// here guarantees; the fix does not rest on it.
     func clearStorageError() {
         if let notice = historyNoticeAwaitingDismissal, storageErrorMessage == notice {
             historyNoticeAwaitingDismissal = nil
@@ -3379,8 +3383,10 @@ final class MeetingStore: ObservableObject {
 
     /// What `storageErrorMessage` shows when nothing else is being said: F553's notice while it waits
     /// to be read, otherwise nil (F669). Every path that clears the message sets it to this rather
-    /// than nil — the notice is its own fact, held in `historyNoticeAwaitingDismissal`, and the
-    /// message only where it is shown, so a path that owns the message cannot erase the fact.
+    /// than nil, except the alert's own dismissal: `clearStorageError()` sets nil and puts the notice
+    /// back on the next turn (`reshowPendingNotice`). The notice is its own fact, held in
+    /// `historyNoticeAwaitingDismissal`, and the message only where it is shown, so a path that owns
+    /// the message cannot erase the fact.
     private var restingStorageMessage: String? { historyNoticeAwaitingDismissal }
 
     private static func normalizeTerm(_ value: String) -> String {
