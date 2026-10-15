@@ -522,11 +522,13 @@ public final class RecordingHealthMonitor {
         // and its copy remain because saved health reports from older recordings still decode it.
         //
         // F530: a flat threshold cannot warn before Stop becomes impossible on a long recording — at
-        // 96,000 B/s, `meeting.wav` alone needs more than a flat 2 GB past ~5.8 hours. The threshold
-        // is instead what Stop will actually need to write `meeting.wav` for the recording SO FAR
-        // (`RecordingSizeEstimator.mixedBytes`, growing with elapsed time) plus a margin for the
-        // still-growing raw tracks. `addingReportingOverflow` because a bound must not itself be the
-        // overflow it exists to guard against (AGENTS.md).
+        // 96,000 B/s, `meeting.wav` alone needs more than a flat 2 GB past ~5.8 hours (2e9 / 96,000
+        // s). The threshold is instead what Stop will actually need to write `meeting.wav` for the
+        // recording SO FAR (`RecordingSizeEstimator.mixedBytes`, growing with elapsed time) plus a
+        // margin for the still-growing raw tracks. The two figures differ: ~5.8 hours is the mix's
+        // own size; with the default margin (230.4 MB at 48 kHz) added, the threshold itself passes
+        // 2 GB earlier, at ~5.1 hours ((2e9 - 230.4e6) / 96,000 s). `addingReportingOverflow`
+        // because a bound must not itself be the overflow it exists to guard against (AGENTS.md).
         //
         // F597: at elapsed 0 that sum is the margin alone, so the threshold never drops below
         // `lowStorageFloorBytes`, the free space the app requires to start a recording at all.
