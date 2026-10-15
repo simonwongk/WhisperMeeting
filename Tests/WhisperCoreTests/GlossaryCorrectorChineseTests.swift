@@ -118,6 +118,20 @@ func nearHomophoneNeverReplacesALeadingSurname() {
     ])
 }
 
+@Test("A sound-alike row never changes a numeral in the transcript (F916)")
+func soundAlikeRowsNeverChangeANumeral() {
+    // F916's table made 四 (si) sound like 十 and 市 (shi), so 我们四月见 was proposed as October and
+    // 四场比赛 as 市场 (the review of Wave 7 lane V). A number the recognizer wrote is not a mishearing
+    // this pass can tell — and an exact homophone is no safer: 十 reads shi exactly as 时 does.
+    let segments = [seg("我们四月见"), seg("下午有四场比赛"), seg("我们订了四间房"), seg("我们订了十间房"), seg("这个预选不够"), seg("我们周无见")]
+    let rows = GlossaryCorrector.corrections(vocabulary: ["十月", "市场", "时间", "预算", "周五"], segments: segments)
+    // A word heard for a term's numeral (周无 for 周五) is still proposed: the number is the term's.
+    #expect(rows == [
+        GlossaryCorrection(segmentIndex: 4, from: "预选", to: "预算"),
+        GlossaryCorrection(segmentIndex: 5, from: "周无", to: "周五"),
+    ])
+}
+
 @Test("A two-character window sharing no character with the term is not proposed, however alike it sounds (F817)")
 func twoCharacterTermNeedsOneCharacterOfItsOwn() {
     // 攻势 (attack) reads gong shi exactly as 公式 (formula) does, and is a different word.

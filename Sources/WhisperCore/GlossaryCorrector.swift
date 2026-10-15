@@ -58,7 +58,8 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// position — one of two for a two-character term, since F817 (`enoughInPlace`) — and every
 /// character it gets wrong must sound like the term's, or nearly, by the accent confusions
 /// `MandarinSound` folds (zh/z, sh/s/x, n/l, in/ing…, F916), though a near sound never stands
-/// for a term's leading surname (程经理 is not 陈经理) and no window that is itself a term is
+/// for a term's leading surname (程经理 is not 陈经理), no numeral is changed (四月 is not 十月)
+/// and no window that is itself a term is
 /// proposed (公司 is not 公式 when both are listed): matching two of three
 /// characters in place also fits 王经理 for 张经理 and 数据集 for 数据库, which the review of F536
 /// found pre-ticked in seven of eight ordinary sentences. A homophone can still be a different real
@@ -353,21 +354,31 @@ public enum GlossaryCorrector {
     }
 
     /// Whether `heard`, in a window, may be a mishearing of the term's `meant`: it sounds like it
-    /// (`MandarinSound`) — and, where the sound is only near rather than the same, it is not the
-    /// term's first character with a surname on either side (F916): 程经理 is not 陈经理, nor is 宁总
-    /// 林总 — an accent's near sound is as likely another person as a mishearing, and renaming a
-    /// person is the worse error (F921). Either side, since the list is `ChinesePersonName`'s
-    /// hundred: 宁 is not on it, 林 is.
+    /// (`MandarinSound`), it is no numeral, and, where the sound is only near rather than the same,
+    /// it is not the term's first character with a surname on either side (F916).
+    ///
+    /// A numeral the recognizer wrote is kept, however alike it sounds: 四 (si) near 十 and 市 (shi)
+    /// made 我们四月见 October and 四场比赛 a market, and an exact homophone is no safer (十间 for
+    /// 时间, both shi). A word heard for a numeral of the term's (周无 for 周五) is still proposed.
+    ///
+    /// 程经理 is not 陈经理, nor is 宁总 林总: an accent's near sound is as likely another person as a
+    /// mishearing, and renaming a person is the worse error (F921). Either side, since the list is
+    /// `ChinesePersonName`'s hundred: 宁 is not on it, 林 is.
     private static func mayStandIn(
         _ heard: Character, for meant: Character, leading: Bool, sounds: inout [Character: String]
     ) -> Bool {
-        guard MandarinSound.isHomophone(heard, of: meant, cache: &sounds) else { return false }
+        guard !chineseNumerals.contains(heard),
+              MandarinSound.isHomophone(heard, of: meant, cache: &sounds) else { return false }
         if leading, ChinesePersonName.surnames.contains(heard) || ChinesePersonName.surnames.contains(meant),
            !MandarinSound.isExactHomophone(heard, of: meant, cache: &sounds) {
             return false
         }
         return true
     }
+
+    /// The characters that write a number, everyday and financial forms: a sound-alike row never
+    /// changes one (F916).
+    private static let chineseNumerals: Set<Character> = Set("〇零一二两三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟")
 
     /// Whether `common` characters in place are enough for a Chinese term of `length` characters:
     /// more than half, as F536 asked, except one in two for a two-character term (F817).
