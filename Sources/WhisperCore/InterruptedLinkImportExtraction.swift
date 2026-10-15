@@ -29,7 +29,9 @@ import Foundation
 /// left behind removes only a temp file whose lock it can take, which is one no run in any process
 /// is holding: the kernel releases a dead process's lock, so an abandoned file is always free, and a
 /// running one never is. Two runs that both finish leave the folder holding whichever renamed last,
-/// and both are complete conversions of the same download with the same options.
+/// and both are complete conversions of the same download with the same options. On a volume that
+/// cannot lock, the temp is created unlocked and named for its process, and the sweep asks the
+/// owner, the file's age and the kernel instead (`removeAbandonedTemporaryFiles`, F976).
 ///
 /// A run still going when its `timeLimit` passes is killed — SIGKILL to its process group
 /// (`ProcessGroupRunner.kill()`) — and throws `extractionTimedOut`. Not the SIGTERM a cancellation
@@ -51,9 +53,27 @@ public enum InterruptedLinkImportExtraction {
         name.hasPrefix(temporaryFilenamePrefix + ".") && name.lowercased().hasSuffix(".wav")
     }
 
-    /// The temporary file of one run (F945).
-    static func temporaryFilename(forRun run: UUID) -> String {
-        "\(temporaryFilenamePrefix).\(run.uuidString).wav"
+    /// The temporary file of one run (F945): `recording.extracting.<owner process ID>-<run>.wav`. The
+    /// owner is in the name for the sweep on a volume without `flock` (F976), which cannot ask the
+    /// lock whether a run is still writing the file.
+    static func temporaryFilename(forRun run: UUID, owner: pid_t = getpid()) -> String {
+        "\(temporaryFilenamePrefix).\(owner)-\(run.uuidString).wav"
+    }
+
+    /// The process that made the temporary file called `name`, or nil when `name` does not carry one:
+    /// the single `recording.extracting.wav`, and the `recording.extracting.<run>.wav` builds between
+    /// F945 and F976 wrote, name no owner. Strict, as `OwnedTemporaryFolders.owner(of:prefix:)` is: a
+    /// positive decimal ID with no sign or leading zero, a dash, and an upper-case UUID.
+    static func temporaryFileOwner(_ name: String) -> pid_t? {
+        let prefix = temporaryFilenamePrefix + "."
+        guard name.hasPrefix(prefix), name.hasSuffix(".wav") else { return nil }
+        let stem = String(name.dropFirst(prefix.count).dropLast(4))
+        guard let dash = stem.firstIndex(of: "-") else { return nil }
+        let digits = stem[..<dash]
+        let uuidText = String(stem[stem.index(after: dash)...])
+        guard let owner = pid_t(digits), owner > 0, String(owner) == digits,
+              UUID(uuidString: uuidText)?.uuidString == uuidText else { return nil }
+        return owner
     }
 
     /// Converts `download` into `recording.wav` beside it and returns that file's URL.
@@ -193,16 +213,67 @@ extension InterruptedLinkImportExtraction {
     /// it until it has renamed or removed it, in whatever process it runs, and the kernel releases a
     /// dead process's lock. So a file whose lock this can take has no run left to finish it, and one
     /// whose lock is held is left alone, as is one this cannot open. The single name earlier builds
-    /// wrote carries no lock, so it always reads as abandoned.
-    static func removeAbandonedTemporaryFiles(in directory: URL) {
+    /// wrote carries no lock, so it always reads as abandoned. On a volume without `flock`, where no
+    /// run holds a lock (`createTemporaryFile`), a file is removed only when its owner is gone, it has
+    /// stopped growing and no process has it open (F976, in the body).
+    ///
+    /// - Parameter tryLock: takes the file's exclusive lock without waiting; 0 when it did, else the
+    ///   `errno` `flock(2)` gave. A test answers `ENOTSUP` to stand for a volume without locking.
+    /// - Parameter openState: how a file is asked whether any process has it open (F946); nil asks
+    ///   the kernel.
+    /// - Parameter processExists: whether the process named in a file's name is still running.
+    /// - Parameter now: the clock a file's age is measured against.
+    static func removeAbandonedTemporaryFiles(
+        in directory: URL,
+        tryLock: (Int32) -> Int32 = systemTryLock,
+        openState: ((URL) -> RecordingFolderLiveness.OpenState)? = nil,
+        processExists: (pid_t) -> Bool = OwnedTemporaryFolders.processExists,
+        now: Date = Date()
+    ) {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+        let current = getpid()
         for name in names where isTemporaryFile(named: name) {
-            let path = directory.appendingPathComponent(name).path
+            let url = directory.appendingPathComponent(name)
+            let path = url.path
             let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
             guard descriptor >= 0 else { continue }
-            if flock(descriptor, LOCK_EX | LOCK_NB) == 0 { unlink(path) }
-            AdvisoryLockDescriptor.unlockAndClose(descriptor)
+            defer { AdvisoryLockDescriptor.unlockAndClose(descriptor) }
+            let lock = tryLock(descriptor)
+            if lock == 0 {
+                unlink(path)
+                continue
+            }
+            // Held by a running conversion (`EWOULDBLOCK`), or any answer but "this volume cannot
+            // lock": kept.
+            guard lock == ENOTSUP || lock == EOPNOTSUPP else { continue }
+            // F976: on a volume without `flock` the lock says nothing, so three other signs must all
+            // say abandoned, each one fail-closed on its own. The process the name records (F976 put it
+            // there; a name from an earlier build records none) must be gone — this process is never
+            // swept; the file must not have grown for `abandonedTemporaryFileAge`, since a conversion
+            // writes its output as it goes and one that writes nothing for a minute is killed by its
+            // own output watch (F912); and the kernel must say no process has it open (F946; `.unknown`
+            // keeps it). The owner is checked first and the kernel last, because the kernel's answer
+            // costs up to about 0.34 s a file and the other two cost nothing.
+            if let owner = temporaryFileOwner(name), owner == current || processExists(owner) { continue }
+            guard let modified = (try? FileManager.default.attributesOfItem(atPath: path)[.modificationDate]) as? Date,
+                  now.timeIntervalSince(modified) >= abandonedTemporaryFileAge else { continue }
+            let state = openState.map { $0(url) } ?? RecordingFolderLiveness.openState(of: path)
+            guard state == .notHeld else { continue }
+            unlink(path)
         }
+    }
+
+    /// How long a conversion's temp file must have gone without growing before the sweep on a volume
+    /// without `flock` may take it for abandoned (F976): ten times the minute after which a conversion
+    /// whose output stops growing is killed by its own watch (`finish(outputStallTimeout:)`, which the
+    /// app sets to 60 s), so a file this old has no run writing it in any process that bounds its
+    /// runs — and an older build's run, which does not, holds the file open, which the kernel probe
+    /// sees. Where the lock works it alone decides, and this is never consulted.
+    static let abandonedTemporaryFileAge: TimeInterval = 600
+
+    /// `flock(2)` with `LOCK_EX | LOCK_NB` on `descriptor`: 0 when the lock was taken, else `errno`.
+    static func systemTryLock(_ descriptor: Int32) -> Int32 {
+        flock(descriptor, LOCK_EX | LOCK_NB) == 0 ? 0 : errno
     }
 }
 
