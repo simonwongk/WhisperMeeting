@@ -33,7 +33,7 @@ import Testing
 //   the term's words as whole words (one for three words, two for four or five); a term of four or
 //   more words is then not compared with such a line at all, a three-word term keeps its three.
 // - F972 fourth: a three-word term on such a line is compared with its four-word windows too, but
-//   only where one of up to three words already scored for it (round 2 of Wave 7, F968's stray word).
+//   only where a window of up to three words already scored for it (round 2 of Wave 7, F968's stray word).
 
 private struct Amendments {
     var f819 = true
