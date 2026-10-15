@@ -87,7 +87,7 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// F972's gate, measured the same way with other work sharing the Mac: 5.18 s → 3.32 s with those
 /// 353 terms (their rows 2,696 → 16, the chance matches gone and the probe's 16 real mishearings
 /// kept); 4.71 s → 3.45 s with 50 phrases of 10–20 words on 10–21-word lines; 27.58 s → 13.62 s on
-/// 40–80-word lines (`.claude/wave7/gates/F972-cost-{before,after}.log`).
+/// 40–80-word lines (F972's closure).
 public enum GlossaryCorrector {
     static let similarityThreshold = 0.5
     static let maxWindow = 3

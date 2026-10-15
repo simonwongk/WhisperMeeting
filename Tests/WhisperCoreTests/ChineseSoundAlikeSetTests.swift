@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import WhisperCore
 
-// The Wave 5 review's measurement of F817 (`.claude/wave5/rev-T-logs/probes-1-revt.txt`): 40 everyday
+// The Wave 5 review's measurement of F817 (in F817's closure): 40 everyday
 // Chinese sentences that contain words sounding like one of 30 terms, with the app's evidence. It
 // gave 15 wrong rows, none a mishearing. F921 and F916 were measured on it with this Mac's real
-// NLTokenizer (`.claude/wave7/gates/F921-probe-*.log`, `F916-green.log`): 15 → 10 (no row for a
+// NLTokenizer (their closures): 15 → 10 (no row for a
 // two-character person's name) → 13 (near-homophones admitted, three more rows on sentences that
 // already had one). This pins that trade-off, so a change to the sound rules moves it on purpose.
 //
@@ -29,7 +29,7 @@ private let sentences = [
     "进度有点慢", "期待你的回复", "时常有人来问", "试一试再说", "市场部的同事",
 ]
 
-/// Every word NLTokenizer found in the sentences and the terms (gates/F921-probe-seg40.log): the
+/// Every word NLTokenizer found in the sentences and the terms (recorded for F921): the
 /// names 张伟, 刘洋, 王芳 and 李明 as surname | given name, 周五 and the other words whole.
 private let recordedWords: Set<String> = [
     "一", "一下", "三点", "上线", "上限", "下午", "下周", "不", "不要", "丰富", "主人", "主任", "之前", "了", "事件", "事情",

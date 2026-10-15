@@ -13,7 +13,7 @@ import Foundation
 /// A name is told from a word by the segmenter the app passes (`CJKWordEvidence.segmenter`,
 /// NLTokenizer): it reads a two-character name as surname | given name (张 | 伟, 刘 | 洋, 王 | 芳,
 /// 李 | 明) and a word that begins with a surname character whole (周五, 王国, 李子, 马上, 高兴).
-/// Measured before this was written (`.claude/wave7/gates/F921-probe-terms.log`). A three-character
+/// Measured before this was written (F921's closure). A three-character
 /// name does not separate so — NLTokenizer reads 伟明 in 张伟明 as one word, as it reads 经理 in
 /// 张经理 — so this is for two characters only. With no segmenter nothing can tell, and no term is
 /// a name.

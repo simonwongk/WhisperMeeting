@@ -228,7 +228,9 @@ private enum PreF536GlossaryCorrector {
     static func endsWithAPossessive(_ text: String) -> Bool {
         let characters = Array(text)
         guard characters.count > 2 else { return false }
-        return ["'", "\u{2019}"].contains(characters[characters.count - 2]) && characters[characters.count - 1].lowercased() == "s"
+        // Typed: the CI runner's Swift 6.1 infers a bare array literal's element type less well.
+        let apostrophes: Set<Character> = ["'", "\u{2019}"]
+        return apostrophes.contains(characters[characters.count - 2]) && characters[characters.count - 1].lowercased() == "s"
     }
 
     /// F820 no-op: whether applying `proposal` alone leaves `segment`'s text as it was — asked of
