@@ -75,8 +75,10 @@ func redactionLeavesNoSegmentOfASpacedOrNonASCIIPath() {
         #expect(f791Leaks(in: json).filter { $0 != "/" } == [], "bundle errorMessage from \(path): \(json)")
         #expect(f791Leaks(in: log) == [], "public log from \(path): \(log)")
         #expect(f791Leaks(in: diagnostic) == [], "diagnostic from \(path): \(diagnostic)")
-        // A path that ends in a name it recognises is replaced alone, so the reason survives.
-        #expect(log == "Could not import <path>: the file is not playable.", "\(log)")
+        // F896: the reason after the path goes with it. A name can go on past a known extension
+        // ("notes.txt draft", "Q3.wav, final"), so only a closing quote or the end of the line now
+        // ends a path there — this message has neither after the name.
+        #expect(log == "Could not import <path>…", "\(log)")
     }
 }
 
@@ -124,24 +126,57 @@ func redactionKeepsATracebackReadable() {
 func redactionPunctuationAfterAnExtensionStillChecksForALaterSlash() {
     // The whitespace case already refused to end at an extension with a later `/` on the line; the
     // punctuation case did not, so a folder whose name holds ".wav," leaked every name after it.
+    // F896 widened the cut: punctuation and whitespace after an extension no longer end a path at
+    // all, so the trailing words go too. What these pin is still that no later name leaks.
     #expect(DiagnosticsBundleBuilder.redactPaths("open /Users/jane/Q3.wav, notes/Board Meeting Q3.wav: denied")
-            == "open <path>: denied")
+            == "open <path>…")
     #expect(DiagnosticsBundleBuilder.redactPaths("open /Users/jane/Q3.wav: Board Meeting Q3/x.wav: denied")
-            == "open <path>: denied")
+            == "open <path>…")
     #expect(DiagnosticsBundleBuilder.redactPaths("open /Users/jane/Q3 (draft.txt)/Board Meeting.wav failed")
-            == "open <path> failed")
+            == "open <path>…")
 }
 
 @Test("An absolute path whose first folder has a space, or with one slash, is a path too (F791)")
 func redactionCatchesAbsolutePathsTheTwoComponentRuleMissed() {
     // A path started only at a `/` followed by a space-free component and another `/`, so these
     // were never seen at all, by this scanner or by the F141 pattern before it.
+    // (F896: ": denied" no longer survives either — see redactionEndsAPathOnlyAtAQuoteOrTheLineEnd.)
     #expect(DiagnosticsBundleBuilder.redactPaths("Could not open /My Files/Board Q3/x.wav: denied")
-            == "Could not open <path>: denied")
+            == "Could not open <path>…")
     #expect(DiagnosticsBundleBuilder.redactPaths("Could not open /Board Q3 Review.wav: denied")
-            == "Could not open <path>: denied")
+            == "Could not open <path>…")
     // Still not paths: a `/` inside a word, and one followed by a space.
     for text in ["ratio 3/4 and read/write ok", "50%| 5/10 [00:01<00:01, 3.2it/s]", "and/or", "a / b"] {
         #expect(DiagnosticsBundleBuilder.redactPaths(text) == text)
     }
+}
+
+// MARK: - F896: a name that contains a known extension mid-name
+
+@Test("A known extension ends a path only before a closing quote or the end of the line, so a name that goes on past one leaks nothing (F896)")
+func redactionEndsAPathOnlyAtAQuoteOrTheLineEnd() {
+    // F791 ended a path at a known extension followed by whitespace or punctuation; a name can hold
+    // either ("notes.txt draft", "Q3.wav, final"), so the rest of the name reached the log.
+    #expect(DiagnosticsBundleBuilder.redactPaths("Could not open /Users/jane/notes.txt draft: denied")
+            == "Could not open <path>…")
+    #expect(DiagnosticsBundleBuilder.redactPaths("Could not open /Users/jane/Q3.wav, final: denied")
+            == "Could not open <path>…")
+    #expect(DiagnosticsBundleBuilder.redactPaths("Could not open /Users/jane/Q3.wav.")
+            == "Could not open <path>")
+    // What still ends a path: a closing quote — a traceback's or Foundation's quoted path, also as
+    // the escaped quote of a `String(describing:)` payload — and the end of the line.
+    #expect(DiagnosticsBundleBuilder.redactPaths(#"  File "/Users/jane/notes.txt draft.py", line 3"#)
+            == #"  File "<path>", line 3"#)
+    #expect(DiagnosticsBundleBuilder.redactPaths(#"Error: \"/Users/jane/Q3.wav\" is missing"#)
+            == #"Error: \"<path>\" is missing"#)
+    #expect(DiagnosticsBundleBuilder.redactPaths("open /Users/jane/Q3.wav") == "open <path>")
+}
+
+@Test("A path after a backtick or an arrow is a path, and a backticked path ends at its backtick (F896)")
+func redactionSeesAPathAfterABacktickOrAnArrow() {
+    // Neither was a word break, so an absolute path whose first folder holds a space was not seen at
+    // all after one (the F896 review's probes), and a backticked path lost its opening backtick.
+    #expect(DiagnosticsBundleBuilder.redactPaths("see `/My Files/Q3.wav` now") == "see `<path>` now")
+    #expect(DiagnosticsBundleBuilder.redactPaths("see `/Users/jane/Q3.wav` now") == "see `<path>` now")
+    #expect(DiagnosticsBundleBuilder.redactPaths("stage →/My Files/Q3.wav now") == "stage →<path>…")
 }

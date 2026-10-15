@@ -17,8 +17,10 @@ func publicLogDescriptionRedactsPaths() {
     )
     let redacted = DiagnosticsBundleBuilder.publicLogDescription(error)
     #expect(!redacted.contains("/Users/"))
-    #expect(redacted.contains("<path>"))
-    #expect(redacted.contains("does not exist"))
+    // F896: the words after the path go with it. "does not exist" used to survive because `.wav`
+    // followed by a space ended the path there, and a name can go on past a known extension
+    // ("notes.txt draft") — so the end of a bare path on a line is no longer trusted.
+    #expect(redacted == "The file couldn’t be opened because <path>…", "\(redacted)")
 }
 
 @Test("Public log description leaves path-free error text untouched")

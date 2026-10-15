@@ -102,9 +102,9 @@ public enum DiagnosticsBundleBuilder {
         return output + redactingPaths(inLine: line)
     }
 
-    /// The extensions a path may end at without taking the rest of its line (F791): the audio and
-    /// video an import or a recording can be, and what the library and its runtimes keep beside them.
-    /// One missing from here only redacts more.
+    /// The extensions a path may end at without taking the rest of its line (F791) — before a closing
+    /// quote or the end of the line only (F896): the audio and video an import or a recording can be,
+    /// and what the library and its runtimes keep beside them. One missing from here only redacts more.
     static let recognisedExtensions: Set<String> = [
         "wav", "wave", "m4a", "mp3", "mp4", "m4v", "mov", "webm", "mkv", "avi", "aac", "flac", "ogg",
         "oga", "opus", "caf", "aif", "aiff", "amr", "3gp",
@@ -113,17 +113,21 @@ public enum DiagnosticsBundleBuilder {
     ]
 
     /// Characters that end a word, besides whitespace — where a path's word starts. Shared with
-    /// `CrashReportDigest`, which cuts its free text at the first path-like word.
+    /// `CrashReportDigest`, which cuts its free text at the first path-like word. A backtick and an
+    /// arrow are here since F896: a log line writes a path as `` `/My Files/…` `` or `→/My Files/…`,
+    /// and before them an absolute path whose first folder held a space was not seen at all.
     static let pathWordBreaks: Set<Character> = [
         "=", ":", ",", ";", "(", ")", "[", "]", "{", "}", "<", ">", "|",
-        "\"", "'", "“", "”", "‘", "’", "«", "»", "「", "」", "『", "』",
+        "\"", "'", "“", "”", "‘", "’", "«", "»", "「", "」", "『", "』", "`", "→",
     ]
 
-    /// What may follow a recognised extension and end the path there without a later-`/` check:
-    /// closing quotes and brackets, separators, and the backslash of an escaped quote in a
-    /// `String(describing:)` payload.
-    private static let pathEndPunctuation: Set<Character> = [
-        "\"", "'", "’", "”", "»", "」", "』", ")", "]", "}", ">", ",", ";", ":", "|", "\\", "`",
+    /// The one thing besides the end of the line that may follow a recognised extension and end the
+    /// path there: a closing quote (F896). Whitespace and punctuation used to as well, and a file name
+    /// can go on past either — "notes.txt draft", "Q3.wav, final" — so the rest of such a name reached
+    /// the log. A quote is kept because a quoted path is how a traceback (`File "…"`) and Foundation
+    /// name a file, and it is the one ending a name holding a known extension is not seen to run past.
+    private static let pathClosingQuotes: Set<Character> = [
+        "\"", "'", "’", "”", "»", "」", "』", "`",
     ]
 
     private static func isPathWordBreak(_ character: Character) -> Bool {
@@ -186,7 +190,9 @@ public enum DiagnosticsBundleBuilder {
     }
 
     /// Where a path starting at `start` ends, when that can be recognised: just after the first
-    /// recognised extension that nothing more of a name can follow. Nil means it cannot be.
+    /// recognised extension that is followed by a closing quote — plain, or escaped as `\"` inside a
+    /// `String(describing:)` payload — or by nothing at all. Nil means it cannot be, and the caller
+    /// takes the rest of the line (F896): a name may hold a known extension and go on.
     private static func recognisedPathEnd(in line: [Character], from start: Int) -> Int? {
         let count = line.count
         var dot = start
@@ -198,12 +204,11 @@ public enum DiagnosticsBundleBuilder {
             guard end > dot + 1,
                   recognisedExtensions.contains(String(line[(dot + 1)..<end]).lowercased()) else { continue }
             guard end < count else { return end }
-            let next = line[end]
-            let endsASentence = ".!?".contains(next) && (end + 1 == count || line[end + 1].isWhitespace)
+            var next = line[end]
+            if next == "\\", end + 1 < count { next = line[end + 1] }
             // A later `/` means this may be a folder in the middle of a longer path, whatever follows
-            // the extension: a name can hold punctuation as well as spaces ("Q3.wav, notes/…").
-            if next.isWhitespace || endsASentence || pathEndPunctuation.contains(next),
-               !line[end...].contains("/") {
+            // the extension: a name can hold a quote as well as spaces ("Q3.wav" notes/…).
+            if pathClosingQuotes.contains(next), !line[end...].contains("/") {
                 return end
             }
         }

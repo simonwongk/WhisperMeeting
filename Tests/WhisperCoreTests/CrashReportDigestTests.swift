@@ -171,6 +171,10 @@ func crashReportDigestCutsFreeTextAtItsFirstPath() throws {
          "Foundation: cannot open <path>…"),
         ("Foundation", "cannot open /Users/jane/Library/Mobile Documents/com~apple~CloudDocs/Meetings/Q3 Plan.wav",
          "Foundation: cannot open <path>…"),
+        // F896: a backtick is a word break in the set this shares with `redactPaths`, so the cut
+        // starts at the path and keeps the backtick that opened it.
+        ("Foundation", "cannot open `/Volumes/Client Share/Acme/Q3 Board.wav`",
+         "Foundation: cannot open `<path>…"),
     ]
     for fixture in fixtures {
         let digest = try digestOf(asi: fixture.message, image: fixture.image)
