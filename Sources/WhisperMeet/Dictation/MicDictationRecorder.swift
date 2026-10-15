@@ -251,8 +251,11 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
 
     /// Which failure an empty capture actually was (F368).
     ///
-    /// Pure, and separate from `stop()` because `stop()` cannot run without a device: this is the
-    /// rule, and `stop()` below is its only caller.
+    /// Pure, and separate from `stop()`, so each verdict is a row tested on its own
+    /// (`theEmptyCaptureVerdictDistinguishesSilenceFromLoss`) rather than through a capture that
+    /// had to be starved or fed through the tap. `stop()` itself runs without a device in tests
+    /// (after `setRecordingForTesting()` or the DEBUG hardware step); this is the rule, and `stop()`
+    /// below is its only caller.
     static func emptyCaptureFailure(droppedChunks: Int) -> RecorderError {
         droppedChunks > 0 ? .audioConversionFailed(droppedChunks: droppedChunks) : .noAudioCaptured
     }
