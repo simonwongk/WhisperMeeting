@@ -58,7 +58,7 @@ private func makeModel() throws -> (model: AppModel, id: UUID, gate: Gate) {
     let id = UUID()
     model.store.upsert(MeetingRecord(
         id: id, title: "Held", recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
-        status: .completed, transcriptText: "held", segments: [seg("held", 0, 2)],
+        status: .completed, transcriptText: TranscriptFormatter.timestamped([seg("held", 0, 2)]), segments: [seg("held", 0, 2)],
         transcriptionEngine: .whisperLarge
     ))
     let gate = Gate()

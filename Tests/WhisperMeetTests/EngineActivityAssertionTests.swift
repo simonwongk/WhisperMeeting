@@ -131,7 +131,7 @@ func secondOpinionReleasesActivityOnSuccess() async throws {
     let id = UUID()
     model.store.upsert(MeetingRecord(
         id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
-        status: .completed, transcriptText: "hello", segments: [seg("hello", 0, 1)]
+        status: .completed, transcriptText: TranscriptFormatter.timestamped([seg("hello", 0, 1)]), segments: [seg("hello", 0, 1)]
     ))
     model.runTranscriptionEngineOverride = { _, _ in
         TranscriptionResult(id: "x", text: "hello", languageCode: "en", audioDuration: 1, confidence: nil, segments: [seg("hello", 0, 1)])
@@ -167,7 +167,7 @@ func secondOpinionReleasesActivityOnCancellation() async throws {
     let id = UUID()
     model.store.upsert(MeetingRecord(
         id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
-        status: .completed, transcriptText: "hello", segments: [seg("hello", 0, 1)]
+        status: .completed, transcriptText: TranscriptFormatter.timestamped([seg("hello", 0, 1)]), segments: [seg("hello", 0, 1)]
     ))
     let probe = RunProbe()
     model.runTranscriptionEngineOverride = { _, _ in

@@ -2027,6 +2027,11 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Why Second Opinion, Correct Toward Vocabulary or Apply Replacement Rules refused a hand-edited
+    /// transcript (F874): each proposes against the stored lines, which no longer describe the text.
+    /// The Improve menu greys all three for the same reason, and its footnote starts the same way.
+    static let improveToolRefusedForEdits = "Unavailable after manual edits — this tool works on the original transcription, and this transcript was edited by hand."
+
     /// Kick off a second opinion (F88); guarded so it never runs alongside a transcription or another
     /// auxiliary pass. The heavy work is in `computeSecondOpinion`, which tests await directly.
     ///
@@ -2045,6 +2050,12 @@ final class AppModel: ObservableObject {
         // Guarded here as well as in the worker, so the refusal is one immediate message rather than
         // one raised from inside a detached task after the engine flag was already claimed (F187).
         guard libraryAcceptsChanges("Requesting a second opinion") else { return false }
+        // F874: the menu greys this for an edited transcript; refused here too, so no other caller
+        // can compare the original lines and offer them for Replace (which refuses an edited one).
+        if let meeting = store.meeting(id: id), store.isTranscriptEdited(meeting) {
+            alertMessage = Self.improveToolRefusedForEdits
+            return false
+        }
         secondOpinionFailed = false
         secondOpinionFailureReason = nil
         secondOpinionSpans = nil
@@ -2092,6 +2103,12 @@ final class AppModel: ObservableObject {
         }
         guard !meeting.segments.isEmpty else {
             failSecondOpinion(Self.secondOpinionNeedsTimestampsMessage)
+            return
+        }
+        // F874: before the engine, as `requestSecondOpinion` refuses — a whole second pass compared
+        // against lines that no longer describe the text, every Replace of which would be refused.
+        guard !store.isTranscriptEdited(meeting) else {
+            failSecondOpinion(Self.improveToolRefusedForEdits)
             return
         }
         secondOpinionFailed = false
@@ -6629,6 +6646,12 @@ final class AppModel: ObservableObject {
     /// Returns nil when cancelled, or when a pass is already running.
     func proposeGlossaryCorrections(for id: UUID) async -> [GlossaryCorrection]? {
         guard glossaryCorrectionRun == nil, let meeting = store.meeting(id: id) else { return nil }
+        // F874: the menu greys this for an edited transcript; refused here too, so no other caller
+        // can propose against lines that no longer describe the text.
+        guard !store.isTranscriptEdited(meeting) else {
+            alertMessage = Self.improveToolRefusedForEdits
+            return nil
+        }
         // Local matching, not a prompt: it must see EVERY stored term, so it stays on the full list (F187).
         let input = GlossaryCorrectionInput(
             vocabulary: store.vocabulary, segments: meeting.segments, evidence: cjkWordEvidence
@@ -6717,6 +6740,11 @@ final class AppModel: ObservableObject {
     /// a row is a line number and a phrase, so proposals made over the old lines are offered nowhere.
     func replacementRuleCorrections(for id: UUID) async -> [GlossaryCorrection]? {
         guard replacementRuleRunID == nil, let meeting = store.meeting(id: id) else { return nil }
+        // F874: as Correct Toward Vocabulary refuses.
+        guard !store.isTranscriptEdited(meeting) else {
+            alertMessage = Self.improveToolRefusedForEdits
+            return nil
+        }
         let input = ReplacementRuleInput(rules: store.replacementRules, segments: meeting.segments, evidence: cjkWordEvidence)
         replacementRuleRunID = id
         defer { replacementRuleRunID = nil }

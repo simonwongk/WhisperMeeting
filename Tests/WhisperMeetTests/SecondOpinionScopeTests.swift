@@ -36,7 +36,7 @@ func secondOpinionRunningStateIsScopedToMeeting() async throws {
     for id in [id1, id2] {
         model.store.upsert(MeetingRecord(
             id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
-            status: .completed, transcriptText: "hi", segments: [seg("hi", 0, 1)], transcriptionEngine: .whisperLarge
+            status: .completed, transcriptText: TranscriptFormatter.timestamped([seg("hi", 0, 1)]), segments: [seg("hi", 0, 1)], transcriptionEngine: .whisperLarge
         ))
     }
     model.runTranscriptionEngineOverride = { _, _ in

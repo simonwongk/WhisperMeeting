@@ -23,7 +23,7 @@ func secondOpinionSignalsFailure() async throws {
     let id = UUID()
     model.store.upsert(MeetingRecord(
         id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
-        status: .completed, transcriptText: "hello", segments: [seg("hello", 0, 1)]
+        status: .completed, transcriptText: TranscriptFormatter.timestamped([seg("hello", 0, 1)]), segments: [seg("hello", 0, 1)]
     ))
     struct EngineDown: Error {}
     model.runTranscriptionEngineOverride = { _, _ in throw EngineDown() }
@@ -44,7 +44,7 @@ func secondOpinionUsesMeetingEngineSnapshot() async throws {
     // The meeting was transcribed with Whisper Large; record that on the meeting.
     model.store.upsert(MeetingRecord(
         id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
-        status: .completed, transcriptText: "hello", segments: [seg("hello", 0, 1)],
+        status: .completed, transcriptText: TranscriptFormatter.timestamped([seg("hello", 0, 1)]), segments: [seg("hello", 0, 1)],
         transcriptionEngine: .whisperLarge
     ))
     model.selectedEngine = .whisperLarge // current Settings happen to match the meeting's engine

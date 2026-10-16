@@ -69,7 +69,7 @@ func beginTranscriptionNeverStartsDuringAuxiliaryRun() async throws {
     let id1 = UUID()
     model.store.upsert(MeetingRecord(
         id: id1, title: "A", recordingPath: "Recordings/\(id1.uuidString)/meeting.wav",
-        status: .completed, transcriptText: "hello", segments: [seg("hello", 0, 1)]
+        status: .completed, transcriptText: TranscriptFormatter.timestamped([seg("hello", 0, 1)]), segments: [seg("hello", 0, 1)]
     ))
     let id2 = UUID()
     model.store.upsert(MeetingRecord(id: id2, title: "B", status: .recorded))

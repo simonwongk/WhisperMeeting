@@ -378,7 +378,7 @@ func auxiliaryMeetingCompletionRewarmsDictationRecognition() async throws {
         title: "Synthetic",
         recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
         status: .completed,
-        transcriptText: "hello",
+        transcriptText: TranscriptFormatter.timestamped([segment]),
         segments: [segment],
         transcriptionEngine: .whisperLarge
     ))
