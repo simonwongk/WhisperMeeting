@@ -118,6 +118,24 @@ func nearHomophoneNeverReplacesALeadingSurname() {
     ])
 }
 
+@Test("An exact-sound surname at a term's start never renames a person either: 章经理 is not proposed as 张经理 (F1002)")
+func exactHomophoneNeverReplacesALeadingSurname() {
+    // F916 refused a near sound at a term's leading surname; an exact one still proposed a rename,
+    // since F817's exact-homophone rows predate that guard: 章 and 张 both read zhang, and 章经理 is
+    // another person as surely as 程经理 is (F921's round-2 probe). 章 is not on the surname list
+    // and 张 is, so either side being on it is what refuses the row, as for a near sound.
+    let vocabulary = ["张经理", "陈经理", "周五"]
+    let segments = [
+        seg("章经理来了"), seg("对，张经里"), seg("陈经里明天来"), seg("我们周无见"), seg("晨经理明天来"),
+    ]
+    // The rest of the term is still a mishearing like any other: 经里 for 经理, 无 for 五.
+    #expect(GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments) == [
+        GlossaryCorrection(segmentIndex: 1, from: "张经里", to: "张经理"),
+        GlossaryCorrection(segmentIndex: 2, from: "陈经里", to: "陈经理"),
+        GlossaryCorrection(segmentIndex: 3, from: "周无", to: "周五"),
+    ])
+}
+
 @Test("A sound-alike row never changes a numeral in the transcript (F916)")
 func soundAlikeRowsNeverChangeANumeral() {
     // F916's table made 四 (si) sound like 十 and 市 (shi), so 我们四月见 was proposed as October and

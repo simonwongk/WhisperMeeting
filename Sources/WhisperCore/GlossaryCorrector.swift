@@ -58,7 +58,8 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// position — one of two for a two-character term, since F817 (`enoughInPlace`) — and every
 /// character it gets wrong must sound like the term's, or nearly, by the accent confusions
 /// `MandarinSound` folds (zh/z, sh/s/x, n/l, in/ing…, F916), though a near sound never stands
-/// for a term's leading surname (程经理 is not 陈经理), no numeral is changed (四月 is not 十月)
+/// for a term's leading surname, nor does an exact one (程经理 and 章经理 are not 陈经理 and 张经理,
+/// F1002), no numeral is changed (四月 is not 十月)
 /// and no window that is itself a term is
 /// proposed (公司 is not 公式 when both are listed): matching two of three
 /// characters in place also fits 王经理 for 张经理 and 数据集 for 数据库, which the review of F536
@@ -370,8 +371,8 @@ public enum GlossaryCorrector {
     }
 
     /// Whether `heard`, in a window, may be a mishearing of the term's `meant`: it sounds like it
-    /// (`MandarinSound`), it is no numeral, and, where the sound is only near rather than the same,
-    /// it is not the term's first character with a surname on either side (F916).
+    /// (`MandarinSound`), it is no numeral, and it is not the term's first character with a surname
+    /// on either side — near sound (F916) or the same sound (F1002).
     ///
     /// A numeral the recognizer wrote is kept, however alike it sounds: 四 (si) near 十 and 市 (shi)
     /// made 我们四月见 October and 四场比赛 a market, and an exact homophone is no safer (十间 for
@@ -379,14 +380,19 @@ public enum GlossaryCorrector {
     ///
     /// 程经理 is not 陈经理, nor is 宁总 林总: an accent's near sound is as likely another person as a
     /// mishearing, and renaming a person is the worse error (F921). Either side, since the list is
-    /// `ChinesePersonName`'s hundred: 宁 is not on it, 林 is.
+    /// `ChinesePersonName`'s hundred: 宁 is not on it, 林 is. And 章经理 is not 张经理 (F1002): both
+    /// read zhang exactly, and another surname that sounds the same is no less another person — the
+    /// guard was first written for near sounds only, so F817's exact-homophone rows still renamed.
+    /// 章 is not on the list and 张 is, which is why either side counts. A term that begins with a
+    /// surname character but is no name (周五, 方案) loses the row for a mishearing of that first
+    /// character only; the rest of it is still proposed (周无 → 周五).
     private static func mayStandIn(
         _ heard: Character, for meant: Character, leading: Bool, sounds: inout [Character: String]
     ) -> Bool {
         guard !chineseNumerals.contains(heard),
               MandarinSound.isHomophone(heard, of: meant, cache: &sounds) else { return false }
-        if leading, ChinesePersonName.surnames.contains(heard) || ChinesePersonName.surnames.contains(meant),
-           !MandarinSound.isExactHomophone(heard, of: meant, cache: &sounds) {
+        if leading, heard != meant,
+           ChinesePersonName.surnames.contains(heard) || ChinesePersonName.surnames.contains(meant) {
             return false
         }
         return true
