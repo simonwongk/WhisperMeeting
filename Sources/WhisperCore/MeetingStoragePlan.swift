@@ -13,10 +13,15 @@ public enum MeetingStoragePlan {
         /// one iCloud's Optimize Storage evicted, or a File Provider placeholder — which takes no space
         /// on disk and still holds its whole recording elsewhere.
         public let logicalBytes: Int64?
-        public init(name: String, bytes: Int64, logicalBytes: Int64? = nil) {
+        /// Which file it was when it was listed — volume, inode, size and modification time — when that was read
+        /// (F1005). A same-size rewrite in place moves the modification time; an atomic replace moves the inode.
+        public let identity: InterruptedLinkImportExtraction.FileIdentity?
+        public init(name: String, bytes: Int64, logicalBytes: Int64? = nil,
+                    identity: InterruptedLinkImportExtraction.FileIdentity? = nil) {
             self.name = name
             self.bytes = bytes
             self.logicalBytes = logicalBytes
+            self.identity = identity
         }
 
         /// Whether it holds nothing: no bytes on disk, and no logical length either (F949).
@@ -312,11 +317,13 @@ public enum MeetingStoragePlan {
 
     /// What Shrink's delete step removes now (F949): `removableFiles` of a listing taken just before the
     /// removal (`current`), but only the files the checks ran on (`measured`, the listing `DiskFacts`
-    /// was read from) and as they were then — the same name, size on disk and logical length. A file
+    /// was read from) and as they were then — the same name, size on disk and logical length, and, where the
+    /// measured listing read it, the same file: volume, inode, size and modification time (F1005). A file
     /// that appeared or changed in between was never measured: F911's check that it holds no more
     /// audio than the recording never saw it, so it is kept, in `changed`, for the next Shrink to
     /// measure. Removing every name in the fresh listing, as before, let the deletion and the safety
-    /// check read different facts.
+    /// check read different facts; and a same-size rewrite in place kept the name and the sizes, so the
+    /// identity is compared too. A measured identity the current listing could not read is a change.
     public static func removableNow(current: [FolderEntry], measured: [FolderEntry], keeping outputName: String)
         -> (remove: [FolderEntry], changed: [FolderEntry]) {
         var seen: [String: FolderEntry] = [:]
@@ -324,13 +331,27 @@ public enum MeetingStoragePlan {
         var remove: [FolderEntry] = [], changed: [FolderEntry] = []
         for entry in removableFiles(in: current, keeping: outputName) {
             if let before = seen[entry.name.lowercased()], before.bytes == entry.bytes,
-               before.logicalBytes == entry.logicalBytes {
+               before.logicalBytes == entry.logicalBytes, before.identity == nil || before.identity == entry.identity {
                 remove.append(entry)
             } else {
                 changed.append(entry)
             }
         }
         return (remove, changed)
+    }
+
+    /// Whether the commit may put the copy at `outputName` (F1005): when a file already has that name — a link
+    /// import's `recording.m4a` download, or an `.m4a` recording re-encoded under its own name — it is replaced,
+    /// so it must be the file the checks measured (`measured`, by name, with the same identity as `current`, the
+    /// file there now). Nothing there is fine; a file that appeared since, or changed, or whose identity was not
+    /// read either time, is not.
+    public static func mayReplaceOutput(named outputName: String, current: InterruptedLinkImportExtraction.FileIdentity?,
+                                        exists: Bool, measured: [FolderEntry]) -> Bool {
+        guard exists else { return true }
+        guard let current,
+              let before = measured.first(where: { $0.name.lowercased() == outputName.lowercased() }),
+              let identity = before.identity else { return false }
+        return identity == current
     }
 
     /// *R* in the design: what a shrink frees. Every removable file, plus the recording itself when

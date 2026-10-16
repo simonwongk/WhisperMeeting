@@ -349,6 +349,14 @@ extension InterruptedLinkImportExtraction {
         let modifiedSeconds: Int
         let modifiedNanoseconds: Int
 
+        public init(device: Int32, inode: UInt64, size: Int64, modifiedSeconds: Int, modifiedNanoseconds: Int) {
+            self.device = device
+            self.inode = inode
+            self.size = size
+            self.modifiedSeconds = modifiedSeconds
+            self.modifiedNanoseconds = modifiedNanoseconds
+        }
+
         /// The file at `url` now, or nil when it cannot be stat'ed. A symbolic link is described, not
         /// followed.
         public init?(of url: URL) {

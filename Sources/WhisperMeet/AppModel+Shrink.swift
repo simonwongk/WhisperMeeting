@@ -350,6 +350,16 @@ extension AppModel {
             }
             // Commit (design, step 6).
             let final = folder.appendingPathComponent(output)
+            // F1005: a file already named as the output — a link import's `recording.m4a` download, or an `.m4a`
+            // recording re-encoded under its own name — is replaced, so it must still be the file the checks measured.
+            guard MeetingStoragePlan.mayReplaceOutput(
+                named: output, current: InterruptedLinkImportExtraction.FileIdentity(of: final),
+                exists: FileManager.default.fileExists(atPath: final.path), measured: disk.entries
+            ) else {
+                try? FileManager.default.removeItem(at: tempM4A)
+                return .failed(title: meeting.title,
+                               message: "“\(output)” changed while the recording was being compressed, so it was not replaced. Try again.")
+            }
             do {
                 if FileManager.default.fileExists(atPath: final.path) {
                     _ = try FileManager.default.replaceItemAt(final, withItemAt: tempM4A)
@@ -458,10 +468,18 @@ extension AppModel {
             let url = folder.appendingPathComponent(entry.name)
             do {
                 try await Task.detached {
+                    // F1005: only the file that was measured, as it was then. A removal by path removes whatever has
+                    // the name by then, so the file is set aside under a name only this removal uses and unlinked only
+                    // if it is still that file (F894's `removeIfUnchanged`); anything else is put back and counted
+                    // among the files not removed, for the next Shrink to measure.
+                    guard let identity = entry.identity else { throw CocoaError(.fileWriteUnknown) }
+                    guard InterruptedLinkImportExtraction.FileIdentity(of: url) == identity else { throw CocoaError(.fileWriteUnknown) }
                     // F943: a copy an import made before F804 may still carry Finder's Locked flag,
                     // which blocks the unlink; it is the app's own file in the meeting's own folder.
                     MeetingStore.clearUserFlags(at: url)
-                    try FileManager.default.removeItem(at: url)
+                    guard InterruptedLinkImportExtraction.removeIfUnchanged(url, identity: identity) else {
+                        throw CocoaError(.fileWriteUnknown)
+                    }
                 }.value
             } catch {
                 unremoved += 1

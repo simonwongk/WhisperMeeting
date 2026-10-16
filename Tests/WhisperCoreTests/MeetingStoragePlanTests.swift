@@ -396,6 +396,46 @@ func removableNowOnlyRemovesWhatWasMeasured() {
     #expect(MeetingStoragePlan.removableNow(current: renamed, measured: measured, keeping: "recording.m4a").remove.count == 1)
 }
 
+@Test("A file the checks measured is removed only while it is the same file: inode, size and modification time (F1005)")
+func removableNowComparesTheMeasuredIdentity() {
+    typealias Identity = InterruptedLinkImportExtraction.FileIdentity
+    let measuredID = Identity(device: 1, inode: 7, size: 1_000_000, modifiedSeconds: 100, modifiedNanoseconds: 5)
+    let measured = [Entry(name: "recording.mp3", bytes: 1_000_000, logicalBytes: 1_000_000, identity: measuredID)]
+    func now(_ identity: Identity?) -> (remove: [Entry], changed: [Entry]) {
+        MeetingStoragePlan.removableNow(current: [Entry(name: "recording.mp3", bytes: 1_000_000, logicalBytes: 1_000_000,
+                                                        identity: identity)],
+                                        measured: measured, keeping: "recording.m4a")
+    }
+    #expect(now(measuredID).remove.count == 1)
+    #expect(now(Identity(device: 1, inode: 7, size: 1_000_000, modifiedSeconds: 101, modifiedNanoseconds: 5)).changed.count == 1,
+            "rewritten in place at the same size")
+    #expect(now(Identity(device: 1, inode: 8, size: 1_000_000, modifiedSeconds: 100, modifiedNanoseconds: 5)).changed.count == 1,
+            "replaced by another file")
+    #expect(now(nil).changed.count == 1, "a measured identity that cannot be read now is a change")
+    // A listing that read no identity is judged by its sizes, as before.
+    let unidentified = [Entry(name: "recording.mp3", bytes: 1_000_000, logicalBytes: 1_000_000)]
+    #expect(MeetingStoragePlan.removableNow(current: [Entry(name: "recording.mp3", bytes: 1_000_000, logicalBytes: 1_000_000,
+                                                            identity: measuredID)],
+                                            measured: unidentified, keeping: "recording.m4a").remove.count == 1)
+}
+
+@Test("The copy replaces a file named as the output only while it is the file the checks measured (F1005)")
+func mayReplaceOnlyTheMeasuredOutput() {
+    typealias Identity = InterruptedLinkImportExtraction.FileIdentity
+    let id = Identity(device: 1, inode: 9, size: 240_000, modifiedSeconds: 10, modifiedNanoseconds: 0)
+    let measured = [Entry(name: "Recording.M4A", bytes: 240_000, logicalBytes: 240_000, identity: id)]
+    #expect(MeetingStoragePlan.mayReplaceOutput(named: "recording.m4a", current: nil, exists: false, measured: []))
+    #expect(MeetingStoragePlan.mayReplaceOutput(named: "recording.m4a", current: id, exists: true, measured: measured))
+    #expect(!MeetingStoragePlan.mayReplaceOutput(
+        named: "recording.m4a", current: Identity(device: 1, inode: 9, size: 240_000, modifiedSeconds: 11, modifiedNanoseconds: 0),
+        exists: true, measured: measured), "changed since")
+    #expect(!MeetingStoragePlan.mayReplaceOutput(named: "recording.m4a", current: id, exists: true, measured: []), "appeared since")
+    #expect(!MeetingStoragePlan.mayReplaceOutput(named: "recording.m4a", current: nil, exists: true, measured: measured))
+    #expect(!MeetingStoragePlan.mayReplaceOutput(
+        named: "recording.m4a", current: id, exists: true,
+        measured: [Entry(name: "recording.m4a", bytes: 240_000, logicalBytes: 240_000)]), "never identified")
+}
+
 @Test("A dataless other recording is not taken for empty: its logical length counts (F949)")
 func otherRecordingAtRiskReadsTheLogicalLength() {
     // iCloud Optimize Storage or a File Provider placeholder: nothing on disk, the whole download elsewhere.

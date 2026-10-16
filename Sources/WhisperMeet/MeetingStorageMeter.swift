@@ -17,7 +17,9 @@ enum MeetingStorageMeter {
             let bytes = values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? values.fileSize ?? 0
             let name = String(url.standardizedFileURL.path.dropFirst(root.path.count + 1))
             // The logical length too, so a dataless file (no bytes on disk) is not taken for empty (F949).
-            entries.append(.init(name: name, bytes: Int64(bytes), logicalBytes: values.fileSize.map(Int64.init)))
+            // And which file it is, so Shrink removes only the file it measured (F1005).
+            entries.append(.init(name: name, bytes: Int64(bytes), logicalBytes: values.fileSize.map(Int64.init),
+                                 identity: InterruptedLinkImportExtraction.FileIdentity(of: url)))
         }
         return entries
     }
