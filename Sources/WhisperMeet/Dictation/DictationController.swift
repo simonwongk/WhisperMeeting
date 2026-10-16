@@ -1454,9 +1454,12 @@ final class DictationController: ObservableObject {
             : []
         let prompt = VocabularyPrompt.build(vocab)
         let initialPrompt = prompt.isEmpty ? nil : prompt
-        // F768: the whole vocabulary, whatever the engine — Qwen, which takes no prompt, is the
-        // engine that writes 王老师 as "Wang老师" — but only while the user lets dictation use it.
-        let transliterationTerms = useVocabulary ? vocabularyProvider() : []
+        // F768: every stored Business Vocabulary term (`knownTermsProvider`, the store's whole
+        // list), not `vocabularyProvider`'s prompt-capped view (at most 100 terms and 1,000
+        // characters, Han terms sorting last), whatever the engine — Qwen, which takes no prompt,
+        // is the engine that writes 王老师 as "Wang老师" — but only while the user lets dictation
+        // use the vocabulary.
+        let transliterationTerms = useVocabulary ? knownTermsProvider() : []
         let refinerRelease = refinerReleaseForCapture
         let gpuUtilization = self.gpuUtilization
         let clock = self.dictationClock
@@ -1522,7 +1525,13 @@ final class DictationController: ObservableObject {
                 // so the refiner sees, and must keep, the user's own term. The history keeps what
                 // the recognizer heard in `rawText`.
                 let recognized = cleaned
-                cleaned = TransliteratedTermCorrection.corrected(cleaned, terms: transliterationTerms)
+                // Off the main actor, like the replacement rules below: the whole vocabulary can be
+                // thousands of terms (the review measured 21 ms for 1,000).
+                if !transliterationTerms.isEmpty {
+                    cleaned = await Task.detached {
+                        TransliteratedTermCorrection.corrected(recognized, terms: transliterationTerms)
+                    }.value
+                }
                 var rawText: String? = cleaned == recognized ? nil : recognized
                 if rawText != nil {
                     log.notice("a vocabulary name written partly in pinyin was put back into characters")
