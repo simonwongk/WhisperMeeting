@@ -1281,6 +1281,18 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             // inert rather than something the recovery list would offer (the `heal` rule).
             let temporary = directory.appendingPathComponent("\(newName).shred-\(UUID().uuidString)")
             try io.writeAtomically(newData, temporary, .stage)
+            // The rewrite keeps the generation's own date (F670). It is what `prune` reads for a file
+            // the ledger does not describe (F234), and the ledger write below is advisory: when it
+            // failed, the next save read the date of the SHRED back from the new file, a week-old
+            // generation looked a second old, no age anchor could hold it, and it was pruned. Best
+            // effort, like the ledger: a date that cannot be set costs that, never the rewrite.
+            if let original = io.identity(url) {
+                let date = Date(
+                    timeIntervalSince1970: TimeInterval(original.modifiedSeconds)
+                        + TimeInterval(original.modifiedNanoseconds) / 1_000_000_000
+                )
+                try? io.setModificationDate(date, temporary, .stage)
+            }
             try io.rename(temporary, directory.appendingPathComponent(newName), .retain)
             if newName != name { try io.remove(url, .prune) }
             if var updated = ledger {
@@ -1315,8 +1327,11 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             rewritten.append(name)
         }
         if !rewritten.isEmpty, let ledger {
-            // Advisory metadata: a failure to update it costs the counts in the recovery list,
-            // never the rewrite itself, which is already on disk.
+            // Advisory metadata: a failure to update it costs nothing the next save cannot read back.
+            // That save finds the rewritten files undescribed and records each with the count read
+            // from its bytes (F677) and the date kept on it above (F670), so neither the high-water
+            // pin nor the age anchors decide on missing information. The rewrite itself is already
+            // on disk.
             _ = try? StoreLedger.write(ledger, to: ledgerURL, using: io)
         }
         // Only over an index that loaded cleanly (F680). Any other load has no token, so the

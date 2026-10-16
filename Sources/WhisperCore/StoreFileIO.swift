@@ -97,6 +97,13 @@ public struct StoreFileIO: Sendable {
     public var identity: @Sendable (URL) -> StoreFileIdentity?
     public var fingerprint: @Sendable (Data) -> String
     public var fileExists: @Sendable (URL) -> Bool
+    /// Sets a file's modification time (F670): the shred's rewrite of a retained generation keeps the
+    /// generation's own date, which is what `prune` reads when the ledger does not describe the file
+    /// (F234). Not in `init`, so every existing construction keeps its shape; `.live` and anything
+    /// built from it get the real call.
+    public var setModificationDate: @Sendable (Date, URL, StoreWritePhase) throws -> Void = { date, url, _ in
+        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+    }
 
     // Design §2.3 also lists `openLease`. It is deferred, not forgotten: its return type is
     // `LibraryWriterLeaseHandle`, which Task 9 introduces. It lands with that task.
