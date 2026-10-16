@@ -9,7 +9,7 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
-## Maintenance cycle — Wave 7: 56 tickets closed, 2026-10-13 to 2026-10-16
+## Maintenance cycle — Wave 7: 58 tickets closed, 2026-10-13 to 2026-10-16
 
 Eight lanes, each worked test-first in its own worktree and reviewed by a second agent. Shrink's audit of mixed copies was reviewed
 twice, and its stereo rule four times over four rounds. The full trail is in the ticket log under each ID. The user answered in chat on
@@ -41,14 +41,15 @@ answer had rested on a bound I had stated wrongly and then corrected.
   never read the real Application Support. Stale doc comments and README and RECOVERY.md sentences were corrected. This changelog
   gained Wave 3 and Wave 4 entries. The F974 report was measured and closed invalid, because the mixing cost is linear.
 
-**How it was checked.** The suite went from 3211 to 3367 tests, and the full gate passed on `6c0bba6`. Reviews sent work back in stereo
+**How it was checked.** The suite went from 3211 to 3367 tests. The first push (`00d3156`) failed CI: the suite took 623.9 s on the runner and tripped the 600 s hang watchdog, and one Shrink test assumed every macOS reads the same files. The fix gave the watchdog 900 s (F1012), cut a test's repeated reference scans from 31 s to 3 s (F1011, the app's own pass had not slowed), and made the Shrink test ask what this host can read. The full gate then passed on `b003618`, and CI passed there with the tests taking 519 s. Reviews sent work back in stereo
 Shrink (a wrongly stated bound, then a round that deleted files the first round kept), library recovery (F936), link-import leftovers (F976,
-F962), Chinese corrections (F916) and a doc comment (F896). All were fixed before the push. 29 new tickets were filed (F982–F1010).
+F962), Chinese corrections (F916) and a doc comment (F896). All were fixed before the push. 33 new tickets were filed (F982–F1014).
 
 **What is not claimed.**
 - Nothing was clicked through on screen. The sitting is F1010 in `NEEDS_HUMAN.md`.
 - The dictation lane (F922, F923, F925, F926, F901, F903, F853) did not run this wave. Those tickets stay open.
 - Shrinking a three-hour stereo recording may take minutes with no progress shown (F1008).
+- On macOS 15, Shrink keeps three kinds of stereo file it cannot read there (F1013). Nothing is lost.
 
 ## Maintenance cycle — Wave 6: 28 tickets closed, 2026-10-12
 

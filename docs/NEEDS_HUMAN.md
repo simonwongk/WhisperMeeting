@@ -419,7 +419,7 @@ scratch library where a step says so — tell me "set up the Wave 6 sitting" and
 
 ## F1010 — Wave 7: a sitting at the screen, and what Shrink now keeps
 
-**Status:** `blocked` (F1010). The 2026-10-13 to 10-16 batch closed 56 tickets. They cover Shrink's stereo safety, reasons for greyed controls,
+**Status:** `blocked` (F1010). The 2026-10-13 to 10-16 batch closed 58 tickets. They cover Shrink's stereo safety, reasons for greyed controls,
 the recording window's warnings, library save conflicts and recovery, link-import leftovers, vocabulary and Chinese corrections, test hygiene
 and doc comments. Each was tested headlessly and reviewed by a second agent; stereo Shrink was reviewed four times. What only you can see
 is here. Use a scratch library where a step says so; tell me "set up the Wave 7 sitting" and I will prepare one.
