@@ -162,7 +162,8 @@ public enum SourceRebuild {
         }
     }
 
-    /// Appends one filename to whichever manifest the folder has, leaving everything else alone.
+    /// Appends one filename to whichever manifest the folder has, leaving everything else alone —
+    /// including keys this build does not model (F772).
     ///
     /// Best-effort on purpose, and the caller uses `try?`: the audio is already rebuilt and the
     /// moved-aside file is already safe by this point. Failing the whole rebuild because a
@@ -172,20 +173,20 @@ public enum SourceRebuild {
     private static func noteSupersededRecording(_ name: String, in directory: URL) throws {
         for manifestName in ["source-tracks.json", "source-tracks.recovered.json"] {
             let url = directory.appendingPathComponent(manifestName)
+            // Decoded only to confirm this build reads the file as a manifest, so a file it cannot
+            // read is passed over exactly as before. The write patches the JSON object itself
+            // (F772): a decode-and-re-encode through `SourceTrackManifest` dropped every key a newer
+            // build added and this one does not model, and gave an old-shape track a
+            // `startOffsetSeconds` it never had.
             guard let data = try? Data(contentsOf: url),
-                  let existing = try? JSONDecoder().decode(SourceTrackManifest.self, from: data)
+                  let existing = try? JSONDecoder().decode(SourceTrackManifest.self, from: data),
+                  var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             else { continue }
-            let updated = SourceTrackManifest(
-                recoveryAlignment: existing.recoveryAlignment,
-                paddedGaps: existing.paddedGaps,
-                supersededRecordings: existing.supersededRecordings + [name],
-                truncatedAtSeconds: existing.truncatedAtSeconds,
-                systemAudio: existing.systemAudio,
-                microphoneAudio: existing.microphoneAudio
-            )
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(updated).write(to: url, options: .atomic)
+            object["supersededRecordings"] = existing.supersededRecordings + [name]
+            try JSONSerialization.data(
+                withJSONObject: object,
+                options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            ).write(to: url, options: .atomic)
             return
         }
     }

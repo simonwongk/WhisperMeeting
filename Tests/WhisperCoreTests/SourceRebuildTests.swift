@@ -248,3 +248,44 @@ func preF282RecoveredManifestRecordsTheSupersededRecording() throws {
     #expect(system["file"] as? String == "system-audio.f32")
     #expect(microphone["file"] as? String == "microphone-audio.f32")
 }
+
+@Test("Noting a superseded recording keeps every key it does not model, and adds none (F772)")
+func supersededNoteKeepsUnknownKeys() throws {
+    // `noteSupersededRecording` promised to append one filename "leaving everything else alone", but
+    // decoded into `SourceTrackManifest` and re-encoded it: a key a newer build wrote was dropped,
+    // and an old-shape track gained a `startOffsetSeconds` it never had. Here both kinds of key are
+    // present — one at the top, one inside a track — beside a pre-F282 track with no offset.
+    let directory = try makeFolder("unknownKeys")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try writeTrack(96_000, named: "system-audio.f32", in: directory)
+    try writeTrack(96_000, named: "microphone-audio.f32", in: directory)
+    try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 4_800), sampleRate: 48_000)
+        .write(to: directory.appendingPathComponent("meeting-recovered.wav"))
+    let manifestURL = directory.appendingPathComponent("source-tracks.recovered.json")
+    try Data(#"""
+    {"microphoneAudio":{"channels":1,"file":"microphone-audio.f32","format":"float32-little-endian",
+      "frameCount":96000,"sampleRate":48000,"aFutureTrackKey":"kept"},
+     "recoveryAlignment":"zero-aligned-after-interruption",
+     "aFutureTopLevelKey":{"nested":[1,2,3]},
+     "systemAudio":{"channels":1,"file":"system-audio.f32","format":"float32-little-endian",
+      "frameCount":96000,"sampleRate":48000}}
+    """#.utf8).write(to: manifestURL)
+
+    let offer = try #require(SourceRebuild.offer(in: directory, currentDuration: 0.1))
+    _ = try #require(try SourceRebuild.rebuild(offer))
+
+    let object = try #require(
+        try JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any]
+    )
+    #expect(object["supersededRecordings"] as? [String] == ["meeting-recovered-superseded-1.wav"])
+    let future = try #require(object["aFutureTopLevelKey"] as? [String: Any], "a newer build's key was dropped")
+    #expect(future["nested"] as? [Int] == [1, 2, 3])
+    let system = try #require(object["systemAudio"] as? [String: Any])
+    let microphone = try #require(object["microphoneAudio"] as? [String: Any])
+    #expect(microphone["aFutureTrackKey"] as? String == "kept", "a newer build's track key was dropped")
+    #expect(system["startOffsetSeconds"] == nil, "the note invented an offset the manifest never had")
+    #expect(microphone["startOffsetSeconds"] == nil, "the note invented an offset the manifest never had")
+    // Still readable by this build.
+    let manifest = try JSONDecoder().decode(SourceTrackManifest.self, from: Data(contentsOf: manifestURL))
+    #expect(manifest.supersededRecordings == ["meeting-recovered-superseded-1.wav"])
+}
