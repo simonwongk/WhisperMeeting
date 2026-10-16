@@ -717,23 +717,35 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
         let stops = stopRequestCount
         try await run {
             try self.ensureRunning(stopsWhenAsked: stops)
-            guard let primePrompt = self.primePrompt, !self.primed else { return }
-            // Attempt-once even on failure: a helper that errors on the prime would otherwise be
-            // re-primed on every press. The reply MUST be consumed here — leaving it unread would
-            // desync every later request on the newline-JSON wire.
-            self.primed = true
-            do {
-                let request = RefineRequest(text: "ready", systemPrompt: primePrompt, maxTokens: 8)
-                if let stdin = self.stdin {
-                    try ThrowingFileHandleIO.write(
-                        try DictationWireProtocol.encodeLine(request),
-                        to: stdin
-                    )
-                }
-                _ = try self.readLine(timeout: Self.replyTimeout)
-            } catch {
-                // Prime is an optimization; a failure must not fail warm-up itself.
+            self.primeIfNeeded()
+        }
+    }
+
+    /// Sends the prime to a child that has not had it (F203). Queue-confined, like `primed`.
+    ///
+    /// Called by `warmUp()` and by `refine()` (F853): a child that died between dictations is
+    /// restarted by the next `refine()`'s `ensureRunning`, and without this that dictation's own
+    /// prompt was the fresh child's first request, so the anchor F630 builds was its own rather
+    /// than the prime's, and a near-tie could come out differently from a primed child's for that
+    /// one dictation. The prime costs the restarted dictation one tiny request on top of the model
+    /// load it is already paying for.
+    private func primeIfNeeded() {
+        guard let primePrompt, !primed else { return }
+        // Attempt-once even on failure: a helper that errors on the prime would otherwise be
+        // re-primed on every press. The reply MUST be consumed here — leaving it unread would
+        // desync every later request on the newline-JSON wire.
+        primed = true
+        do {
+            let request = RefineRequest(text: "ready", systemPrompt: primePrompt, maxTokens: 8)
+            if let stdin {
+                try ThrowingFileHandleIO.write(
+                    try DictationWireProtocol.encodeLine(request),
+                    to: stdin
+                )
             }
+            _ = try readLine(timeout: Self.replyTimeout)
+        } catch {
+            // Prime is an optimization; a failure must not fail warm-up or the dictation itself.
         }
     }
 
@@ -758,6 +770,8 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
         let stops = stopRequestCount
         return try await run {
             try self.ensureRunning(stopsWhenAsked: stops)
+            // A child this call just restarted is primed before it serves (F853).
+            self.primeIfNeeded()
             if let stdin = self.stdin {
                 try ThrowingFileHandleIO.write(
                     try DictationWireProtocol.encodeLine(request),
