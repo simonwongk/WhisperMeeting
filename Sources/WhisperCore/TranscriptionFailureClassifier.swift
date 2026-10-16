@@ -72,6 +72,8 @@ public enum TranscriptionFailureClassifier {
             case .recordingNotFound: return .reimport
             case .emptyTranscript: return .checkInput
             case .processFailed, .missingOutput, .unreadableOutput: return .retry
+            // F901: a connection that stalled is worth another try once it is back.
+            case .modelDownloadStalled: return .retry
             }
         }
         if let error = error as? QwenASRError {

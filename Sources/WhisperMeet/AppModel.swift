@@ -1856,8 +1856,17 @@ final class AppModel: ObservableObject {
     /// `runTranscriptionEngineOverride`, so a headless test keeps the REAL client — the splitting is
     /// the behaviour under test — while giving it a stub `ffmpeg`, a scratch folder and a short piece.
     var makeWhisperClient: @Sendable (URL) -> LocalWhisperClient = { executableURL in
-        LocalWhisperClient(executableURL: executableURL, modelDirectory: LocalWhisperRuntime.modelDirectory())
+        LocalWhisperClient(
+            executableURL: executableURL, modelDirectory: LocalWhisperRuntime.modelDirectory(),
+            downloadStallTimeout: AppModel.meetingModelDownloadStallTimeout
+        )
     }
+
+    /// How long a meeting run's first-use Whisper model download may stand still before it is stopped
+    /// and the meeting fails with the reason, retryable (F901) — the dictation download's window
+    /// (`BatchWhisperDictationEngine.downloadStallTimeout`, F860, and the warm helper's F522). The bar
+    /// moves several times a second on a working connection, so three still minutes is a dead one.
+    nonisolated static let meetingModelDownloadStallTimeout: TimeInterval = 180
 
     /// Lines up the stored transcript with the other engine's (F542). Injectable so a test can see
     /// where it runs; defaults to the real comparison.

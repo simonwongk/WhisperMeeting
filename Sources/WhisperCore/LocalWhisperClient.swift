@@ -7,9 +7,13 @@ public enum LocalWhisperError: LocalizedError, Sendable, Equatable {
     case missingOutput
     case unreadableOutput
     case emptyTranscript
+    /// The first-use model download's bar stood still for `seconds` and the run was stopped (F901).
+    case modelDownloadStalled(seconds: Int)
 
     public var errorDescription: String? {
         switch self {
+        case let .modelDownloadStalled(seconds):
+            return "The Whisper model download made no progress for \(seconds) seconds and was stopped. Check your connection, then transcribe again."
         case .runtimeNotInstalled:
             return "Local Whisper is not installed. Open Settings and choose Install Local Whisper."
         case .recordingNotFound:
@@ -212,6 +216,13 @@ public struct LocalWhisperClient: Sendable {
     private let ffmpegExecutableURL: URL?
     /// Where each run's working folder goes; nil is the system temporary directory.
     private let scratchDirectory: URL?
+    /// How long the first-use model download's bar may stand still before the run is stopped with
+    /// `modelDownloadStalled` (F901); nil, no limit. openai-whisper's `_download` calls
+    /// `urllib.request.urlopen(url)` with no timeout (`whisper/__init__.py`, main and the pinned
+    /// 20250625), so a dead connection otherwise waits until the user presses Cancel. The meetings
+    /// path sets it (`AppModel.meetingModelDownloadStallTimeout`); the batch dictation engine leaves
+    /// it nil, because it keeps its own window and reports the download to its observers (F860).
+    public let downloadStallTimeout: TimeInterval?
 
     /// `piecePolicy`, `ffmpegExecutableURL` and `scratchDirectory` exist for tests (F533); the app
     /// passes none of them.
@@ -220,13 +231,15 @@ public struct LocalWhisperClient: Sendable {
         modelDirectory: URL,
         piecePolicy: WhisperPiecePolicy = .standard,
         ffmpegExecutableURL: URL? = nil,
-        scratchDirectory: URL? = nil
+        scratchDirectory: URL? = nil,
+        downloadStallTimeout: TimeInterval? = nil
     ) {
         self.executableURL = executableURL
         self.modelDirectory = modelDirectory
         self.piecePolicy = piecePolicy
         self.ffmpegExecutableURL = ffmpegExecutableURL
         self.scratchDirectory = scratchDirectory
+        self.downloadStallTimeout = downloadStallTimeout
     }
 
     /// Transcribes a recording in its original language.
@@ -243,6 +256,9 @@ public struct LocalWhisperClient: Sendable {
     /// the whole run; nothing partial is returned. The recording itself is only ever read.
     ///
     /// A recording within the bound is one call on the original file, exactly as before.
+    ///
+    /// With `downloadStallTimeout` set, a model download whose bar stands still that long stops the
+    /// run (its process is cancelled like any other) and throws `modelDownloadStalled` (F901).
     public func transcribe(
         recordingAt fileURL: URL,
         options: LocalTranscriptionOptions = .accuracyFirst(),
@@ -251,6 +267,36 @@ public struct LocalWhisperClient: Sendable {
         // F718: the no-op is written here, not as the default argument, so it is compiled once in
         // this module. A closure in a public default argument is copied into every client module.
         let onProgress: ProgressHandler = onProgress ?? { _ in }
+        guard let stallTimeout = downloadStallTimeout else {
+            return try await transcribeUnwatched(recordingAt: fileURL, options: options, onProgress: onProgress)
+        }
+        let watch = ModelDownloadStallWatch(stallTimeout: stallTimeout)
+        return try await withThrowingTaskGroup(of: TranscriptionResult?.self) { group in
+            group.addTask {
+                try await self.transcribeUnwatched(recordingAt: fileURL, options: options) { progress in
+                    watch.observe(progress)
+                    await onProgress(progress)
+                }
+            }
+            group.addTask {
+                try await watch.waitForStall()
+                return nil
+            }
+            // However the race ends, the other side is cancelled: a stall cancels the run, which
+            // terminates its process (`ProcessCancellationController`).
+            defer { group.cancelAll() }
+            while let finished = try await group.next() {
+                if let finished { return finished }
+            }
+            throw CancellationError()
+        }
+    }
+
+    private func transcribeUnwatched(
+        recordingAt fileURL: URL,
+        options: LocalTranscriptionOptions,
+        onProgress: @escaping ProgressHandler
+    ) async throws -> TranscriptionResult {
         guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw LocalWhisperError.runtimeNotInstalled
         }
@@ -690,6 +736,55 @@ final class ProcessCancellationController: @unchecked Sendable {
 func armedExitStream(for process: Process) -> AsyncStream<Void> {
     AsyncStream { continuation in
         process.terminationHandler = { _ in continuation.finish() }
+    }
+}
+
+/// One meeting run's view of its first-use model download (F901): whether the download bar is
+/// showing and when it last moved. The rule is F860's for the batch dictation engine
+/// (`CheckpointDownloadWatch`, which also reports the download to the dictation observers): the
+/// parser reports a bar only when it changed, so each download update is movement; a bar at 100 %
+/// ends the download and the window, because what openai-whisper does next — hash the file, load it —
+/// is not the download's to time; and any other phase after the download ends it too.
+final class ModelDownloadStallWatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private let stallTimeout: TimeInterval
+    private var downloading = false
+    private var finished = false
+    private var lastMoved = ContinuousClock.now
+
+    init(stallTimeout: TimeInterval) {
+        self.stallTimeout = stallTimeout
+    }
+
+    func observe(_ progress: LocalTranscriptionProgress) {
+        lock.withLock {
+            if progress.phase == .downloadingModel {
+                guard !finished else { return }
+                lastMoved = ContinuousClock.now
+                downloading = true
+                if let fraction = progress.fractionCompleted, fraction >= 1 {
+                    finished = true
+                    downloading = false
+                }
+            } else if downloading, progress.phase != .preparing, progress.phase != .loadingModel {
+                downloading = false
+            }
+        }
+    }
+
+    /// Returns only by throwing: `modelDownloadStalled` once a showing download has not moved for
+    /// `stallTimeout`, or `CancellationError` when the run ends first.
+    func waitForStall() async throws {
+        let check = Duration.seconds(min(1, max(0.05, stallTimeout / 4)))
+        while true {
+            try await Task.sleep(for: check)
+            let stalled = lock.withLock {
+                downloading && ContinuousClock.now - lastMoved >= .seconds(stallTimeout)
+            }
+            if stalled {
+                throw LocalWhisperError.modelDownloadStalled(seconds: Int(saturating: stallTimeout.rounded()))
+            }
+        }
     }
 }
 

@@ -1,0 +1,106 @@
+import Foundation
+import Testing
+@testable import WhisperCore
+
+// F901 — a meeting's first transcription with a model not yet on disk downloads it inside the
+// `whisper` run, and openai-whisper's `_download` opens the URL with no timeout
+// (`urllib.request.urlopen(url)`, `whisper/__init__.py` on main, checked 2026-10-16). A dead connection
+// waited until Cancel. With `downloadStallTimeout` the client stops the run once the download bar has
+// not moved for that long, and throws a reason a meeting can show and retry from. The stub prints
+// openai-whisper's own download bar (`unit="iB"`), which `WhisperProgressParser` reads as
+// `.downloadingModel`.
+
+private func scratch(_ label: String) throws -> URL {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(label)-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+/// A stub `whisper` running `body` after reading where to write; `$out/$name.json` is the transcript.
+private func stubWhisper(in directory: URL, _ body: String) throws -> URL {
+    let url = directory.appendingPathComponent("whisper")
+    try """
+    #!/bin/zsh
+    input="$1"; shift
+    out=""
+    while (( $# > 0 )); do
+      [[ "$1" == "--output_dir" ]] && { out="$2"; shift; }
+      shift
+    done
+    name="${input:t:r}"
+    \(body)
+    """.write(to: url, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    return url
+}
+
+private let transcript = #"{"text":" Hello.","language":"en","segments":[{"start":0.0,"end":1.0,"text":" Hello."}]}"#
+
+private func client(_ whisper: URL, in directory: URL, stall: TimeInterval?) -> LocalWhisperClient {
+    LocalWhisperClient(
+        executableURL: whisper, modelDirectory: directory.appendingPathComponent("models"),
+        scratchDirectory: directory.appendingPathComponent("runs"), // F937: not the real $TMPDIR
+        downloadStallTimeout: stall
+    )
+}
+
+@Test("A meeting run whose model download stops moving is stopped, and says why (F901)")
+func aStalledModelDownloadStopsTheRun() async throws {
+    let dir = try scratch("F901-stall"); defer { try? FileManager.default.removeItem(at: dir) }
+    let pidFile = dir.appendingPathComponent("whisper.pid")
+    let whisper = try stubWhisper(in: dir, """
+    print -r -- $$ > '\(pidFile.path)'
+    printf ' 42%%|####2     | 650M/1.51G [00:05<00:07, 120MiB/s]\\r' >&2
+    exec sleep 120
+    """)
+    let audio = dir.appendingPathComponent("meeting.wav")
+    try shortReadableWAV().write(to: audio)
+    let started = ContinuousClock.now
+
+    await #expect(throws: LocalWhisperError.modelDownloadStalled(seconds: 1)) {
+        try await client(whisper, in: dir, stall: 1).transcribe(recordingAt: audio)
+    }
+
+    #expect(ContinuousClock.now - started < .seconds(60), "the run waited for the stub's own two minutes")
+    // The stalled process is stopped with the run, not left downloading.
+    let pid = try #require(pid_t(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+    let deadline = ContinuousClock.now + .seconds(30)
+    while kill(pid, 0) == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+    #expect(kill(pid, 0) != 0, "the stalled whisper is still running")
+    #expect(LocalWhisperError.modelDownloadStalled(seconds: 180).errorDescription
+            == "The Whisper model download made no progress for 180 seconds and was stopped. Check your connection, then transcribe again.")
+}
+
+@Test("A download that reaches 100 % ends the window: hashing and loading the model after it are not a stall (F901)")
+func aFinishedDownloadIsNotAStall() async throws {
+    let dir = try scratch("F901-finished"); defer { try? FileManager.default.removeItem(at: dir) }
+    let whisper = try stubWhisper(in: dir, """
+    printf ' 42%%|####2     | 650M/1.51G [00:05<00:07, 120MiB/s]\\r' >&2
+    printf '100%%|##########| 1.51G/1.51G [00:12<00:00, 120MiB/s]\\n' >&2
+    sleep 2.5
+    printf '%s' '\(transcript)' > "$out/$name.json"
+    """)
+    let audio = dir.appendingPathComponent("meeting.wav")
+    try shortReadableWAV().write(to: audio)
+
+    let result = try await client(whisper, in: dir, stall: 1).transcribe(recordingAt: audio)
+
+    #expect(result.text == "Hello.")
+}
+
+@Test("A download whose bar keeps moving runs past the window (F901 control)")
+func aMovingDownloadIsNotStopped() async throws {
+    let dir = try scratch("F901-moving"); defer { try? FileManager.default.removeItem(at: dir) }
+    let whisper = try stubWhisper(in: dir, """
+    for i in {10..34}; do printf ' %d%%|##        | %dM/1.51G [00:01<00:07, 120MiB/s]\\r' $i $((i * 15)) >&2; sleep 0.1; done
+    printf '100%%|##########| 1.51G/1.51G [00:12<00:00, 120MiB/s]\\n' >&2
+    printf '%s' '\(transcript)' > "$out/$name.json"
+    """)
+    let audio = dir.appendingPathComponent("meeting.wav")
+    try shortReadableWAV().write(to: audio)
+
+    // 25 updates a tenth of a second apart: 2.5 s of download against a 1 s window.
+    let result = try await client(whisper, in: dir, stall: 1).transcribe(recordingAt: audio)
+
+    #expect(result.text == "Hello.")
+}
