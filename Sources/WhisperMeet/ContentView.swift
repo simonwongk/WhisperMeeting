@@ -3624,6 +3624,13 @@ private struct TranscriptDetailView: View {
                             Text(model.queuedStatusDetail(for: meeting)).foregroundStyle(.secondary)
                         } else if let error = meeting.errorMessage {
                             Text(error).foregroundStyle(.secondary)
+                            // F624: the engine's whole log, when its failed run left one.
+                            if model.transcriptionFailureLogURL(for: meeting) != nil {
+                                Button("Show Full Log") {
+                                    model.revealTranscriptionFailureLog(for: meeting.id)
+                                }
+                                .buttonStyle(.link)
+                            }
                         } else if meeting.status == .recorded {
                             Text("The audio is safely stored on this Mac.").foregroundStyle(.secondary)
                         }

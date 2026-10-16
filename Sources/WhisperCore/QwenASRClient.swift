@@ -85,6 +85,9 @@ public struct QwenASRClient: Sendable {
     private let helperScriptURL: URL
     private let modelDirectory: URL
     private let alignerDirectory: URL
+    /// Where a run that fails writes the whole log it kept (F624, `TranscriptionFailureLog`) before it
+    /// throws the summary; nil, nowhere. Set per meeting by `AppModel.executeEngine`.
+    public var failureLogURL: URL?
 
     public init(
         pythonExecutableURL: URL,
@@ -158,7 +161,8 @@ public struct QwenASRClient: Sendable {
         guard FileManager.default.fileExists(atPath: outputURL.path) else {
             // Summarized the same way as LocalWhisperClient (F511): the accumulated log can run to
             // ~200 KB, all of which would otherwise land in the alert and in meetings.json's
-            // errorMessage on every index save.
+            // errorMessage on every index save. The whole of it goes to `failureLogURL` (F624).
+            TranscriptionFailureLog.write(log, to: failureLogURL)
             if !log.isEmpty { throw QwenASRError.processFailed(SubprocessLogSummary.summarize(log)) }
             throw QwenASRError.missingOutput
         }
@@ -315,6 +319,8 @@ public struct QwenASRClient: Sendable {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             try Task.checkCancellation()
             guard process.terminationStatus == 0 else {
+                // The whole log, not the 4,000-character tail the message carries (F624).
+                TranscriptionFailureLog.write(log, to: failureLogURL)
                 throw QwenASRError.processFailed(
                     log.isEmpty
                         ? "Qwen helper exited with status \(process.terminationStatus)."

@@ -223,6 +223,9 @@ public struct LocalWhisperClient: Sendable {
     /// path sets it (`AppModel.meetingModelDownloadStallTimeout`); the batch dictation engine leaves
     /// it nil, because it keeps its own window and reports the download to its observers (F860).
     public let downloadStallTimeout: TimeInterval?
+    /// Where a run that fails writes the whole log it kept (F624, `TranscriptionFailureLog`) before it
+    /// throws the summary; nil, nowhere. Set per meeting by `AppModel.executeEngine`.
+    public var failureLogURL: URL?
 
     /// `piecePolicy`, `ffmpegExecutableURL` and `scratchDirectory` exist for tests (F533); the app
     /// passes none of them.
@@ -403,6 +406,7 @@ public struct LocalWhisperClient: Sendable {
             }
         )
         guard FileManager.default.fileExists(atPath: audioURL.path) else {
+            TranscriptionFailureLog.write(log, to: failureLogURL)
             throw LocalWhisperError.processFailed(
                 "the recording could not be decoded to transcribe it in pieces: "
                     + SubprocessLogSummary.summarize(log.isEmpty ? "ffmpeg wrote no audio." : log)
@@ -518,7 +522,9 @@ public struct LocalWhisperClient: Sendable {
             // inside its own cli(), printed as a traceback, and followed by exit 0 — so this
             // branch, not the non-zero-exit one in `run`, is what a real failure usually hits.
             // Summarized the same way (F511): the full accumulated log can run to ~200 KB, all of
-            // which would otherwise land in the alert and in meetings.json's errorMessage.
+            // which would otherwise land in the alert and in meetings.json's errorMessage. The whole
+            // of it goes to `failureLogURL` instead (F624).
+            TranscriptionFailureLog.write(log, to: failureLogURL)
             if !log.isEmpty { throw LocalWhisperError.processFailed(SubprocessLogSummary.summarize(log)) }
             throw LocalWhisperError.missingOutput
         }
@@ -679,6 +685,8 @@ public struct LocalWhisperClient: Sendable {
             try Task.checkCancellation()
             let status = process.terminationStatus
             guard status == 0 else {
+                // The whole log, not the 4,000-character tail the message carries (F624).
+                TranscriptionFailureLog.write(log, to: failureLogURL)
                 let diagnostic = String(log.suffix(4_000))
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 throw failure(status, diagnostic)
