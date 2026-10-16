@@ -630,6 +630,40 @@ func aStartDuringTheHandlersTeardownIsRefused() throws {
     recorder.cancel()
 }
 
+/// The order a user produces (the Wave 8 lane C review, finding 6): a key release or the
+/// controller's `cancel()` inside the handler's teardown, and THEN a new press. `stop()` and
+/// `cancel()` must leave `stopping` to the handler, or the press arms into the teardown again.
+@Test("A stop or cancel inside the handler's teardown leaves it stopping, so the next press is still refused (F721)")
+func aStopOrCancelThenAPressDuringTheTeardownIsRefused() throws {
+    for ending in ["stop", "cancel"] {
+        let center = NotificationCenter()
+        let recorder = MicDictationRecorder(
+            hardwareFormatProbe: { (sampleRate: 48_000, channels: 1) },
+            notificationCenter: center,
+            hardwareStartForTesting: { true }
+        )
+        try recorder.start(onLevel: { _ in })
+        try #require(recorder.isRecording)
+        let nested = Box<String?>(nil)
+        recorder.duringConfigurationTeardownForTesting = { [unowned recorder] in
+            if ending == "stop" { _ = try? recorder.stop() } else { recorder.cancel() }
+            do {
+                try recorder.start(onLevel: { _ in })
+                nested.value = "started"
+            } catch {
+                nested.value = String(describing: error)
+            }
+        }
+        center.post(name: .AVAudioEngineConfigurationChange, object: recorder.engineForTesting)
+        recorder.duringConfigurationTeardownForTesting = nil
+
+        #expect(nested.value == String(describing: MicDictationRecorder.RecorderError.captureStillEnding),
+                "\(ending) then a press inside the teardown: \(nested.value ?? "nothing")")
+        #expect(recorder.captureStateForTesting == .idle, "\(ending): the handler did not give the recorder back")
+        recorder.cancel()
+    }
+}
+
 // MARK: - F405, a teardown must not create the node it tears down
 
 private let recorderSourcePath = "Sources/WhisperMeet/Dictation/MicDictationRecorder.swift"
