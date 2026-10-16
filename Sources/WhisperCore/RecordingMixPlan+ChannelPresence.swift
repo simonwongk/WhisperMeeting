@@ -120,8 +120,8 @@ extension RecordingMixPlan {
     /// hiss on a silent channel, clipping, noise, a phone's spacing with one or two talkers. What it refuses
     /// that a listener might call ordinary: two talkers before a pair of microphones 0.75 to 1.5 ms apart (five
     /// of the six such fixtures, echoing or not, read 0.26 to 0.70), and a Haas widening of 10–20 ms (0.18 to
-    /// 0.49) — both do lose sound to the mix's comb filter. A side voice more than about 10 dB under the middle
-    /// one, talking over it throughout, is not caught.
+    /// 0.49) — both do lose sound to the mix's comb filter. What this and the first round's link beside it
+    /// (`mostChannelMissingShare`) still miss, measured, is listed in docs/MEETING_STORAGE_DESIGN.md, step 4.
     public static let mostCancelledShare = 0.1
 
     /// Whether a bin whose channels' cross-spectrum over a stretch, at its best alignment, has real part

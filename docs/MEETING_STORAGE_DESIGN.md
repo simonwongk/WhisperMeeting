@@ -143,20 +143,37 @@ verified and the index saved.
      cross-correlation and each bin read at its best one. `RecordingMixPlan.firstChannelNotInCopy` refuses when,
      in any stretch above silence — judged against its own energy, so a loud stretch elsewhere hides nothing
      (review 2, F2-3) — any of the bands 80–250–500–1k–2k–4k–7.8k Hz holding a twentieth of the stretch has more
-     than a tenth of its energy cancelling. It also checks the copy against the channels' mix (a bin held where
-     the copy's projection reaches a quarter of the mix's energy; more than a twentieth of a window's mix missing
-     refuses), and refuses whatever it cannot measure. Measured (F1001's log, `gates/r2-*`): every probe both
-     reviews made reads 0.25 to 1.0 and is kept — synthetic and, with the bench clips, speech in every pairing
-     tried; ordinary stereo reads at most 0.04 — a voice per channel, one silent channel, identical, panned or
-     correlated channels, DC or hiss on a silent channel, clipping, noise, a phone's spacing with one or two
-     talkers, eight and 96 kHz, float, 0.3 s, review 1's controls, ten ffmpeg-made files — and all of them
-     shrank, none refused, in every run made, but one of review 1's 22: a float WAV with one NaN sample, which
-     cannot be measured and is kept as damaged, as the level checks would. Refused by this rule although nothing a listener would call a second
-     voice is lost: two talkers before microphones 0.75 to 1.5 ms apart (five of six such fixtures, echoing or
-     not), and a Haas widening of 10–20 ms; both lose sound to the mix's comb filter, and the user's rule keeps
-     them. Not caught: a side
-     voice more than about 10 dB under the middle one that talks over it throughout (tones 10 dB down read
-     0.11; 15 dB down, 0.03), and a copy that leaves out a channel holding under a twentieth of the mix.
+     than a tenth of its energy cancelling. Beside it — an additional refusal, not a replacement (round 4) — it
+     keeps F1001's first-round link: in every five-second window in which a channel sounds (a tenth of its own
+     level), more than a quarter of the channel's energy from 80 Hz to 4 kHz, in 256 ms frames, lying in bins
+     the channels' mix does not hold refuses. The stretch rule's delay allowance cannot tell a steady tone
+     inverted on one channel from the same tone half a period late — they are the same signal, and the mix
+     cancels both — so alone it deleted a loud inverted tone or odd-harmonic buzz, a side voice under a talker
+     on microphones 2.5–3 ms apart and a 0.1 s mid/side file, which the first round kept (review 1 of round 2:
+     16 of its 213 probes); with both links, none of the 213 the first round kept is deleted
+     (`gates/r4-06-attack-lines.txt`). It also checks the copy against the channels' mix (a bin held where the
+     copy's projection reaches a quarter of the mix's energy; more than a twentieth of a window's mix missing
+     refuses), and refuses whatever it cannot measure. Ordinary stereo shrank in every run made — a voice per
+     channel, one silent channel, identical, panned or correlated channels, DC or hiss on a silent channel,
+     independent noise, a voice beside itself 4 Hz higher, clipping, a phone's spacing with one or two talkers,
+     8 to 96 kHz, float, files from 0.3 s, review 1's controls, review 1 of round 2's, ten ffmpeg-made files and,
+     with the bench clips, speech — but for one of review 1's 22, a float WAV with one NaN sample, kept as
+     unmeasurable as the level checks would. Adding the first round's link back cost one refusal in round 2's
+     59 ordinary fixtures (`gates/r4-07-production.txt`): a single talker on echo-free microphones a metre
+     apart (3 ms), which the first round already refused (0.34); with a room's echo it shrinks. Refused by the
+     stretch rule although nothing a listener would call a second voice is lost: two talkers before microphones
+     0.75 to 1.5 ms apart (five of six such fixtures, echoing or not), and a Haas widening of 10–20 ms; both
+     lose sound to the mix's comb filter, and the user's rule keeps them. **Not caught** — deleted with the
+     cancelled sound gone from the copy (review 1 of round 2's probes, re-run on round 4's code,
+     `gates/r4-06-attack-lines.txt`, and round 4's own, `r4-08-mutant-base.txt`): a side voice talking over the
+     middle one throughout from about 11 dB down as tones (10 dB down reads 0.11, caught), and as speech from
+     between 8 and 12 dB down, depending on the voices; a side voice alone for 0.16 s or less (tones, and a 0.12 s
+     spoken interjection); a cancelling sound confined to 4–7.8 kHz, from 6 dB under the rest as tones and 10 dB as speech; a steady tone
+     inverted alone for 2 s between speech; an inverted tone burst of a second beside two talkers on spaced
+     microphones; a side voice 6 dB down beside a talker on microphones 1 ms apart, or beside two spaced
+     talkers; and a copy that leaves out a channel holding under a twentieth of the mix. Whole mid/side files
+     of 0.05 s and shorter were kept as "Already compact" (nothing to gain), and from 0.08 s they are judged and
+     kept.
    - And a two-channel file whose channel layout the encode's mix is not shown to keep both channels of is not
      shrunk (F1001, rounds 2 and 3). afconvert mixes by position — a WAV's mask, or a CAF's, an AIFF's or any
      container's layout, read with AVAudioFile as one channel label per channel — and leaves out of the copy a
