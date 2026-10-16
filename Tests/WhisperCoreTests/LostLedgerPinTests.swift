@@ -212,3 +212,65 @@ func aNewerLedgerDoesNotMakeEverySaveReadTheHistory() throws {
     #expect(try String(contentsOf: fixture.ledgerURL, encoding: .utf8).contains("99"), "the newer ledger was overwritten")
     #expect(countsOnDisk(fixture).contains(17), "the pinned generation was pruned: \(countsOnDisk(fixture))")
 }
+
+// F854 — the recovery list counts what the ledger no longer describes, without a save.
+//
+// F677 puts the counts back at the next save, but a read-only library makes no saves, so after a
+// lost ledger Recover Library listed every generation as a date with no meeting count — the list
+// hardest to choose from exactly when it is needed. `retained()` already reads each file in full to
+// verify it, so the count comes from the same bytes.
+@Test("Recover Library's list counts the generations a lost ledger no longer describes, with no save (F854)")
+func theRecoveryListCountsUndescribedGenerationsWithoutASave() throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    let writer = makeStore(fixture)
+    var token = try writer.save((0..<3).map { Note(title: "m\($0)") }).token
+    token = try writer.save((0..<5).map { Note(title: "m\($0)") }, expecting: token).token
+    _ = try writer.save((0..<2).map { Note(title: "m\($0)") }, expecting: token)
+    try FileManager.default.removeItem(at: fixture.ledgerURL)
+
+    // A new launch over the lost ledger, which saves nothing (a read-only library).
+    let generations = try makeStore(fixture).retainedGenerations()
+
+    try #require(generations.count == 3, "fixture: three generations on disk: \(generations.map(\.name))")
+    let counts: [Int?] = generations.map(\.recordCount)
+    #expect(counts == [2, 5, 3], "counts newest first: \(counts)")
+    #expect(FileManager.default.fileExists(atPath: fixture.ledgerURL.path) == false, "listing must not write a ledger")
+}
+
+@Test("A generation whose bytes do not match its name is listed with no count (F854)")
+func theRecoveryListDoesNotCountUnverifiedGenerations() throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    let writer = makeStore(fixture)
+    let token = try writer.save((0..<3).map { Note(title: "m\($0)") }).token
+    _ = try writer.save((0..<4).map { Note(title: "m\($0)") }, expecting: token)
+    try FileManager.default.removeItem(at: fixture.ledgerURL)
+    let names = try FileManager.default.contentsOfDirectory(atPath: fixture.historyURL.path)
+        .filter { $0.hasPrefix("g-") }.sorted()
+    try #require(names.count == 2)
+    // The older file's bytes replaced: a JSON array of another length, under the old name.
+    try Data("[{\"title\":\"x\"}]".utf8).write(to: fixture.historyURL.appendingPathComponent(names[0]))
+
+    let generations = try makeStore(fixture).retainedGenerations()
+
+    let tampered = try #require(generations.first { $0.name == names[0] })
+    #expect(tampered.bytesMatchName == false)
+    #expect(tampered.recordCount == nil, "a count read from bytes that are not the generation's was reported")
+    #expect(generations.first { $0.name == names[1] }?.recordCount == 4)
+}
+
+@Test("A store that keeps no counts lists none for undescribed generations (F854)")
+func aStoreWithoutCountsListsNone() throws {
+    let fixture = try makeFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    let store = BackupJSONStore<[Note]>(primaryURL: fixture.primaryURL, backupURL: fixture.backupURL)
+    _ = try store.save([Note(title: "a"), Note(title: "b")])
+    try FileManager.default.removeItem(at: fixture.ledgerURL)
+
+    let generations = try BackupJSONStore<[Note]>(primaryURL: fixture.primaryURL, backupURL: fixture.backupURL)
+        .retainedGenerations()
+
+    let counts: [Int?] = generations.map(\.recordCount)
+    #expect(counts == [nil])
+}

@@ -1133,9 +1133,10 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         }
     }
 
-    /// Every retained generation on disk, newest first.
+    /// Every retained generation on disk, newest first — counted from its own bytes where the
+    /// ledger has no count, for a store that keeps counts (F854).
     public func retainedGenerations() throws -> [RetainedGeneration] {
-        history.retained(ledger: StoreLedger.read(at: ledgerURL, using: io))
+        history.retained(ledger: StoreLedger.read(at: ledgerURL, using: io), countingUndescribed: recordCount != nil)
     }
 
     /// Forgets every retained generation and, unless `includingConflictBranches` is false, every

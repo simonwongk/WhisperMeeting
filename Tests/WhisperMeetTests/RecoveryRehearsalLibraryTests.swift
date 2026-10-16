@@ -88,10 +88,14 @@ func keepDamagedOpensReadOnlyWithTheTwoMeetingGenerationOffered() async throws {
     // Every generation must be restorable: the script used to name them with a SHA-256 prefix, and
     // the app disabled all three as "damaged — cannot be used".
     #expect(offered.count == 3 && offered.allSatisfy(\.bytesMatchName), "\(offered)")
-    // With no ledger a label is only when the file was written (date and time, no meeting count), so
-    // those times must tell them apart.
+    // With no ledger each label still carries the meeting count, read from the copy itself (F854),
+    // beside when its file was written; the times must tell the two equal copies apart.
     #expect(Set(offered.map(AppModel.generationLabel)).count == offered.count,
             "indistinguishable choices: \(offered.map(AppModel.generationLabel))")
+    let counts: [Int?] = offered.sorted { $0.sequence > $1.sequence }.map(\.recordCount)
+    #expect(counts == [0, 2, 2], "the recovery list did not count the copies the lost ledger no longer describes: \(counts)")
+    #expect(offered.map(AppModel.generationLabel).filter { $0.hasPrefix("2 meetings · ") }.count == 2,
+            "\(offered.map(AppModel.generationLabel))")
 
     // The steps RECOVERY.md gives: the newest copy is the empty one, and restoring it leaves the
     // library read-only and says so; the copy before it brings the two meetings back.

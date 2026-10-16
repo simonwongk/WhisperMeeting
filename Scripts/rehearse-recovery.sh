@@ -73,9 +73,9 @@ good_meetings='[{"id":"11111111-1111-4111-8111-111111111111","title":"Synthetic 
 # It is the app's `StoreFingerprint`, computed by `store_fingerprint.py`. It was a SHA-256 prefix
 # until F550, and the app refused to restore every generation named that way.
 #
-# Each file also gets its own date. Without a ledger the app knows a generation's meeting count only
-# by restoring it, so Recover Library labels each one only by when its file was written (date and
-# time, with no meeting count) — and three files written in the same second would be three
+# Each file also gets its own date. Without a ledger Recover Library reads each generation's meeting
+# count from the file itself (F854), so the two good copies both say "2 meetings": only when each
+# file was written tells them apart — and three files written in the same second would leave two
 # identical choices.
 archive() {
   local sequence="$1" payload="$2" stamp="$3"

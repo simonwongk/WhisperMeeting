@@ -228,9 +228,9 @@ WHISPERMEET_LIBRARY="/path/printed/by/the/script" /Applications/WhisperMeet.app/
 ```
 
 It opens read-only. Choose *Recover Library…* in Settings. The rehearsal has no ledger, so each copy
-is labelled only by when it was written, a date and a time with no meeting count, which is also what
-you see after a real incident that lost the ledger. The newest copy, dated 14 August, is the empty
-one. Restoring it leaves the library read-only and WhisperMeet says so. Choose *Recover Library…*
+is labelled by when its file was written and by a meeting count WhisperMeet reads from the copy
+itself, which is also what you see after a real incident that lost the ledger. The newest copy,
+dated 14 August, is the empty one, at 0 meetings. Restoring it leaves the library read-only and WhisperMeet says so. Choose *Recover Library…*
 again and restore the 13 August copy, which brings the 2 meetings back.
 
 `WHISPERMEET_LIBRARY` moves the whole library for that process: the index, dictation log, `Runtime/`

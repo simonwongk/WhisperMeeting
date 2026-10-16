@@ -242,7 +242,13 @@ public struct StoreHistory: Sendable {
     /// `bytesMatchName == false` therefore means "do not trust these bytes", conflating "wrong
     /// bytes" with "unreadable". Both refuse identically in `data(of:)`, so nothing here is unsafe;
     /// telling the two apart in the UI needs a distinct state, and belongs with F192's picker.
-    public func retained(ledger: StoreLedger? = nil) -> [RetainedGeneration] {
+    ///
+    /// `countingUndescribed` (F854): a generation the ledger has no count for — a lost, unreadable
+    /// or set-aside ledger — is counted from the bytes just read, as a JSON array's top-level
+    /// elements, when they match the name. A save puts those counts back in the ledger (F677), but a
+    /// read-only library makes no saves, and its recovery list is the one most needed. Only for a
+    /// store whose values are arrays; the default reports nil, as before.
+    public func retained(ledger: StoreLedger? = nil, countingUndescribed: Bool = false) -> [RetainedGeneration] {
         let records = Dictionary(
             (ledger?.history ?? []).compactMap { record -> (String, StoreLedger.Record)? in
                 guard let name = record.historyName else { return nil }
@@ -273,11 +279,18 @@ public struct StoreHistory: Sendable {
                 // is the discrimination this list exists to make, and half of it survives a lost
                 // ledger for free (F234).
                 wroteAtEpochSeconds: record?.wroteAtEpochSeconds ?? identity?.modifiedSeconds,
-                recordCount: matches ? record?.recordCount : nil,
+                recordCount: matches
+                    ? (record?.recordCount ?? (countingUndescribed ? bytes.flatMap(Self.elementCount) : nil))
+                    : nil,
                 bytesMatchName: matches
             )
         }
         .sorted { $0.sequence > $1.sequence }
+    }
+
+    /// The number of top-level elements in verified bytes that hold a JSON array, or nil (F854).
+    private static func elementCount(_ bytes: Data) -> Int? {
+        ((try? JSONSerialization.jsonObject(with: bytes)) as? [Any])?.count
     }
 
     /// The bytes of one generation, verified against its own name first.
