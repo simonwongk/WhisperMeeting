@@ -147,25 +147,38 @@ func channelPresenceListsTwoChannelLeftovers() {
             "a mono leftover as before, several tracks by F955's audit, an empty file holds nothing")
 }
 
-@Test("Two channels mix as left and right only when plain or marked front left and front right; otherwise Shrink refuses (F1001)")
-func channelMaskDecidesLeftAndRight() {
-    #expect(MeetingStoragePlan.channelsAreLeftRight(formatTag: 1, channels: 2, mask: nil), "a plain PCM WAV")
-    #expect(MeetingStoragePlan.channelsAreLeftRight(formatTag: 3, channels: 2, mask: nil), "a plain float WAV")
-    #expect(MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 2, mask: 0x3))
-    #expect(!MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 2, mask: 0x4 | 0x8), "centre and LFE")
-    #expect(!MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 2, mask: 0), "no positions")
-    #expect(!MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 2, mask: nil), "a mask that was not read")
-    #expect(MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 1, mask: 0x4), "one channel is not this rule's")
-    // Any other container's layout, by channel label (R2-A).
-    #expect(MeetingStoragePlan.channelsAreLeftRight(labels: nil), "no layout")
-    #expect(MeetingStoragePlan.channelsAreLeftRight(labels: [1, 2]), "left, right")
-    #expect(!MeetingStoragePlan.channelsAreLeftRight(labels: [3, 4]), "centre, LFE")
-    #expect(!MeetingStoragePlan.channelsAreLeftRight(labels: []), "a layout that could not be read")
+@Test("What the compression keeps of two channels, by the positions they are laid out at, is the measured table (F1001 round 3)")
+func channelPositionsDecideWhatTheMixKeeps() {
+    typealias Positions = MeetingStoragePlan.ChannelPositions
+    // The sets, as measured (gates/r3-04-pairs.txt): moving a label changes what Shrink deletes.
+    #expect(MeetingStoragePlan.positionsMixedEvenly == [1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 33, 34, 35, 36, 206, 207, 208, 209, 301, 302])
+    #expect(MeetingStoragePlan.centredPositions == [3, 42])
+    #expect(MeetingStoragePlan.positionsLeftOut == [0, 4, 16, 17, 18, 37, 44, 45, 100, 101, 102, 103, 104, 201, 202, 203, 204, 205, 65_536, 65_537])
+    let cases: [([UInt32]?, Positions, String)] = [
+        (nil, .keepsBoth, "no layout: a plain WAV, mask 0, most compressed files"),
+        ([1, 2], .keepsBoth, "left, right"), ([2, 1], .keepsBoth, "right, left"),
+        ([33, 34], .keepsBoth, "rear surround"), ([5, 6], .keepsBoth, "surround"), ([7, 8], .keepsBoth, "the centre pair"),
+        ([301, 302], .keepsBoth, "headphones"), ([208, 209], .keepsBoth, "binaural"), ([206, 207], .keepsBoth, "X/Y"),
+        ([1, 3], .keepsBoth, "left and centre, mixed unevenly but kept"), ([3, 3], .keepsBoth, "centre twice"),
+        ([42, 42], .keepsBoth, "mono twice"), ([38, 39], .keepsBoth, "matrix stereo, Lt/Rt"),
+        ([3, 4], .leavesOneOut, "centre and LFE (R2-A)"), ([1, 4], .leavesOneOut, "left and LFE"),
+        ([204, 205], .leavesOneOut, "mid/side"), ([200, 201], .leavesOneOut, "Ambisonic W and X"),
+        ([0, 0], .leavesOneOut, "unused"), ([65_536, 65_537], .leavesOneOut, "discrete"), ([17, 18], .leavesOneOut, "top back"),
+        ([3, 206], .notShown, "centre beside X: measured to leave one out, but not by a position left out"),
+        ([1, 38], .notShown, "left beside left total: interacts"), ([1, 0xFFFF_FFFF], .notShown, "an unknown position"),
+        ([1, 46], .notShown, "a label with no name"), ([], .notShown, "a layout that could not be read"),
+        ([1], .notShown, "one label for two channels"), ([1, 2, 3], .notShown, "three labels"),
+    ]
+    for (labels, expected, why) in cases {
+        #expect(MeetingStoragePlan.monoMix(ofChannelLabels: labels) == expected, "\(why)")
+    }
     var disk = MeetingStoragePlan.DiskFacts(
-        recordingName: "recording.wav", recordingExists: true, inOwnFolder: true, hasIntegrityProblem: false,
+        recordingName: "recording.caf", recordingExists: true, inOwnFolder: true, hasIntegrityProblem: false,
         rebuildOffered: false, durationSeconds: 600,
-        entries: [MeetingStoragePlan.FolderEntry(name: "recording.wav", bytes: 100_000_000)], channelCount: 2)
+        entries: [MeetingStoragePlan.FolderEntry(name: "recording.caf", bytes: 100_000_000)], channelCount: 2)
     #expect(MeetingStoragePlan.unavailability(disk: disk, live: .init()) == nil)
-    disk.channelsNotLeftRight = "recording.wav"
-    #expect(MeetingStoragePlan.unavailability(disk: disk, live: .init()) == .channelsNotLeftRight(name: "recording.wav"))
+    disk.channelLayoutRefused = .init(name: "recording.caf", positions: .leavesOneOut)
+    #expect(MeetingStoragePlan.unavailability(disk: disk, live: .init()) == .channelLayoutLeavesOneOut(name: "recording.caf"))
+    disk.channelLayoutRefused = .init(name: "recording.caf", positions: .notShown)
+    #expect(MeetingStoragePlan.unavailability(disk: disk, live: .init()) == .channelLayoutNotShown(name: "recording.caf"))
 }

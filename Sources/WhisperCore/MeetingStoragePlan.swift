@@ -162,25 +162,61 @@ public enum MeetingStoragePlan {
         return nil
     }
 
-    /// Whether a WAV's two channels mix into one as left and right (F1001): a plain format with no positions,
-    /// or `WAVE_FORMAT_EXTENSIBLE` marked front left and front right (0x3). afconvert's mono mix follows any
-    /// other marking — of centre and LFE it drops the LFE channel, and the copy's checks see a channel of under
-    /// a twentieth of the mix go only by chance (review 1 of F1001) — so anything else is kept, fail-closed:
-    /// no positions at all (0), back left and right, and every other pair included. Other than two channels is
-    /// not this rule's question.
-    public static func channelsAreLeftRight(formatTag: UInt16, channels: UInt32, mask: UInt32?) -> Bool {
-        guard channels == 2, formatTag == 0xFFFE else { return true }
-        return mask == 0x3
+    /// What afconvert's mono mix — the encode Shrink runs — does with a two-channel file's channels, judged by
+    /// the position each is laid out at (F1001, rounds 2 and 3). It mixes by position, in a WAV's mask and in a
+    /// CAF's, an AIFF's or any container's channel layout alike, and of some positions it leaves a channel out
+    /// of the copy altogether (review 1 of round 2, and review 2's R2-A: a voice on a channel laid out as LFE
+    /// was missing from the copy and the original deleted).
+    public enum ChannelPositions: Sendable, Equatable {
+        /// Both channels reach the copy.
+        case keepsBoth
+        /// A channel is laid out at a position the mix leaves out (`positionsLeftOut`).
+        case leavesOneOut
+        /// A layout this has not been shown to keep both channels of: kept, fail-closed.
+        case notShown
     }
 
-    /// The same rule for any container's channel layout, read as one Core Audio channel label per channel
-    /// (F1001, review 2 of round 2, R2-A): afconvert's mix follows a CAF's or an AIFF's layout as it follows a
-    /// WAV's mask, and of a pair laid out centre + LFE it drops the LFE channel. No layout (nil) mixes as left
-    /// and right; two channels labelled left (1) and right (2) do; anything else is kept, fail-closed — an
-    /// empty list (a layout that could not be read) included.
-    public static func channelsAreLeftRight(labels: [UInt32]?) -> Bool {
-        guard let labels else { return true }
-        return labels == [1, 2]
+    /// Positions the mix keeps a channel at, beside any other of them: measured, every ordered pair of these
+    /// keeps both channels (F1001 round 3, `gates/r3-04-pairs.txt`, 529 pairs of two-channel CAFs through
+    /// `AudioCompressor.compressSpeech`, each channel at least 0.034 of an even mix's 0.05). Core Audio channel
+    /// labels: left, right (1, 2), left and right surround (5, 6), left and right centre (7, 8), centre
+    /// surround (9), left and right surround direct (10, 11), top centre surround (12), vertical height left,
+    /// centre and right (13–15), rear surround left and right (33, 34), left and right wide (35, 36), X/Y (206,
+    /// 207), binaural left and right (208, 209), headphones left and right (301, 302).
+    public static let positionsMixedEvenly: Set<UInt32> = [1, 2, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 33, 34, 35, 36,
+                                                            206, 207, 208, 209, 301, 302]
+
+    /// Centre (3) and mono (42): kept beside each other and beside every position of `positionsMixedEvenly`
+    /// but X and Y (206, 207), measured; beside X or Y the mix leaves one out.
+    public static let centredPositions: Set<UInt32> = [3, 42]
+
+    /// Positions the mix leaves a channel at out of the copy, or silences, beside every partner measured: unused
+    /// (0), LFE (4), top back left, centre and right (16–18), LFE 2 (37), centre surround direct (44), haptic
+    /// (45), positions given by coordinates (100–104), Ambisonic X, Y, Z (201–203), mid and side (204, 205),
+    /// discrete 0 and 1 (65,536, 65,537). Measured with left and right as partners, and the positional ones
+    /// with every positional label (`gates/r3-04-pairs.txt`).
+    public static let positionsLeftOut: Set<UInt32> = [0, 4, 16, 17, 18, 37, 44, 45, 100, 101, 102, 103, 104,
+                                                        201, 202, 203, 204, 205, 65_536, 65_537]
+
+    /// What the mix does with two channels laid out at `labels` (Core Audio channel labels, one per channel),
+    /// or with no layout (nil): no layout, both in `positionsMixedEvenly`, both centred, a centred one beside one
+    /// of those but X and Y, and the matrix-encoded pair (left total, right total: 38, 39, in either order) keep
+    /// both; a position in `positionsLeftOut` leaves one out; anything else — a layout not of two labels (one
+    /// that could not be read is an empty list), an unknown position, or a pair whose positions interact (left
+    /// beside left total, measured to leave one out) — is not shown. A plain WAV, and one with mask 0, read as
+    /// no layout. Measured: 1,156 ordered pairs, none against this rule.
+    public static func monoMix(ofChannelLabels labels: [UInt32]?) -> ChannelPositions {
+        guard let labels else { return .keepsBoth }
+        guard labels.count == 2 else { return .notShown }
+        let (first, second) = (labels[0], labels[1])
+        if positionsLeftOut.contains(first) || positionsLeftOut.contains(second) { return .leavesOneOut }
+        if positionsMixedEvenly.contains(first) && positionsMixedEvenly.contains(second) { return .keepsBoth }
+        if centredPositions.contains(first) && centredPositions.contains(second) { return .keepsBoth }
+        let besideXY: Set<UInt32> = [206, 207]
+        if centredPositions.contains(first), positionsMixedEvenly.contains(second), !besideXY.contains(second) { return .keepsBoth }
+        if centredPositions.contains(second), positionsMixedEvenly.contains(first), !besideXY.contains(first) { return .keepsBoth }
+        if (first, second) == (38, 39) || (first, second) == (39, 38) { return .keepsBoth }
+        return .notShown
     }
 
     /// The other `recording.<ext>` files a resume must check the copy against before it removes them
@@ -349,9 +385,9 @@ public enum MeetingStoragePlan {
         /// judged by its length alone, as before.
         public var otherRecordingTracks: [String: [RecordingMixPlan.Track]]
         /// The first of the recording and the other `recording.<ext>` files that is a two-channel file whose
-        /// channels are marked as something other than front left and front right — a WAV's mask or any other
-        /// container's channel layout (`channelsAreLeftRight`); nil when none is (F1001).
-        public var channelsNotLeftRight: String? = nil
+        /// channel layout the encode's mix is not shown to keep both channels of (`monoMix(ofChannelLabels:)`),
+        /// with what the rule says of it; nil when none is (F1001).
+        public var channelLayoutRefused: ChannelLayoutRefusal? = nil
 
         public init(recordingName: String, recordingExists: Bool, inOwnFolder: Bool, hasIntegrityProblem: Bool,
                     rebuildOffered: Bool, durationSeconds: TimeInterval, entries: [FolderEntry],
@@ -370,6 +406,16 @@ public enum MeetingStoragePlan {
             self.channelCount = channelCount
             self.audioTracks = audioTracks
             self.otherRecordingTracks = otherRecordingTracks
+        }
+    }
+
+    /// A file Shrink would remove, or encode, whose channel layout it refuses (F1001).
+    public struct ChannelLayoutRefusal: Sendable, Equatable {
+        public var name: String
+        public var positions: ChannelPositions
+        public init(name: String, positions: ChannelPositions) {
+            self.name = name
+            self.positions = positions
         }
     }
 
@@ -415,10 +461,11 @@ public enum MeetingStoragePlan {
         /// never mixed, or could not be read, or — outside a resume, which checks the copy against it
         /// before removing it — nothing compares it with the copy at all.
         case otherRecordingHasMoreTracks(name: String, tracks: Int, channels: Int)
-        /// A two-channel file — the recording, or another `recording.<ext>` Shrink would delete — marks its
-        /// channels as something other than front left and front right (`channelsAreLeftRight`), and the encode's
-        /// mix follows the marking and can drop a channel (F1001).
-        case channelsNotLeftRight(name: String)
+        /// A two-channel file — the recording, or another `recording.<ext>` Shrink would delete — lays a channel
+        /// out at a position the encode's mix leaves out of the copy (`ChannelPositions.leavesOneOut`, F1001).
+        case channelLayoutLeavesOneOut(name: String)
+        /// Or lays its channels out in a way the mix is not shown to keep both of (`.notShown`, F1001).
+        case channelLayoutNotShown(name: String)
         case cannotMeasureLength
         case alreadyShrunk
         case nothingToGain
@@ -458,8 +505,10 @@ public enum MeetingStoragePlan {
             case let .otherRecordingHasMoreTracks(name, tracks, channels):
                 let holds = tracks > 1 ? "\(tracks) audio tracks" : "\(channels) channels"
                 return "This meeting's folder also holds “\(name)”, which has \(holds), and the shrunk copy isn't shown to hold them all. Shrinking would delete it, so it isn't shrunk."
-            case let .channelsNotLeftRight(name):
-                return "“\(name)” marks its two channels as something other than left and right. The compression mixes them by those marks and can leave one out, so it is kept as it is."
+            case let .channelLayoutLeavesOneOut(name):
+                return "“\(name)” labels one of its two channels as a kind of channel (an LFE or a mid/side channel, say) which the compression leaves out of a mono copy, so it is kept as it is."
+            case let .channelLayoutNotShown(name):
+                return "“\(name)” labels its two channels in a way Shrink hasn't shown the compression keeps both of in a mono copy, so it is kept as it is."
             case .cannotMeasureLength:
                 return "This recording's length can't be read, so a compressed copy couldn't be checked against it."
             case .alreadyShrunk:
@@ -495,8 +544,12 @@ public enum MeetingStoragePlan {
         if let other = otherRecordingAtRisk(disk) {
             return .otherRecordingMayHoldMore(name: other.name, seconds: disk.otherRecordingSeconds[other.name])
         }
-        // F1001: a two-channel WAV whose channels are not marked left and right, which the encode's mix follows.
-        if let marked = disk.channelsNotLeftRight { return .channelsNotLeftRight(name: marked) }
+        // F1001: a two-channel file laid out so that the encode's mix, which follows the layout, may leave a
+        // channel out.
+        if let refused = disk.channelLayoutRefused {
+            return refused.positions == .leavesOneOut ? .channelLayoutLeavesOneOut(name: refused.name)
+                : .channelLayoutNotShown(name: refused.name)
+        }
         // F955: and its tracks and channels, which its length cannot show. A leftover a mix must hold is
         // removed by a resume only after the copy is checked against it (`otherRecordingsToVerify`), and
         // only while mixing Shrink is on (F980); anything else of that kind is kept.

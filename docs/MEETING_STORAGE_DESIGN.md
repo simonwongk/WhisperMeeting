@@ -157,9 +157,19 @@ verified and the index saved.
      them. Not caught: a side
      voice more than about 10 dB under the middle one that talks over it throughout (tones 10 dB down read
      0.11; 15 dB down, 0.03), and a copy that leaves out a channel holding under a twentieth of the mix.
-   - And a two-channel WAV whose channels are marked as anything but front left and front right
-     (`WAVE_FORMAT_EXTENSIBLE` with a mask other than 0x3) is not shrunk (F1001 round 2): afconvert's mix follows
-     the marks, and of a pair marked centre and LFE it drops the LFE channel (review 1).
+   - And a two-channel file whose channel layout the encode's mix is not shown to keep both channels of is not
+     shrunk (F1001, rounds 2 and 3). afconvert mixes by position — a WAV's mask, or a CAF's, an AIFF's or any
+     container's layout, read with AVAudioFile as one channel label per channel — and leaves out of the copy a
+     channel laid out as LFE, mid or side, an Ambisonic X/Y/Z, top back, unused or discrete (review 1 of round 2;
+     review 2's R2-A, a CAF and an AIFF laid out centre + LFE, deleted with a voice 16 dB down missing). Measured
+     over 1,156 ordered pairs of labels (`gates/r3-04-pairs.txt`), `MeetingStoragePlan.monoMix(ofChannelLabels:)`
+     lets through no layout (a plain WAV, mask 0), and pairs of left/right, surround, rear, the centre pair,
+     wide, vertical height, X/Y, binaural and headphones positions, centre or mono beside those, and matrix
+     Lt/Rt — each of which keeps both channels, at two-thirds of an even mix's level at least (round 2 refused
+     mask 0, back, side and centre-pair masks too, though nothing is lost: R2-C). It refuses a position it
+     leaves out ("labels one of its two channels as a kind of channel … which the compression leaves out"), and,
+     fail-closed, anything else ("in a way Shrink hasn't shown the compression keeps both of") — 147 measured
+     pairs that do keep both, left beside left total say, among them.
    - A two-channel `recording.<ext>` beside the recording — a link import's download beside the mono WAV ffmpeg
      extracted from it — is removed with it, so the copy is checked against it the same way first, and if that
      is not shown, nothing is removed (review 2, F2-1). A download AVFoundation cannot read (WebM) has no channel

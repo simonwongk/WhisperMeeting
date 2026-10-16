@@ -675,18 +675,17 @@ extension AppModel {
                 durationSeconds: length, entries: listed, audioTrackCount: tracks,
                 otherRecordingSeconds: otherSeconds, channelCount: channels, audioTracks: audioTracks,
                 otherRecordingTracks: otherTracks)
-            // F1001: a two-channel file whose channels are marked other than left and right, which the encode's
-            // mix follows — a WAV by its mask, any other container by its channel layout (R2-A) — the recording,
-            // or one Shrink would remove.
+            // F1001: a two-channel file laid out so that the encode's mix, which follows the layout — a WAV's
+            // mask, or any container's channel layout (R2-A) — may leave a channel out (R2-C): the recording, or
+            // one Shrink would remove.
             let candidates = (exists ? [name] : []) + MeetingStoragePlan.otherRecordings(in: listed, recordingName: name).map(\.name)
-            facts.channelsNotLeftRight = candidates.first { candidate in
+            for candidate in candidates where facts.channelLayoutRefused == nil {
                 let url = candidate == name ? recordingURL : directory.appendingPathComponent(candidate)
-                if let header = WAVInspection.header(at: url) {
-                    return !MeetingStoragePlan.channelsAreLeftRight(formatTag: header.formatTag, channels: header.channels,
-                                                                    mask: header.channelMask)
+                guard DecodedAudio.channelCount(of: url) == 2 else { continue }
+                let positions = MeetingStoragePlan.monoMix(ofChannelLabels: DecodedAudio.channelLabels(of: url))
+                if positions != .keepsBoth {
+                    facts.channelLayoutRefused = MeetingStoragePlan.ChannelLayoutRefusal(name: candidate, positions: positions)
                 }
-                guard DecodedAudio.channelCount(of: url) == 2 else { return false }
-                return !MeetingStoragePlan.channelsAreLeftRight(labels: DecodedAudio.channelLabels(of: url))
             }
             return (facts, couldNotMeasure)
         }.value

@@ -24,10 +24,6 @@ public enum WAVInspection {
         /// Byte offset of the first audio sample — 44 for a canonical header, more when a writer
         /// inserted chunks before `data`. What "the file is long enough" has to be measured from.
         public let dataOffset: UInt32
-        /// `WAVE_FORMAT_EXTENSIBLE`'s speaker positions (`dwChannelMask`: 0x1 front left, 0x2 front right, 0x4
-        /// centre, 0x8 LFE, …), or nil for a plain format, which has none. afconvert's mono mix follows them:
-        /// of two channels marked centre and LFE it keeps the centre and drops the LFE channel (F1001 review 1).
-        public var channelMask: UInt32? = nil
 
         /// Audio bytes per second, computed in 64 bits (F435). Each field fits its own type and the
         /// product need not: 48 kHz × 65,535 channels × 16 bits is past `UInt32.max`, and Swift
@@ -73,7 +69,6 @@ public enum WAVInspection {
         var channels: UInt16?
         var sampleRate: UInt32?
         var bitsPerSample: UInt16?
-        var channelMask: UInt32?
         // RF64 (F302): the real data size is a 64-bit field in `ds64`; the `data` chunk says 0xFFFFFFFF.
         var rf64DataBytes: UInt64?
         var index = 12
@@ -86,8 +81,6 @@ public enum WAVInspection {
                 channels = le16(data, body + 2)
                 sampleRate = le32(data, body + 4)
                 bitsPerSample = le16(data, body + 14)
-                // WAVEFORMATEXTENSIBLE: cbSize at 16, valid bits at 18, the mask at 20 (F1001).
-                if formatTag == 0xFFFE, size >= 24, body + 24 <= data.count { channelMask = le32(data, body + 20) }
             // 28, the EBU Tech 3306 minimum (riffSize, dataSize, sampleCount, table length), not
             // the 16 that happened to cover the two fields read below (F344).
             } else if identifier == "ds64", size >= 28, body + 16 <= data.count {
@@ -106,8 +99,7 @@ public enum WAVInspection {
                     sampleRate: sampleRate,
                     bitsPerSample: UInt32(bitsPerSample),
                     declaredDataBytes: size == UInt32.max ? (rf64DataBytes ?? UInt64(size)) : UInt64(size),
-                    dataOffset: UInt32(body),
-                    channelMask: channelMask
+                    dataOffset: UInt32(body)
                 )
             }
             // RIFF chunks are word-aligned, so an odd-sized one carries a pad byte.

@@ -136,19 +136,96 @@ func shrinkKeepsEveryCancellationTheReviewsMade() async throws {
     #expect(deleted.isEmpty, "\(deleted)")
 }
 
-@Test("A WAV whose two channels are marked centre and LFE, or anything but left and right, is kept (F1001 round 2)")
+@Test("A WAV whose mask puts a channel where the compression leaves it out is kept; masks it mixes evenly shrink (F1001 round 3, R2-C)")
 @MainActor
-func shrinkKeepsAWAVWhoseChannelsAreNotLeftAndRight() async throws {
-    // Review 1: afconvert's mix follows the mask and drops the LFE channel, here a voice 12 dB down.
+func shrinkJudgesAWAVByWhatTheCompressionKeepsOfItsMask() async throws {
+    // Review 1 of round 2: afconvert's mix follows the mask and drops an LFE channel, here a voice 12 dB down.
+    // Review 2, R2-C: masks it mixes evenly — none, back, side, the centre pair, a centre beside a front — were
+    // refused too, though nothing is lost. Measured, `gates/r3-01-layouts.txt`, `r3-04-pairs.txt`.
     let quietB = scaled(b16, 0.25)
-    for (name, mask) in [("centre and LFE", UInt32(0x4 | 0x8)), ("no positions", UInt32(0)), ("back left and right", UInt32(0x10 | 0x20))] {
+    for (name, mask) in [("centre and LFE", UInt32(0x4 | 0x8)), ("left and LFE", UInt32(0x1 | 0x8))] {
         let outcome = try await shrinkWAV([a16, quietB], mask: mask)
         #expect(outcome.kept, "\(name): \(outcome.alert)")
-        #expect(outcome.alert.contains("marks its two channels as something other than left and right"), "\(name): \(outcome.alert)")
+        #expect(outcome.alert.contains("which the compression leaves out of a mono copy"), "\(name): \(outcome.alert)")
     }
-    // Marked front left and front right, it shrinks as a plain WAV does.
-    let plain = try await shrinkWAV([a16, quietB], mask: 0x3)
-    #expect(!plain.kept && plain.alert.contains("Shrunk"), "\(plain.alert)")
+    for (name, mask) in [("front left and right", UInt32(0x3)), ("no positions", UInt32(0)), ("back left and right", UInt32(0x30)),
+                         ("side left and right", UInt32(0x600)), ("the centre pair", UInt32(0xC0)), ("front left and centre", UInt32(0x5))] {
+        let outcome = try await shrinkWAV([a16, quietB], mask: mask)
+        #expect(!outcome.kept && outcome.alert.contains("Shrunk"), "\(name): \(outcome.alert)")
+    }
+}
+
+/// 1.5 s of steady sines at 0.1 each, at 16 kHz.
+private func steadyTones(_ frequencies: [Double]) -> [Float] {
+    var out = [Float](repeating: 0, count: 24_000)
+    for frequency in frequencies {
+        let step = 2 * Double.pi * frequency / 16_000
+        for n in out.indices { out[n] += Float(0.1 * sin(step * Double(n))) }
+    }
+    return out
+}
+
+/// What afconvert's encode keeps of each channel of a two-channel file: the copy's level of voice A (channel 1)
+/// and B (channel 2), each 0.05 when mixed evenly.
+private func keptByTheEncode(_ url: URL, scratch: URL) throws -> (a: Double, b: Double) {
+    let out = scratch.appendingPathComponent("\(UUID().uuidString).m4a")
+    try AudioCompressor.compressSpeech(input: url, output: out, workingWAV: scratch.appendingPathComponent("w-\(UUID().uuidString).wav"))
+    let copy = try #require(try fixtureDecode(out).channels.first)
+    return (fixtureToneAmplitude(copy, rate: 16_000, frequency: 311, from: 0.3, to: 1.2),
+            fixtureToneAmplitude(copy, rate: 16_000, frequency: 353, from: 0.3, to: 1.2))
+}
+
+@Test("Every channel layout the rule lets through keeps both channels in the real encode, and the ones it stops are the measured ones (F1001 round 3)")
+func channelLayoutRuleMatchesTheEncode() throws {
+    let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("F1001-layouts-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: scratch) }
+    // Steady tones, so a level read off the copy is the channel's own.
+    let steadyA = steadyTones([311, 619, 911]), steadyB = steadyTones([353, 541, 953])
+    typealias Positions = MeetingStoragePlan.ChannelPositions
+    var files: [(String, URL, Positions)] = []
+    for (mask, expected) in [(UInt32?.none, Positions.keepsBoth), (0, .keepsBoth), (0x3, .keepsBoth), (0x5, .keepsBoth), (0x6, .keepsBoth),
+                             (0x30, .keepsBoth), (0xC0, .keepsBoth), (0x600, .keepsBoth), (0x104, .keepsBoth), (0x1800, .keepsBoth),
+                             (0x7, .keepsBoth), (0x9, .leavesOneOut), (0xA, .leavesOneOut), (0xC, .leavesOneOut), (0x108, .leavesOneOut),
+                             (0x3_0000, .leavesOneOut)] as [(UInt32?, Positions)] {
+        let url = scratch.appendingPathComponent("\(UUID().uuidString).wav")
+        try pcm16([steadyA, steadyB], mask: mask).write(to: url)
+        files.append(("WAV mask \(mask.map { String($0, radix: 16) } ?? "plain")", url, expected))
+    }
+    for (name, tag, expected) in [("Stereo", kAudioChannelLayoutTag_Stereo, Positions.keepsBoth),
+                                  ("StereoHeadphones", kAudioChannelLayoutTag_StereoHeadphones, .keepsBoth),
+                                  ("MatrixStereo", kAudioChannelLayoutTag_MatrixStereo, .keepsBoth),
+                                  ("XY", kAudioChannelLayoutTag_XY, .keepsBoth), ("Binaural", kAudioChannelLayoutTag_Binaural, .keepsBoth),
+                                  ("MidSide", kAudioChannelLayoutTag_MidSide, .leavesOneOut)] {
+        let url = scratch.appendingPathComponent("\(UUID().uuidString).caf")
+        try writeLaidOut(url, [steadyA, steadyB], layout: channelLayout(tag: tag))
+        files.append(("CAF tag \(name)", url, expected))
+    }
+    let keptLabels = MeetingStoragePlan.positionsMixedEvenly.sorted() + MeetingStoragePlan.centredPositions.sorted()
+    for label in keptLabels {
+        for partner: UInt32 in [1, 2] {
+            let url = scratch.appendingPathComponent("\(UUID().uuidString).caf")
+            try writeLaidOut(url, [steadyA, steadyB], layout: channelLayout(tag: kAudioChannelLayoutTag_UseChannelDescriptions, labels: [label, partner]))
+            files.append(("CAF labels \(label),\(partner)", url, .keepsBoth))
+        }
+    }
+    for label in MeetingStoragePlan.positionsLeftOut.sorted() {
+        let url = scratch.appendingPathComponent("\(UUID().uuidString).aif")
+        try writeLaidOut(url, [steadyA, steadyB], layout: channelLayout(tag: kAudioChannelLayoutTag_UseChannelDescriptions, labels: [label, 1]))
+        files.append(("AIFF labels \(label),1", url, .leavesOneOut))
+    }
+    var wrong: [String] = []
+    for (name, url, expected) in files {
+        let verdict = MeetingStoragePlan.monoMix(ofChannelLabels: DecodedAudio.channelLabels(of: url))
+        if verdict != expected { wrong.append("\(name): the rule says \(verdict), expected \(expected)") }
+        // What the rule lets through must keep both channels, at two-thirds of an even mix at least.
+        if verdict == .keepsBoth {
+            let kept = try keptByTheEncode(url, scratch: scratch)
+            if kept.a < 0.033 || kept.b < 0.033 { wrong.append(String(format: "%@: let through, but the copy keeps A %.4f B %.4f", name, kept.a, kept.b)) }
+        }
+    }
+    print("F1001 round 3 layouts: \(files.count) checked, \(wrong.count) wrong")
+    #expect(wrong.isEmpty, "\(wrong)")
 }
 
 @Test("A link import's stereo download beside its mono WAV is not deleted when its channels cancel (F1001 round 2, F2-1)")
