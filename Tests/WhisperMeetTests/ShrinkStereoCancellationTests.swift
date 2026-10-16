@@ -8,9 +8,11 @@ import Testing
 // mono mix, which sums the channels. A stereo file whose channels are mid/side (L = A + B, R = A − B), or
 // L = B, R = A − B, loses B in that sum, and the checks before the original is deleted — the level of the
 // whole copy and of each five seconds — still passed, because A is present (the review of Wave 7 lane S,
-// S1 and S2: both originals deleted). Now each channel's own sound must be found in the copy before the
-// original is removed, and an interrupted Shrink's resume checks a two-channel leftover the same way.
-// Driven through the calls the Shrink button makes, with the real encoder and decoder.
+// S1 and S2: both originals deleted). Now the channels must not cancel each other when mixed into one — the
+// user's rule of 2026-10-15, "Refuse any with cancellation" — and the copy must hold their mix before the
+// original is removed; an interrupted Shrink's resume checks a two-channel leftover the same way. The reviews'
+// own probes are in `ShrinkStereoCancellationProbeTests`. Driven through the calls the Shrink button makes,
+// with the real encoder and decoder.
 
 /// A voice-like sound: twelve tones, each swelling at its own rate (the lane's `fixtureVoice` shape).
 private func stereoVoice(_ tones: [Double], amplitude: Double = 0.03, seconds: Double) -> [Float] {
@@ -79,7 +81,7 @@ func shrinkKeepsAStereoRecordingWhoseLeftVoiceCancels() async throws {
     #expect((try? Data(contentsOf: f.recording)) == original, "\(alert)")
     #expect(!f.exists("recording.m4a"), "\(alert)")
     #expect(alert.contains("nothing was removed"), "\(alert)")
-    #expect(alert.contains("left channel"), "\(alert)")
+    #expect(alert.contains("left and right channels cancel each other"), "\(alert)")
 }
 
 // MARK: - The resume of an interrupted Shrink
@@ -149,20 +151,22 @@ func shrinkResumeKeepsALeftCancellingLeftover() async throws {
 
     let alert = f.model.alertMessage ?? "nil"
     #expect(f.exists("recording.wav"), "\(alert)")
-    #expect(alert.contains("left channel"), "\(alert)")
+    #expect(alert.contains("its left and right channels cancel each other"), "\(alert)")
 }
 
 @Test("What Shrink says when a channel's sound is not shown in the copy, of a recording and of a resume's leftover (F1001)")
 func shrinkSaysWhichChannelIsNotInTheCopy() {
     typealias Failure = AppModel.ShrinkFailure
-    #expect(Failure.channelNotInCopy(.missing(window: 1, channel: 0)).errorDescription
-        == "Sound on the recording's left channel at about 0:05 is not in the compressed copy, because it cancels against the right channel when they are mixed into one, so the copy was discarded.")
+    #expect(Failure.channelNotInCopy(.cancels(seconds: 4.096, band: 2)).errorDescription
+        == "The recording's left and right channels cancel each other at about 0:04 when they are mixed into one, so a mono copy would lose sound; the recording is kept as it is.")
     #expect(Failure.channelNotInCopy(.copyMissing(window: 2)).errorDescription
         == "The compressed copy is missing sound the recording has at about 0:10, so the copy was discarded.")
     #expect(Failure.channelNotInCopy(.unmeasured(window: 0, channel: 1)).errorDescription
         == "The recording's right channel could not be checked against the compressed copy at about 0:00, so the copy was discarded.")
-    #expect(Failure.leftoverChannelNotInCopy(name: "recording.wav", finding: .missing(window: 0, channel: 1)).errorDescription
-        == "“recording.wav”, which the compressed copy replaced, was kept: sound on its right channel at about 0:00 is not in the compressed copy, because it cancels against the left channel when they are mixed into one.")
+    #expect(Failure.channelNotInCopy(.unmeasured(window: 1, channel: nil)).errorDescription
+        == "The recording's channels could not be checked against the compressed copy at about 0:05, so the copy was discarded.")
+    #expect(Failure.leftoverChannelNotInCopy(name: "recording.wav", finding: .cancels(seconds: 0, band: 0)).errorDescription
+        == "“recording.wav”, which the compressed copy replaced, was kept: its left and right channels cancel each other at about 0:00 when they are mixed into one, so a mono copy would lose sound.")
     #expect(Failure.leftoverChannelNotInCopy(name: "recording.wav", finding: .copyMissing(window: 0)).errorDescription
         == "“recording.wav”, which the compressed copy replaced, was kept: the compressed copy is missing sound it has at about 0:00.")
 }
@@ -344,7 +348,8 @@ func channelPresenceMeasuresARecordingPastItsCopysEnd() async throws {
     let native = try DecodedAudio.fullyDecoded(of: original)
     try #require(native.channelWindowLevels.map(\.count) == [3, 3], "fixture: a third, short window")
     let presence = try await RecordingMixer.channelPresence(of: original, against: copy)
-    #expect(presence.windows.count >= 3)
+    #expect(presence.mix.count >= 2)
+    #expect((presence.stretches.last?.start ?? 0) + 0.512 > 10.05, "the last stretch reaches the recording's end")
     #expect(RecordingMixPlan.firstChannelNotInCopy(presence, nativeChannelWindows: native.channelWindowLevels) == nil,
             "\(presence)")
 }
@@ -373,10 +378,17 @@ func shrinkKeepsAStereoRecordingItCannotMeasure() async throws {
 func shrinkKeepsAStereoRecordingMeasuredWrongly() async throws {
     typealias Measure = RecordingMixPlan.ChannelPresence.Measure
     let good = Measure(energy: 1, missing: 0)
+    let stretches: [RecordingMixPlan.ChannelPresence.Stretch] = stride(from: 0.0, to: 12, by: 0.512).map {
+        .init(start: $0, level: 0.1, bands: [Measure](repeating: good, count: RecordingMixPlan.cancellationBands.count - 1))
+    }
     let wrong: [RecordingMixPlan.ChannelPresence] = [
-        .init(channels: 1, windows: [[good], [good], [good]], mix: [good, good, good]),
-        .init(channels: 2, windows: [[good, good], [good, Measure(energy: .nan, missing: 0)], [good, good]], mix: [good, good, good]),
-        .init(channels: 2, windows: [[good, good]], mix: [good]),
+        .init(channels: 1, stretches: stretches, mix: [good, good, good]),
+        .init(channels: 2, stretches: stretches.enumerated().map { index, stretch in
+            var bad = stretch
+            if index == 12 { bad.bands[2] = Measure(energy: .nan, missing: 0) }
+            return bad
+        }, mix: [good, good, good]),
+        .init(channels: 2, stretches: Array(stretches.prefix(9)), mix: [good]),
     ]
     for presence in wrong {
         let f = try await MixFixture(recordingExtension: "wav", duration: 12) { url in

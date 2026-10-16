@@ -427,22 +427,27 @@ enum RecordingMixer {
         return RecordingMixPlan.Audit(trackChannels: channels, sampleRate: Double(sampleRate), windows: windows, outOfStep: outOfStep)
     }
 
-    /// Measures how much of each channel of a one-track recording a mono copy of it holds, frequency by
-    /// frequency, for `RecordingMixPlan.firstChannelNotInCopy` to judge before Shrink deletes a two-channel
-    /// original (F1001). The recording is read as `audit` reads it — 16 kHz, each channel apart — and the
-    /// copy with AVAudioFile at 16 kHz, in step. Each `RecordingMixPlan.presenceFrameSeconds` frame (a Hann
-    /// window, half-overlapping) of every channel and of the copy is transformed, and the channels' mono mix
-    /// formed from theirs as the encode mixes (`channelWeight`); for each bin in `RecordingMixPlan.presenceBand`,
-    /// the mix's cross-spectrum with each channel and the channel's energy, and the copy's with the mix and the
-    /// mix's energy, are summed over `presenceGroupFrames` frames, never across a window's edge, and each is
-    /// judged by `soundFound`. Every frame of the recording is measured against the mix, its last one padded
-    /// with silence. A frame reaching past the copy's end is not measured against the copy: the length check
-    /// judges the end, and a window wholly past it has no mix energy to judge.
+    /// Measures a two-channel, one-track recording against its mono copy for `RecordingMixPlan.firstChannelNotInCopy`
+    /// to judge before Shrink deletes it (F1001). The recording is read as `audit` reads it — 16 kHz, each
+    /// channel apart — and the copy with AVAudioFile at 16 kHz, in step, and two links are measured from the
+    /// one read:
+    ///
+    /// - **Whether the channels cancel in the mix** (`CancellationLink`): every
+    ///   `RecordingMixPlan.cancellationFrameSeconds` frame of each channel (Hann, half-overlapping) is
+    ///   transformed; per bin, over each stretch of `cancellationGroupFrames` frames, the channels'
+    ///   cross-spectrum, their energies and how the energy is spread over the frames are summed; the stretch's
+    ///   delays are found from its cross-correlation (`alignmentFrames16k`), and each bin's cancellation read at
+    ///   its best alignment (`RecordingMixPlan.cancels`), per band of `cancellationBands`. Every frame of the
+    ///   recording is measured, the last padded with silence. The copy plays no part.
+    /// - **Whether the copy holds the mix** (`CopyLink`): `presenceFrameSeconds` frames of the mix, formed as
+    ///   the encode mixes (`channelWeight`), and of the copy; per bin in `presenceBand`, over
+    ///   `presenceGroupFrames` frames, never across a window's edge, the copy's projection onto the mix and the
+    ///   mix's energy, judged by `soundFound`. A frame reaching past the copy's end is not measured: the length
+    ///   check judges the end.
     static func channelPresence(of original: URL, against copy: URL) async throws -> RecordingMixPlan.ChannelPresence {
         let (asset, tracks, facts, end) = try await open(original)
-        guard facts.count == 1, let channelCount = facts.first?.channels, channelCount > 0,
-              channelCount <= RecordingMixPlan.mostCheckedChannels else {
-            throw Failure.unreadable("not one track whose channels can be checked one by one")
+        guard facts.count == 1, facts.first?.channels == 2 else {
+            throw Failure.unreadable("not one track of two channels")
         }
         let copyFile: AVAudioFile
         do { copyFile = try AVAudioFile(forReading: copy) } catch { throw Failure.unreadable(error.localizedDescription) }
@@ -450,134 +455,289 @@ enum RecordingMixer {
             throw Failure.unreadable("the copy is not 16 kHz mono")
         }
         let copyReader = MonoReader(file: copyFile)
-        let size = Int(saturating: (RecordingMixPlan.presenceFrameSeconds * Double(sampleRate)).rounded())
-        guard size >= 16, size & (size - 1) == 0,
-              let setup = vDSP_DFT_zrop_CreateSetup(nil, vDSP_Length(size), .FORWARD) else {
-            throw Failure.unreadable("the frame length cannot be transformed")
-        }
-        defer { vDSP_DFT_DestroySetup(setup) }
-        let hop = size / 2, half = size / 2
-        var taper = [Float](repeating: 0, count: size)
-        vDSP_hann_window(&taper, vDSP_Length(size), Int32(vDSP_HANN_NORM))
-        let binWidth = Double(sampleRate) / Double(size)
-        let lowBin = Swift.max(1, Int(saturating: (RecordingMixPlan.presenceBand.lowerBound / binWidth).rounded(.up)))
-        let highBin = Swift.min(half - 1, Int(saturating: (RecordingMixPlan.presenceBand.upperBound / binWidth).rounded(.down)))
-        let bins = Swift.max(0, highBin - lowBin + 1)
-        let perWindow = Swift.max(1, Int(saturating: MeetingStoragePlan.levelWindowSeconds * Double(sampleRate)))
-        let weight = RecordingMixPlan.channelWeight(channels: channelCount)
-
-        // Row `channel` sums the mix's cross-spectrum with that channel and the channel's energy; the last
-        // row, the copy's with the mix and the mix's energy.
-        let rows = channelCount + 1
-        var measures: [[RecordingMixPlan.ChannelPresence.Measure]] = []
-        var crossReal = [[Double]](repeating: [Double](repeating: 0, count: bins), count: rows)
-        var crossImaginary = crossReal, energy = crossReal
-        var groupFrames = 0, groupWindow = 0
-        // Each channel's samples, and the copy's, from timeline frame `bufferStart` on; the next frame starts
-        // at `next`.
-        var lanes = [[Float]](repeating: [], count: channelCount)
-        var copyLane: [Float] = []
-        var bufferStart = 0, next = 0
+        let cancellation = try CancellationLink()
+        let copyLink = try CopyLink()
         var copyEnd: Int?
-        var handed = 0
+        _ = try readInStep(asset: asset, tracks: tracks, channels: [2], audioEnd: end) { start, count, stretch in
+            guard let lanes = stretch.first, lanes.count == 2 else { throw Failure.unreadable("a channel was not read") }
+            let (copied, valid) = try copyReader.read(count)
+            if copyEnd == nil, valid < count { copyEnd = start + valid }
+            cancellation.append(left: lanes[0], right: lanes[1])
+            copyLink.append(left: lanes[0], right: lanes[1], copy: copied, copyEnd: copyEnd)
+        }
+        cancellation.finish()
+        copyLink.finish(copyEnd: copyEnd)
+        return RecordingMixPlan.ChannelPresence(channels: 2, stretches: cancellation.stretches, mix: copyLink.windows)
+    }
 
-        func closeGroup() {
-            defer { groupFrames = 0 }
-            guard groupFrames > 0 else { return }
-            while measures.count <= groupWindow {
-                measures.append([RecordingMixPlan.ChannelPresence.Measure](repeating: .init(energy: 0, missing: 0), count: rows))
+    /// A real-to-complex transform of `size` samples through a Hann window, for the presence links.
+    private final class Spectrum {
+        let size: Int
+        private let setup: vDSP_DFT_Setup
+        private var taper: [Float]
+        private var inReal: [Float], inImaginary: [Float]
+        var real: [Float], imaginary: [Float]
+
+        init(size: Int) throws {
+            guard size >= 16, size & (size - 1) == 0,
+                  let setup = vDSP_DFT_zrop_CreateSetup(nil, vDSP_Length(size), .FORWARD) else {
+                throw Failure.unreadable("the frame length cannot be transformed")
             }
-            for row in 0..<rows {
-                // What the mix gives a channel; and the copy is the mix, as the encode makes it.
-                let expected = row < channelCount ? weight : 1
-                var held = 0.0, lost = 0.0
-                for bin in 0..<bins {
-                    let e = energy[row][bin]
-                    let projection = (crossReal[row][bin] * crossReal[row][bin]
-                        + crossImaginary[row][bin] * crossImaginary[row][bin]).squareRoot()
-                    held += e
-                    if !RecordingMixPlan.soundFound(projection: projection, energy: e, weight: expected) { lost += e }
-                    crossReal[row][bin] = 0; crossImaginary[row][bin] = 0; energy[row][bin] = 0
+            self.size = size
+            self.setup = setup
+            taper = [Float](repeating: 0, count: size)
+            vDSP_hann_window(&taper, vDSP_Length(size), Int32(vDSP_HANN_NORM))
+            inReal = [Float](repeating: 0, count: size / 2)
+            inImaginary = inReal; real = inReal; imaginary = inReal
+        }
+
+        deinit { vDSP_DFT_DestroySetup(setup) }
+
+        /// Transforms `samples[offset ..< offset + size]` (silence past the end) into `real`/`imaginary`.
+        func transform(_ samples: [Float], from offset: Int) {
+            for k in 0..<(size / 2) {
+                let even = offset + 2 * k, odd = even + 1
+                inReal[k] = (even < samples.count ? samples[even] : 0) * taper[2 * k]
+                inImaginary[k] = (odd < samples.count ? samples[odd] : 0) * taper[2 * k + 1]
+            }
+            vDSP_DFT_Execute(setup, inReal, inImaginary, &real, &imaginary)
+        }
+    }
+
+    /// Link 1 of `channelPresence`: whether the two channels cancel when they are mixed into one, per stretch
+    /// and band (F1001, round 2).
+    private final class CancellationLink {
+        private let left: Spectrum, right: Spectrum
+        private let size: Int, hop: Int
+        private let lowBin: Int, bins: Int
+        private let bandOf: [Int]
+        private let bandCount: Int
+        private let lags: [Int]
+        /// cos and sin of each bin's phase at each lag, lag-major.
+        private let cosines: [Double], sines: [Double]
+        // Per bin over the stretch: Σ L·conj(R), Σ|L|², Σ|R|², Σ|L||R| and Σ|L|²|R|².
+        private var crossReal: [Double], crossImaginary: [Double], leftEnergy: [Double], rightEnergy: [Double]
+        private var products: [Double], productSquares: [Double]
+        private var squares = 0.0, samples = 0.0, frames = 0
+        // Each channel's samples from frame `bufferStart` of the recording on; the next frame starts at `next`.
+        private var leftLane: [Float] = [], rightLane: [Float] = []
+        private var bufferStart = 0, next = 0, received = 0
+        private(set) var stretches: [RecordingMixPlan.ChannelPresence.Stretch] = []
+
+        init() throws {
+            let size = Int(saturating: (RecordingMixPlan.cancellationFrameSeconds * Double(RecordingMixer.sampleRate)).rounded())
+            self.size = size
+            hop = size / 2
+            left = try Spectrum(size: size)
+            right = try Spectrum(size: size)
+            let edges = RecordingMixPlan.cancellationBands
+            let binWidth = Double(RecordingMixer.sampleRate) / Double(size)
+            let low = Swift.max(1, Int(saturating: ((edges.first ?? 0) / binWidth).rounded(.up)))
+            let highBin = Swift.min(size / 2 - 1, Int(saturating: ((edges.last ?? 0) / binWidth).rounded(.down)))
+            let count = Swift.max(0, highBin - low + 1), bandsCount = Swift.max(0, edges.count - 1)
+            lowBin = low; bins = count; bandCount = bandsCount
+            bandOf = (0..<count).map { bin in
+                let frequency = Double(low + bin) * binWidth
+                return Swift.min(Swift.max(0, bandsCount - 1), Swift.max(0, (edges.lastIndex { $0 <= frequency } ?? 0)))
+            }
+            let reach = RecordingMixPlan.alignmentFrames16k
+            let allLags = Array(-reach...reach)
+            lags = allLags
+            var cosineTable: [Double] = [], sineTable: [Double] = []
+            for lag in allLags {
+                for bin in 0..<count {
+                    let phase = 2 * Double.pi * Double(low + bin) / Double(size) * Double(lag)
+                    cosineTable.append(cos(phase)); sineTable.append(sin(phase))
                 }
-                measures[groupWindow][row].energy += held
-                measures[groupWindow][row].missing += lost
             }
+            cosines = cosineTable; sines = sineTable
+            let zeros = [Double](repeating: 0, count: count)
+            crossReal = zeros; crossImaginary = zeros; leftEnergy = zeros; rightEnergy = zeros
+            products = zeros; productSquares = zeros
         }
 
-        var inReal = [Float](repeating: 0, count: half), inImaginary = inReal
-        var outReal = inReal, outImaginary = inReal
-        /// The spectrum of `size` samples from `samples[offset...]`, tapered.
-        func spectrum(_ samples: [Float], _ offset: Int) -> (real: [Float], imaginary: [Float]) {
-            for k in 0..<half {
-                inReal[k] = samples[offset + 2 * k] * taper[2 * k]
-                inImaginary[k] = samples[offset + 2 * k + 1] * taper[2 * k + 1]
-            }
-            vDSP_DFT_Execute(setup, inReal, inImaginary, &outReal, &outImaginary)
-            return (outReal, outImaginary)
+        func append(left newLeft: [Float], right newRight: [Float]) {
+            leftLane.append(contentsOf: newLeft)
+            rightLane.append(contentsOf: newRight)
+            received += Swift.min(newLeft.count, newRight.count)
+            measureReady(upTo: received)
         }
 
-        /// Measures the frame starting at timeline frame `next`, whose samples are all buffered; against the
-        /// copy too when `withCopy`.
-        func measureFrame(withCopy: Bool) {
-            let window = (next + half) / perWindow
-            if groupFrames > 0, window != groupWindow || groupFrames >= RecordingMixPlan.presenceGroupFrames { closeGroup() }
-            groupWindow = window
-            let offset = next - bufferStart
-            let spectra = lanes.map { spectrum($0, offset) }
-            let c = spectrum(copyLane, offset)
-            for bin in 0..<bins {
-                let k = lowBin + bin
-                // The channels' mono mix, as the encode makes it: each channel at `weight`.
-                var mr = 0.0, mi = 0.0
-                for x in spectra { mr += weight * Double(x.real[k]); mi += weight * Double(x.imaginary[k]) }
-                for (channel, x) in spectra.enumerated() {
-                    let xr = Double(x.real[k]), xi = Double(x.imaginary[k])
-                    // mix × conj(channel)
-                    crossReal[channel][bin] += mr * xr + mi * xi
-                    crossImaginary[channel][bin] += mi * xr - mr * xi
-                    energy[channel][bin] += xr * xr + xi * xi
-                }
-                // copy × conj(mix)
-                guard withCopy else { continue }
-                let cr = Double(c.real[k]), ci = Double(c.imaginary[k])
-                crossReal[channelCount][bin] += cr * mr + ci * mi
-                crossImaginary[channelCount][bin] += ci * mr - cr * mi
-                energy[channelCount][bin] += mr * mr + mi * mi
-            }
-            groupFrames += 1
+        /// The last frames, past the recording's end silence, so every one of its samples is measured.
+        func finish() {
+            leftLane.append(contentsOf: repeatElement(0, count: size))
+            rightLane.append(contentsOf: repeatElement(0, count: size))
+            measureReady(upTo: bufferStart + leftLane.count)
+            closeStretch()
         }
 
-        /// Measures every frame that starts inside the recording and whose samples are buffered.
-        func measureReady(upTo available: Int) {
-            while next + size <= available, next < handed {
-                measureFrame(withCopy: copyEnd.map { next + size <= $0 } ?? true)
+        private func measureReady(upTo available: Int) {
+            while next + size <= available, next < received {
+                measureFrame()
                 next += hop
             }
-            let drop = Swift.min(next - bufferStart, copyLane.count)
+            let drop = Swift.min(next - bufferStart, leftLane.count, rightLane.count)
             if drop > 0 {
-                for channel in lanes.indices { lanes[channel].removeFirst(Swift.min(drop, lanes[channel].count)) }
-                copyLane.removeFirst(drop)
+                leftLane.removeFirst(drop); rightLane.removeFirst(drop)
                 bufferStart += drop
             }
         }
 
-        _ = try readInStep(asset: asset, tracks: tracks, channels: [channelCount], audioEnd: end) { start, count, stretch in
-            for (channel, samples) in (stretch.first ?? []).enumerated() where channel < channelCount {
-                lanes[channel].append(contentsOf: samples)
+        private func measureFrame() {
+            let offset = next - bufferStart
+            left.transform(leftLane, from: offset)
+            right.transform(rightLane, from: offset)
+            for bin in 0..<bins {
+                let k = lowBin + bin
+                let a = Double(left.real[k]), b = Double(left.imaginary[k])
+                let c = Double(right.real[k]), d = Double(right.imaginary[k])
+                crossReal[bin] += a * c + b * d
+                crossImaginary[bin] += b * c - a * d
+                let pl = a * a + b * b, pr = c * c + d * d
+                leftEnergy[bin] += pl; rightEnergy[bin] += pr
+                products[bin] += (pl * pr).squareRoot(); productSquares[bin] += pl * pr
             }
-            let (copied, valid) = try copyReader.read(count)
-            copyLane.append(contentsOf: copied)
-            if copyEnd == nil, valid < count { copyEnd = start + valid }
-            handed = start + count
-            measureReady(upTo: handed)
+            // The level: each frame owns the hop it starts, inside the recording.
+            for index in offset..<Swift.min(offset + hop, received - bufferStart) {
+                let l = Double(leftLane[index]), r = Double(rightLane[index])
+                squares += l * l + r * r
+                samples += 2
+            }
+            frames += 1
+            if frames == RecordingMixPlan.cancellationGroupFrames { closeStretch() }
         }
-        // The recording's last frames, past its end silence, so every one of its samples is measured.
-        for channel in lanes.indices { lanes[channel].append(contentsOf: repeatElement(0, count: size)) }
-        copyLane.append(contentsOf: repeatElement(0, count: size))
-        measureReady(upTo: bufferStart + copyLane.count)
-        closeGroup()
-        return RecordingMixPlan.ChannelPresence(channels: channelCount, windows: measures.map { Array($0.prefix(channelCount)) },
-                                                mix: measures.map { $0[channelCount] })
+
+        private func closeStretch() {
+            defer {
+                frames = 0; squares = 0; samples = 0
+                for bin in 0..<bins {
+                    crossReal[bin] = 0; crossImaginary[bin] = 0; leftEnergy[bin] = 0; rightEnergy[bin] = 0
+                    products[bin] = 0; productSquares[bin] = 0
+                }
+            }
+            guard frames > 0 else { return }
+            // The delays the stretch's sound arrives with: the strongest peaks of its normalized cross-correlation.
+            let norm = (leftEnergy.reduce(0, +) * rightEnergy.reduce(0, +)).squareRoot()
+            var correlation = [Double](repeating: 0, count: lags.count)
+            if norm > 0, norm.isFinite {
+                for index in lags.indices {
+                    var sum = 0.0
+                    let base = index * bins
+                    for bin in 0..<bins { sum += crossReal[bin] * cosines[base + bin] + crossImaginary[bin] * sines[base + bin] }
+                    correlation[index] = sum / norm
+                }
+            }
+            let zero = lags.firstIndex(of: 0) ?? 0
+            var peaks: [(index: Int, value: Double)] = []
+            for index in lags.indices where index != zero && correlation[index] >= RecordingMixPlan.alignmentMinimumCorrelation
+                && (index == 0 || correlation[index] >= correlation[index - 1])
+                && (index == lags.count - 1 || correlation[index] >= correlation[index + 1]) {
+                peaks.append((index, correlation[index]))
+            }
+            let alignments = [zero] + peaks.sorted { $0.value > $1.value }.prefix(RecordingMixPlan.alignmentCandidates).map(\.index)
+            var bands = [RecordingMixPlan.ChannelPresence.Measure](repeating: .init(energy: 0, missing: 0), count: bandCount)
+            for bin in 0..<bins {
+                var best = -Double.infinity
+                for index in alignments {
+                    best = Swift.max(best, crossReal[bin] * cosines[index * bins + bin] + crossImaginary[bin] * sines[index * bins + bin])
+                }
+                let energies = leftEnergy[bin] * rightEnergy[bin]
+                let coherence = energies > 0 ? (crossReal[bin] * crossReal[bin] + crossImaginary[bin] * crossImaginary[bin]) / energies : 0
+                let spread = productSquares[bin] > 0 ? products[bin] * products[bin] / productSquares[bin] : 0
+                let band = bandOf[bin]
+                bands[band].energy += (leftEnergy[bin] + rightEnergy[bin]) / 2
+                bands[band].missing += RecordingMixPlan.cancels(alignedReal: best, coherence: coherence, frames: spread)
+            }
+            let start = Double(stretches.count * RecordingMixPlan.cancellationGroupFrames * hop) / Double(RecordingMixer.sampleRate)
+            stretches.append(.init(start: start, level: samples > 0 ? (squares / samples).squareRoot() : 0, bands: bands))
+        }
+    }
+
+    /// Link 2 of `channelPresence`: whether the copy holds the channels' mix, per `levelWindowSeconds` window.
+    private final class CopyLink {
+        private let mixSpectrum: Spectrum, copySpectrum: Spectrum
+        private let size: Int, hop: Int, lowBin: Int, bins: Int, perWindow: Int
+        private let weight = RecordingMixPlan.channelWeight(channels: 2)
+        private var crossReal: [Double], crossImaginary: [Double], energy: [Double]
+        private var groupFrames = 0, groupWindow = 0
+        private var mixLane: [Float] = [], copyLane: [Float] = []
+        private var bufferStart = 0, next = 0, received = 0
+        private(set) var windows: [RecordingMixPlan.ChannelPresence.Measure] = []
+
+        init() throws {
+            size = Int(saturating: (RecordingMixPlan.presenceFrameSeconds * Double(RecordingMixer.sampleRate)).rounded())
+            hop = size / 2
+            mixSpectrum = try Spectrum(size: size)
+            copySpectrum = try Spectrum(size: size)
+            let binWidth = Double(RecordingMixer.sampleRate) / Double(size)
+            lowBin = Swift.max(1, Int(saturating: (RecordingMixPlan.presenceBand.lowerBound / binWidth).rounded(.up)))
+            let highBin = Swift.min(size / 2 - 1, Int(saturating: (RecordingMixPlan.presenceBand.upperBound / binWidth).rounded(.down)))
+            bins = Swift.max(0, highBin - lowBin + 1)
+            perWindow = Swift.max(1, Int(saturating: MeetingStoragePlan.levelWindowSeconds * Double(RecordingMixer.sampleRate)))
+            crossReal = [Double](repeating: 0, count: bins)
+            crossImaginary = crossReal; energy = crossReal
+        }
+
+        func append(left: [Float], right: [Float], copy: [Float], copyEnd: Int?) {
+            let count = Swift.min(left.count, right.count, copy.count)
+            for index in 0..<count { mixLane.append(Float(weight) * (left[index] + right[index])) }
+            copyLane.append(contentsOf: copy.prefix(count))
+            received += count
+            measureReady(upTo: received, copyEnd: copyEnd)
+        }
+
+        func finish(copyEnd: Int?) {
+            mixLane.append(contentsOf: repeatElement(0, count: size))
+            copyLane.append(contentsOf: repeatElement(0, count: size))
+            measureReady(upTo: bufferStart + mixLane.count, copyEnd: copyEnd)
+            closeGroup()
+        }
+
+        private func measureReady(upTo available: Int, copyEnd: Int?) {
+            while next + size <= available, next < received {
+                if copyEnd.map({ next + size <= $0 }) ?? true { measureFrame() }
+                next += hop
+            }
+            let drop = Swift.min(next - bufferStart, mixLane.count, copyLane.count)
+            if drop > 0 {
+                mixLane.removeFirst(drop); copyLane.removeFirst(drop)
+                bufferStart += drop
+            }
+        }
+
+        private func measureFrame() {
+            let window = (next + hop) / perWindow
+            if groupFrames > 0, window != groupWindow || groupFrames >= RecordingMixPlan.presenceGroupFrames { closeGroup() }
+            groupWindow = window
+            let offset = next - bufferStart
+            mixSpectrum.transform(mixLane, from: offset)
+            copySpectrum.transform(copyLane, from: offset)
+            for bin in 0..<bins {
+                let k = lowBin + bin
+                let mr = Double(mixSpectrum.real[k]), mi = Double(mixSpectrum.imaginary[k])
+                let cr = Double(copySpectrum.real[k]), ci = Double(copySpectrum.imaginary[k])
+                // copy × conj(mix)
+                crossReal[bin] += cr * mr + ci * mi
+                crossImaginary[bin] += ci * mr - cr * mi
+                energy[bin] += mr * mr + mi * mi
+            }
+            groupFrames += 1
+        }
+
+        private func closeGroup() {
+            defer { groupFrames = 0 }
+            guard groupFrames > 0 else { return }
+            while windows.count <= groupWindow { windows.append(.init(energy: 0, missing: 0)) }
+            var held = 0.0, lost = 0.0
+            for bin in 0..<bins {
+                let projection = (crossReal[bin] * crossReal[bin] + crossImaginary[bin] * crossImaginary[bin]).squareRoot()
+                held += energy[bin]
+                if !RecordingMixPlan.soundFound(projection: projection, energy: energy[bin], weight: 1) { lost += energy[bin] }
+                crossReal[bin] = 0; crossImaginary[bin] = 0; energy[bin] = 0
+            }
+            windows[groupWindow].energy += held
+            windows[groupWindow].missing += lost
+        }
     }
 
     // MARK: - Reading

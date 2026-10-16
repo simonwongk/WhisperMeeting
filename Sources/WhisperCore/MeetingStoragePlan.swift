@@ -174,10 +174,10 @@ public enum MeetingStoragePlan {
         }
     }
 
-    /// The other `recording.<ext>` files with one track of two channels, which a resume checks the copy
-    /// against channel by channel before it removes them (F1001), as an encode checks such a recording:
-    /// the encode's mono mix sums the channels, so a voice in opposite polarity on the two is not in the
-    /// copy. A mono leftover is removed as before.
+    /// The other `recording.<ext>` files with one track of two channels, which a resume checks against the
+    /// copy before it removes them, as an encode checks such a recording (F1001): the encode's mono mix sums
+    /// the channels, so a voice in opposite polarity on the two is not in the copy. A mono leftover is removed
+    /// as before.
     public static func twoChannelRecordingsToVerify(_ disk: DiskFacts) -> [FolderEntry] {
         otherRecordings(in: disk.entries, recordingName: disk.recordingName).filter { other in
             guard !other.isEmpty, let tracks = disk.otherRecordingTracks[other.name] else { return false }

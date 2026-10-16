@@ -673,9 +673,9 @@ final class AppModel: ObservableObject {
     var auditForShrink: @Sendable (_ original: URL, _ copy: URL) async throws -> RecordingMixPlan.Audit = {
         try await RecordingMixer.audit(of: $0, against: $1)
     }
-    /// Measures, frequency by frequency, how much of each channel of a two-channel recording the channels'
-    /// mono mix holds, and how much of that mix the copy holds, for `RecordingMixPlan.firstChannelNotInCopy`
-    /// to judge before Shrink deletes the recording (F1001).
+    /// Measures, stretch by stretch and frequency by frequency, whether a two-channel recording's channels
+    /// cancel each other when mixed into one, and how much of their mix the copy holds, for
+    /// `RecordingMixPlan.firstChannelNotInCopy` to judge before Shrink deletes the recording (F1001).
     var channelPresenceForShrink: @Sendable (_ original: URL, _ copy: URL) async throws -> RecordingMixPlan.ChannelPresence = {
         try await RecordingMixer.channelPresence(of: $0, against: $1)
     }

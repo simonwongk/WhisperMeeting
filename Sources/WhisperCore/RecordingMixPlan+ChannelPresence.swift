@@ -1,39 +1,27 @@
 import Foundation
 
-// MARK: - Showing that a mono copy holds each channel of a two-channel recording (F1001)
+// MARK: - Showing that a mono copy holds both channels of a two-channel recording (F1001)
 
 extension RecordingMixPlan {
-    /// How much of each channel's sound the channels' mono mix holds, and how much of the mix's sound the
-    /// copy holds, measured per `MeetingStoragePlan.levelWindowSeconds` window (F1001). The app gathers it
-    /// (`RecordingMixer.channelPresence`): it reads the recording at 16 kHz, each channel apart, in step with
-    /// the copy, in `presenceFrameSeconds` frames, and forms the mix as the encode does, each channel at
-    /// `channelWeight`. For every frequency bin in `presenceBand`, summed over `presenceGroupFrames` frames, it
-    /// takes each channel's energy and the mix's projection onto it, `|Σ mix · conj(channel)|`, and the mix's
-    /// energy and the copy's projection onto it. A bin where a projection is under `presenceShare` of what is
-    /// expected (`soundFound`) holds sound the mix, or the copy, does not: its energy is `missing`.
-    /// `firstChannelNotInCopy` judges it.
+    /// What Shrink measures of a two-channel recording before it deletes it (F1001), in two links: whether the
+    /// channels cancel each other when they are mixed into one, and whether the copy holds the mix. The app
+    /// gathers it (`RecordingMixer.channelPresence`), reading the recording at 16 kHz, each channel apart, in
+    /// step with the copy; `firstChannelNotInCopy` judges it.
     ///
-    /// Why per frequency: afconvert's mono mix of a mid/side recording (left A + B, right A − B) is A, and the
-    /// copy is then exactly the channels' mix, so every fit of the copy onto the channels — the plain path's
-    /// levels, and the mixed audit's least-squares fit — passes, and B is gone (the review of Wave 7 lane S,
-    /// S1). Over a whole window the channels' Gram matrix is the same as two independent voices', so nothing
-    /// that measures the window as one signal can tell them apart (its X2). Per frequency they differ: where B
-    /// sounds the channels are in opposite polarity and the mix holds nothing there.
-    ///
-    /// Why two links, the channels against their mix and the mix against the copy, and not the channels
-    /// against the copy directly (which measured the same on every fixture, F1001 `gates/03-measure.txt`
-    /// against `04-measure.txt`): the two losses need different bounds. Mixing two channels loses some sound
-    /// legitimately — a pair of microphones apart is comb-filtered in the mix — so that link allows a quarter
-    /// (`mostMissingShare`); a good encode loses almost nothing the mix holds, so that link allows a tenth
-    /// (`mostCopyMissingShare`), and catches a copy that kept one channel, which the first link cannot see.
-    /// And the refusal can say which happened.
+    /// **The user's decision (2026-10-15): "Refuse any with cancellation".** A stereo recording whose channels
+    /// noticeably cancel when mixed into one is kept full size, with a reason; no stereo copies. A mono copy
+    /// cannot hold a voice that is in opposite polarity on the two channels (mid/side: left A + B, right A − B
+    /// mixes to A), and over a stretch such channels' sums look exactly like two independent voices' (the
+    /// review of Wave 7 lane S, X2), so the cancellation is looked for frequency by frequency, stretch by
+    /// stretch, band by band (`stretches`).
     public struct ChannelPresence: Sendable, Equatable {
         /// How many channels the recording was read with.
         public var channels: Int
-        /// Per window, per channel: the channel's energy in the measured band, and the part of it in bins the
-        /// channels' mono mix does not hold.
-        public var windows: [[Measure]]
-        /// Per window: the mix's energy in the measured band, and the part of it in bins the copy does not hold.
+        /// The channels' cancellation, one entry per `cancellationGroupFrames` frames of
+        /// `cancellationFrameSeconds`, in order.
+        public var stretches: [Stretch]
+        /// Per `MeetingStoragePlan.levelWindowSeconds` window: the mix's energy in `presenceBand`, and the part
+        /// of it in bins the copy does not hold.
         public var mix: [Measure]
 
         public struct Measure: Sendable, Equatable {
@@ -46,126 +34,205 @@ extension RecordingMixPlan {
             }
         }
 
-        public init(channels: Int, windows: [[Measure]], mix: [Measure]) {
+        public struct Stretch: Sendable, Equatable {
+            /// Where it starts in the recording.
+            public var start: TimeInterval
+            /// The RMS of both channels' samples over it, on the 0…1 scale `MeetingStoragePlan.silenceLevel` uses.
+            public var level: Double
+            /// Per band of `cancellationBands`: the channels' energy there (the mean of the two), and the part
+            /// of it that cancels in the mix — in bins where the channels are in opposite polarity,
+            /// consistently (`cancels`).
+            public var bands: [Measure]
+
+            public init(start: TimeInterval, level: Double, bands: [Measure]) {
+                self.start = start
+                self.level = level
+                self.bands = bands
+            }
+        }
+
+        public init(channels: Int, stretches: [Stretch], mix: [Measure]) {
             self.channels = channels
-            self.windows = windows
+            self.stretches = stretches
             self.mix = mix
         }
     }
 
-    /// Each frame of the presence measurement: 4,096 frames at 16 kHz, 256 ms, a bin every 3.9 Hz. Long, so
-    /// a copy out of step with the recording by a few hundred frames (an encoder's priming, a reader's
-    /// rounding) shares most of each frame with the recording; fine, so two voices a few hertz apart fall in
-    /// different bins.
+    // MARK: Link 1 — do the channels cancel in the mix?
+
+    /// Each frame of the cancellation measure: 1,024 frames at 16 kHz, 64 ms, a bin every 15.6 Hz, Hann
+    /// windows half-overlapping. Short, so that a stretch holds many frames: whether a bin's opposite polarity
+    /// is consistent is judged across them (`cancellationMinimumCoherence`).
+    public static let cancellationFrameSeconds: TimeInterval = 0.064
+
+    /// How many frames make a stretch: sixteen, 0.512 s. A stretch is judged on its own, against its own level,
+    /// so a side voice that speaks alone for a little over half a second is a whole stretch of cancellation
+    /// wherever it falls; and a loud stretch elsewhere hides nothing (review 2 of F1001, F2-3).
+    public static let cancellationGroupFrames = 16
+
+    /// The bands each stretch is judged in, by their edges in hertz: speech and above, to just under the 8 kHz
+    /// the copy keeps. A cancellation confined to part of the spectrum (a side voice's lows, or its highs) is a
+    /// large share of its own band even when it is a small share of the whole (review 1, partial-band probes).
+    public static let cancellationBands: [Double] = [80, 250, 500, 1_000, 2_000, 4_000, 7_800]
+
+    /// A band is judged in a stretch only where it holds at least this share of the stretch's energy: a
+    /// band holding almost nothing has nothing a listener would miss.
+    public static let judgedBandShare = 0.05
+
+    /// A bin counts as cancelling only where the channels' cross-spectrum over the stretch is at least this
+    /// coherent, `|Σ L·conj(R)|² / (Σ|L|² Σ|R|²)`: a voice in opposite polarity on the two channels is opposite
+    /// in every frame (1), while two independent voices' harmonics drift past each other and are opposite only
+    /// for a moment (about 1/16 on average over a stretch).
+    public static let cancellationMinimumCoherence = 0.7
+
+    /// And only where its energy is spread over at least this many frames, `(Σ|L||R|)² / Σ|L|²|R|²`: in one
+    /// frame any two sounds look coherent.
+    public static let cancellationMinimumFrames = 3.0
+
+    /// The channels of two microphones apart hear one voice a little late on one side: a comb filter, not a
+    /// cancellation of a voice, which mixing loses nothing of that a listener misses. So before the polarity
+    /// of each bin is read, the stretch's cross-correlation is searched up to this far either way — 3 ms, a
+    /// metre between microphones, at 16 kHz 48 frames — and each bin is read at whichever of the lag 0 and
+    /// the strongest `alignmentCandidates` lags (each at least `alignmentMinimumCorrelation`) makes it least
+    /// opposite. A phone's or a laptop's two microphones are well inside it.
+    public static let alignmentFrames16k = 48
+
+    /// See `alignmentFrames16k`.
+    public static let alignmentCandidates = 2
+
+    /// See `alignmentFrames16k`: the normalized cross-correlation a lag must reach to be one of the delays the
+    /// stretch's sound arrives with.
+    public static let alignmentMinimumCorrelation = 0.3
+
+    /// The most of a judged band's energy in a stretch that may cancel before the recording is kept: a tenth.
+    /// Measured on the reviews' probes and the controls (F1001 round 2: offline, `gates/r2-03-harness.txt`;
+    /// through Shrink, `r2-06-review1-probe-lines.txt`, `r2-06-review-probes.log`): every probe the reviews
+    /// made reads from 0.25 up — tones mid/side with the side voice 6 dB down 0.25 (10 dB down, offline, 0.11);
+    /// speech mid/side talking over each other throughout, every pairing tried, 0.27 to 0.72, and offline 0.23
+    /// with the side voice 10 dB down; a 0.6 s side interjection 0.30; a side voice cancelling only below 1 kHz,
+    /// only from 2 kHz or only above 4 kHz, 0.54 to 0.59 — while ordinary stereo reads at
+    /// most 0.04: a voice per channel, one silent channel, identical, panned or correlated channels, DC or
+    /// hiss on a silent channel, clipping, noise, a phone's spacing with one or two talkers. What it refuses
+    /// that a listener might call ordinary: two talkers before a pair of microphones 0.75 ms or more apart in
+    /// an echoing room, and a Haas widening of 10–20 ms — both do lose sound to the mix's comb filter. A side
+    /// voice more than about 10 dB under the middle one, talking over it throughout, is not caught.
+    public static let mostCancelledShare = 0.1
+
+    /// Whether a bin whose channels' cross-spectrum over a stretch, at its best alignment, has real part
+    /// `alignedReal` (negative: opposite polarity), coherence `coherence` and energy spread over `frames`
+    /// frames, cancels in the mix — and how much: `-alignedReal`, or 0. Not a number cancels nothing here; the
+    /// stretch's energy then is not a number and `firstChannelNotInCopy` refuses on that.
+    public static func cancels(alignedReal: Double, coherence: Double, frames: Double) -> Double {
+        guard alignedReal.isFinite, coherence.isFinite, frames.isFinite, alignedReal < 0,
+              coherence >= cancellationMinimumCoherence, frames >= cancellationMinimumFrames else { return 0 }
+        return -alignedReal
+    }
+
+    // MARK: Link 2 — does the copy hold the mix?
+
+    /// Each frame of the copy's measure against the mix: 4,096 frames at 16 kHz, 256 ms, a bin every 3.9 Hz.
+    /// Long, so a copy out of step with the recording by a few hundred frames (an encoder's priming, a reader's
+    /// rounding) shares most of each frame with it.
     public static let presenceFrameSeconds: TimeInterval = 0.256
 
-    /// How many frames, half-overlapping, each bin's projection and energy are summed over before it is
-    /// judged: four, about half a second. One frame alone cannot tell a channel's sound from another
-    /// channel's that the mix also holds at that bin; summed over several, the other channel's sound,
-    /// unrelated to this one, adds up incoherently and the channel's own coherently.
+    /// How many of those frames each bin's projection is summed over: four, about half a second.
     public static let presenceGroupFrames = 4
 
-    /// The frequencies measured: 80 Hz to 4 kHz, where speech has nearly all its energy.
+    /// The frequencies the copy is measured in: 80 Hz to 4 kHz, where speech has nearly all its energy.
     public static let presenceBand: ClosedRange<Double> = 80...4_000
 
-    /// A bin holds the sound it is checked for where the projection onto it reaches this share of what is
-    /// expected — `weight × energy`, the channel's weight in the mix, or 1 for the mix in the copy — 12 dB
-    /// under. A channel heard alone gives exactly that; beside another channel's unrelated sound the
-    /// projection varies about it; beside the same sound in phase it is larger. In opposite polarity, where
-    /// the mix cancels, it is nothing. A mix of two microphones apart (a phone's stereo, an A/B pair) holds a
-    /// voice comb-filtered, and its notches fall under this too; they are narrow, so they hold a small part
-    /// of a voice's energy (`mostMissingShare`, which says how small).
+    /// A bin of the mix is held by the copy where the copy's projection onto it, `|Σ copy · conj(mix)|`,
+    /// reaches this share of the mix's energy there — 12 dB under. The copy is the mix as the encode makes it.
     public static let presenceShare = 0.25
 
-    /// The most of a channel's energy in a window that may lie in bins the channels' mono mix does not hold
-    /// before the copy is not shown to hold that channel's sound and the original is kept: a quarter.
-    /// Measured through the real encoder on speech from `Scripts/bench/clips` and on the lane's twelve-tone
-    /// voices (F1001, `gates/04-measure.txt`, `10-measure-final.txt`). A mid/side recording whose side voice
-    /// is as loud as the middle one reads 0.29 in its worst window when the two talk over each other
-    /// throughout, 0.5 as tones; a side voice 3 dB down, 0.33. A copy is refused on one window, so that is
-    /// enough. Kept: independent voices, one per channel, at most 0.011; one silent channel, identical
-    /// channels, a panned mix and correlated music, 0.004 at most, and correlated music widened by 3 ms,
-    /// 0.086; two microphones apart with a room's echo, at most 0.16 (two talkers a metre apart); with no
-    /// echo at all, a phone's spacing (7 frames, 0.44 ms) 0.04 and a pair up to 2 ms apart 0.15; a Haas
-    /// widening of 10 or 20 ms, 0.10 at most. What it refuses that holds both voices: an echo-free pair a
-    /// metre apart (3 ms), 0.34 in one window, where the comb filter's notches fall on every other harmonic of
-    /// a voice — the mono mix does lose that much of it there, and no room is echo-free. A side voice 6 dB
-    /// under the middle one, talking over it throughout, reads 0.2 as tones and 0.09 as speech, and is not
-    /// caught; one that talks alone cancels in its stretch, which this and the level checks refuse.
-    public static let mostMissingShare = 0.25
+    /// The most of the mix's energy in a window that may lie in bins the copy does not hold: a twentieth.
+    /// Measured: every good copy reads 0.003 at most (F1001, `gates/10-measure-final.txt`); a copy of the left
+    /// channel alone of two independent voices reads 0.12 to 0.5, and a copy that kept a 12 dB quieter channel
+    /// out, 0.06 (review 1's centre-and-LFE probe). It holds the mix only where the dropped channel is more
+    /// than a twentieth of the mix's energy: a copy that keeps one channel is caught only then.
+    public static let mostCopyMissingShare = 0.05
 
-    /// The most of the mix's energy in a window that may lie in bins the copy does not hold. A tenth.
-    /// Measured (the same log): every good copy above reads 0.003 at most — the encode drops only what is
-    /// quiet in the mix, which weighs as little as it holds; a copy of the left channel alone of two
-    /// independent voices reads 0.12 to 0.29, of two independent tone voices 0.5.
-    public static let mostCopyMissingShare = 0.1
-
-    /// Whether a bin with `energy`, expected in what is checked at `weight`, onto which that projects
-    /// `projection`, holds its sound (`presenceShare`). No energy is nothing to hold, and is held. Not a
-    /// number is not held.
+    /// Whether a bin with `energy`, expected in the copy at `weight`, onto which the copy projects
+    /// `projection`, is held (`presenceShare`). No energy is nothing to hold, and is held. Not a number is not
+    /// held.
     public static func soundFound(projection: Double, energy: Double, weight: Double) -> Bool {
         guard projection.isFinite, energy.isFinite, weight.isFinite else { return false }
         guard energy > 0 else { return true }
         return projection >= presenceShare * weight * energy
     }
 
-    /// Why a copy is not shown to hold a channel's sound (F1001).
+    // MARK: The judgement
+
+    /// Why a copy is not shown to hold both channels of a two-channel recording (F1001).
     public enum ChannelPresenceFinding: Sendable, Equatable {
-        /// More than `mostMissingShare` of the channel's sound in this window is not in the channels' mono
-        /// mix: it cancels against the other channel.
-        case missing(window: Int, channel: Int)
-        /// More than `mostCopyMissingShare` of the mix's sound in this window is not in the copy.
+        /// The channels cancel each other when mixed into one: more than `mostCancelledShare` of a judged
+        /// band's energy in the stretch starting at `seconds`. `band` indexes `cancellationBands`.
+        case cancels(seconds: TimeInterval, band: Int)
+        /// More than `mostCopyMissingShare` of the mix's sound in this `levelWindowSeconds` window is not in the copy.
         case copyMissing(window: Int)
-        /// A channel sounds in this window but was not measured there, or a measure is not a number: not
-        /// shown, so not deleted.
-        case unmeasured(window: Int, channel: Int)
+        /// Something that sounds was not measured, or a measure is not a number: not shown, so not deleted.
+        /// `window` is a `levelWindowSeconds` window; `channel` the channel, when one is to blame.
+        case unmeasured(window: Int, channel: Int?)
     }
 
-    /// The first window and channel whose sound the copy is not shown to hold, or nil (F1001). In every window
-    /// in which a channel sounds — `audibleShare` of its own level over the whole recording, from its own
-    /// decode (`nativeChannelWindows`, per `MeetingStoragePlan.levelWindowSeconds`), and above
-    /// `MeetingStoragePlan.silenceLevel` — the channel and the mix must have been measured, as finite numbers,
-    /// with no more than `mostMissingShare` of the channel's measured energy missing from the mix, and no more
-    /// than `mostCopyMissingShare` of the mix's missing from the copy. A window whose measured band holds none
-    /// of a sounding channel's energy (sound only under 80 Hz or over 4 kHz) has nothing this can judge; the
-    /// level checks still do. Nor does a window with no mix measured against the copy, past the copy's end,
-    /// which the length check judges. The measure must have the recording's channel count.
+    /// The first thing that shows the copy may not hold both channels, or nil (F1001):
+    ///
+    /// - the measure has two channels, as the recording's own decode does (`nativeChannelWindows`, per
+    ///   `MeetingStoragePlan.levelWindowSeconds`), and nothing in either is not a number;
+    /// - every window in which either channel's own decode is above `MeetingStoragePlan.silenceLevel` has
+    ///   stretches measured in it;
+    /// - in every stretch above `silenceLevel`, judged against its own energy and no one else's, no band holding
+    ///   at least `judgedBandShare` of it has more than `mostCancelledShare` cancelling;
+    /// - and in every window in which a channel sounds (`audibleShare` of its own level), no more than
+    ///   `mostCopyMissingShare` of the mix is missing from the copy.
     public static func firstChannelNotInCopy(_ presence: ChannelPresence,
                                              nativeChannelWindows: [[Double]]) -> ChannelPresenceFinding? {
-        guard presence.channels == nativeChannelWindows.count, presence.channels > 0 else {
-            return .unmeasured(window: 0, channel: 0)
-        }
-        func floor(_ level: Double) -> Double { Swift.max(MeetingStoragePlan.silenceLevel, level * audibleShare) }
+        guard presence.channels == 2, nativeChannelWindows.count == 2 else { return .unmeasured(window: 0, channel: nil) }
         for (channel, levels) in nativeChannelWindows.enumerated() {
             if let window = levels.firstIndex(where: { !$0.isFinite }) { return .unmeasured(window: window, channel: channel) }
-        }
-        let floors = nativeChannelWindows.map { levels in
-            floor(levels.isEmpty ? 0 : (levels.reduce(0) { $0 + $1 * $1 } / Double(levels.count)).squareRoot())
         }
         func valid(_ measure: ChannelPresence.Measure) -> Bool {
             measure.energy.isFinite && measure.missing.isFinite && measure.energy >= 0 && measure.missing >= 0
         }
-        func tooMuchMissing(_ measure: ChannelPresence.Measure, _ share: Double) -> Bool {
-            measure.energy > 0 && !(measure.missing <= measure.energy * share)
+        let window = MeetingStoragePlan.levelWindowSeconds
+        func windowOf(_ seconds: TimeInterval) -> Int { Int(saturating: (seconds / window).rounded(.down)) }
+        // Every window that sounds was measured: a stretch covers each window it overlaps.
+        let span = Double(cancellationGroupFrames) * cancellationFrameSeconds / 2
+        var measured = Set<Int>()
+        for stretch in presence.stretches where stretch.start.isFinite && stretch.start >= 0 {
+            let first = windowOf(stretch.start), last = windowOf(stretch.start + span * 0.999)
+            if last >= first { for index in first...last { measured.insert(index) } }
         }
         let windows = nativeChannelWindows.map(\.count).max() ?? 0
-        for window in 0..<windows {
-            var sounds = false
-            for channel in 0..<presence.channels {
-                let levels = nativeChannelWindows[channel]
-                guard window < levels.count, levels[window] >= floors[channel] else { continue }
-                sounds = true
-                guard window < presence.windows.count, channel < presence.windows[window].count,
-                      valid(presence.windows[window][channel]) else {
-                    return .unmeasured(window: window, channel: channel)
-                }
-                if tooMuchMissing(presence.windows[window][channel], mostMissingShare) {
-                    return .missing(window: window, channel: channel)
+        for index in 0..<windows where !measured.contains(index) {
+            if nativeChannelWindows.contains(where: { index < $0.count && $0[index] >= MeetingStoragePlan.silenceLevel }) {
+                return .unmeasured(window: index, channel: nil)
+            }
+        }
+        // The channels do not cancel, stretch by stretch, band by band.
+        for stretch in presence.stretches {
+            guard stretch.start.isFinite, stretch.level.isFinite, stretch.bands.count == cancellationBands.count - 1,
+                  stretch.bands.allSatisfy(valid) else {
+                return .unmeasured(window: stretch.start.isFinite ? Swift.max(0, windowOf(stretch.start)) : 0, channel: nil)
+            }
+            guard stretch.level >= MeetingStoragePlan.silenceLevel else { continue }
+            let total = stretch.bands.reduce(0) { $0 + $1.energy }
+            for (band, measure) in stretch.bands.enumerated() where measure.energy > 0 && measure.energy >= judgedBandShare * total {
+                if !(measure.missing <= measure.energy * mostCancelledShare) {
+                    return .cancels(seconds: stretch.start, band: band)
                 }
             }
-            guard sounds else { continue }
-            guard window < presence.mix.count, valid(presence.mix[window]) else { return .unmeasured(window: window, channel: 0) }
-            if tooMuchMissing(presence.mix[window], mostCopyMissingShare) { return .copyMissing(window: window) }
+        }
+        // And the copy holds the mix, in every window where a channel sounds — `audibleShare` of its own level
+        // over the whole recording, as F1001's first round measured it: a near-silent tail is the encoder's.
+        let floors = nativeChannelWindows.map { levels in
+            Swift.max(MeetingStoragePlan.silenceLevel, audibleShare
+                * (levels.isEmpty ? 0 : (levels.reduce(0) { $0 + $1 * $1 } / Double(levels.count)).squareRoot()))
+        }
+        for (index, measure) in presence.mix.enumerated() {
+            guard valid(measure) else { return .unmeasured(window: index, channel: nil) }
+            let sounds = nativeChannelWindows.indices.contains { index < nativeChannelWindows[$0].count && nativeChannelWindows[$0][index] >= floors[$0] }
+            if sounds, measure.energy > 0, !(measure.missing <= measure.energy * mostCopyMissingShare) { return .copyMissing(window: index) }
         }
         return nil
     }
