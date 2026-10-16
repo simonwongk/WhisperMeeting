@@ -20,6 +20,12 @@ func aHalfTransliteratedVocabularyNameIsWrittenInCharacters() {
     #expect(TransliteratedTermCorrection.corrected("问Zhang San丰", terms: ["张三丰"]) == "问张三丰")
     #expect(TransliteratedTermCorrection.corrected("问Zhangsan丰", terms: ["张三丰"]) == "问张三丰")
     #expect(TransliteratedTermCorrection.corrected("找小Wang吧", terms: ["小王"]) == "找小王吧")
+    // F631's recorded raw encs4 rows (Qwen3-ASR, then Whisper Turbo), which the re-run of F631's
+    // refine bench takes as corrected here.
+    #expect(TransliteratedTermCorrection.corrected("I'll ping Wang老师 about the作业 tonight.", terms: ["王老师"])
+            == "I'll ping 王老师 about the作业 tonight.")
+    #expect(TransliteratedTermCorrection.corrected("I'll ping, Wang老师, about the,作业, tonight.", terms: ["王老师"])
+            == "I'll ping, 王老师, about the,作业, tonight.")
 }
 
 @Test("Nothing else changes: other sounds, whole words, full pinyin, and terms not in the vocabulary (F768)")
