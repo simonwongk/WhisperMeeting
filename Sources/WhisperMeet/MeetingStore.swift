@@ -554,6 +554,15 @@ enum DamagedListNotice {
         return "Nothing was changed: the \(name(of: list)) is read-only because \(because). Choose \(actionTitle(for: list, health: health)) in Business Vocabulary to edit it again. Recording and your meetings are not affected."
     }
 
+    /// Why Back Up Library was refused for a read-only list (F611). A backup run now would copy the
+    /// file as it is into the new generation and prune older ones, which hold a readable copy.
+    static func backupRefused(_ list: MeetingStore.EditableList, health: PersistedStoreHealth, onDisk: FileOnDisk) -> String {
+        let because = onDisk == .missing
+            ? "\(fileName(of: list)) is missing and the list shown is its backup copy"
+            : "\(fileName(of: list)) could not be read cleanly"
+        return "The library was not backed up: the \(name(of: list)) is read-only because \(because), and each backup taken now would hold that file while older backups with a readable copy are removed. Choose \(actionTitle(for: list, health: health)) in Business Vocabulary, then back up."
+    }
+
     private static func name(of list: MeetingStore.EditableList) -> String {
         switch list {
         case .vocabulary: return "vocabulary list"
@@ -1368,6 +1377,14 @@ final class MeetingStore: ObservableObject {
         guard !state.allowsMutation else { return true }
         storageErrorMessage = DamagedListNotice.refused(list, health: state, onDisk: fileOnDisk(of: list))
         return false
+    }
+
+    /// Why Back Up Library must wait for a read-only list, or nil when both loaded cleanly (F611).
+    func backupRefusalForReadOnlyList() -> String? {
+        for list in [EditableList.vocabulary, .replacementRules] where isListReadOnly(list) {
+            return DamagedListNotice.backupRefused(list, health: health(of: list), onDisk: fileOnDisk(of: list))
+        }
+        return nil
     }
 
     /// Whether `list` is read-only because its own file did not load cleanly (F464). The Add

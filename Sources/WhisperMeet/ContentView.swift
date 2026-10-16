@@ -3921,6 +3921,9 @@ private struct TranscriptDetailView: View {
         // F832: resolved once, as `speakerReason` is, so the greyed row, its help and the footnote
         // below cannot disagree about why Transcribe Again is unavailable.
         let transcribeAgainReason = model.transcribeAgainBlockedReason(for: meetingID)
+        // F611: the terms Suggest offers go into the vocabulary, so it is greyed while that list
+        // would refuse them, with the reason below.
+        let suggestVocabularyBlockedReason = model.suggestVocabularyBlockedReason
         return Menu {
             // F515: first, because it is the one that replaces everything below it. Asks first.
             Button {
@@ -3936,7 +3939,7 @@ private struct TranscriptDetailView: View {
             } label: {
                 Label("Suggest Vocabulary Terms…", systemImage: "text.badge.plus")
             }
-            .disabled(isSuggestingVocab)
+            .disabled(isSuggestingVocab || suggestVocabularyBlockedReason != nil)
             Button {
                 // F536: off the main actor, with progress and Cancel in the status line below the
                 // header. A cancelled pass returns nil and says nothing.
@@ -4034,7 +4037,7 @@ private struct TranscriptDetailView: View {
             }
             if isEdited || store.vocabulary.isEmpty || store.replacementRules.isEmpty
                 || meeting.segments.isEmpty || speakerReason != nil || model.libraryReadOnlyFootnote != nil
-                || transcribeAgainReason != nil {
+                || transcribeAgainReason != nil || suggestVocabularyBlockedReason != nil {
                 Divider()
                 // F194: first, because it outranks the others — when the library is read-only none of
                 // these can be applied whatever else is true of the transcript.
@@ -4045,6 +4048,10 @@ private struct TranscriptDetailView: View {
                 // sentence is the read-only line already shown above.
                 if let transcribeAgainReason, transcribeAgainReason != model.libraryReadOnlyFootnote {
                     Text(transcribeAgainReason)
+                }
+                // F611: unless it is the read-only line already shown above.
+                if let suggestVocabularyBlockedReason, suggestVocabularyBlockedReason != model.libraryReadOnlyFootnote {
+                    Text(suggestVocabularyBlockedReason)
                 }
                 if isEdited {
                     Text("Unavailable after manual edits — these tools work on the original transcription.")

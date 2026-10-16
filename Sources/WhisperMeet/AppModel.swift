@@ -3220,6 +3220,15 @@ final class AppModel: ObservableObject {
     /// a transcription, a summary, a second opinion or segment re-run. A recording or import in
     /// progress would have its index entry overwritten. And so would launch's startup recovery while it is
     /// still indexing interrupted recordings (F612).
+    /// Why Improve ▸ Suggest Vocabulary Terms… is unavailable, or nil (F611). The terms it suggests go
+    /// into the vocabulary, so a list that would refuse them — read-only by itself (F464), or with the
+    /// library — must not offer them: the user picked terms and they were refused and lost.
+    var suggestVocabularyBlockedReason: String? {
+        if let readOnly = libraryReadOnlyFootnote { return readOnly }
+        guard store.isListReadOnly(.vocabulary) else { return nil }
+        return "Suggest Vocabulary Terms is unavailable while the vocabulary list is read-only. Choose \(DamagedListNotice.actionTitle(for: .vocabulary, health: store.health(of: .vocabulary))) in Business Vocabulary first."
+    }
+
     private var libraryRestoreBlockedReason: String? {
         if store.isRestoringLibrary {
             return "A restore is already running. Wait for it to finish."
@@ -3426,6 +3435,15 @@ final class AppModel: ObservableObject {
         // the only safe action is to change nothing at all; recovery is the manual path in
         // `docs/RECOVERY.md`, and a backup taken after that is a backup worth having.
         guard libraryAcceptsChanges("Backing up the library") else { return }
+        // F611: the same reason for a damaged word list. Since F464 a damaged `vocabulary.json` or
+        // `replacement-rules.json` leaves the library writable, so the guard above no longer covers
+        // the lists — and every backup run here copied the damaged file and pruned, one run at a
+        // time, the generations that held a readable one. Deferred until the user keeps the list
+        // they see, which is one button and lifts this at once.
+        if let refusal = store.backupRefusalForReadOnlyList() {
+            alertMessage = refusal
+            return
+        }
         guard !isRecordingActive, !isImporting else {
             alertMessage = "Finish recording or importing before backing up the library."
             return
