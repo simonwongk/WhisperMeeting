@@ -610,5 +610,77 @@ class LookupGenerateTests(unittest.TestCase):
         self.assertNotEqual(generated, reply)
 
 
+class DamagedModelTests(unittest.TestCase):
+    """F756 — the helper loads the Summaries model (Runtime/Summarizer/model), and a damaged install
+    used to end it with a raw traceback on stderr and no reply line: the app then said "Refine
+    helper stopped unexpectedly." with the traceback's tail. Measured against the installed runtime
+    on 2026-10-16 (mlx_lm 0.30.5): a missing config.json raises FileNotFoundError, a corrupt
+    model.safetensors RuntimeError("[load_safetensors] Invalid json header length ..."). Now the
+    helper answers on stdout with one `error` line that names the folder and says what to do, which
+    `WarmRefineEngine.start` reports as the helper's own failure."""
+
+    def run_main_with_load_raising(self, error):
+        import contextlib
+        import io
+        import json
+        import sys
+        import types
+
+        def load(_path):
+            raise error
+
+        fakes = {
+            "mlx_lm": types.SimpleNamespace(load=load, stream_generate=None),
+            "mlx_lm.sample_utils": types.SimpleNamespace(make_sampler=None),
+            "mlx_lm.models": types.SimpleNamespace(),
+            "mlx_lm.models.cache": types.SimpleNamespace(
+                KVCache=None, can_trim_prompt_cache=None, make_prompt_cache=None, trim_prompt_cache=None
+            ),
+            "mlx.core": types.SimpleNamespace(),
+        }
+        fakes["mlx"] = types.SimpleNamespace(core=fakes["mlx.core"])
+        saved_modules = {name: sys.modules.get(name) for name in fakes}
+        saved_argv = sys.argv
+        sys.modules.update(fakes)
+        sys.argv = ["refine_server.py", "--model", "/models/damaged"]
+        stdout = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout):
+                code = refine.main()
+        finally:
+            sys.argv = saved_argv
+            for name, module in saved_modules.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
+        return code, [json.loads(line) for line in lines]
+
+    def test_a_missing_config_is_one_error_line_that_names_the_folder(self):
+        code, replies = self.run_main_with_load_raising(
+            FileNotFoundError(2, "No such file or directory", "/models/damaged/config.json")
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(len(replies), 1, replies)
+        self.assertNotIn("ready", replies[0])
+        self.assertIn("/models/damaged", replies[0]["error"])
+        self.assertIn("Repair or Update under Summaries in Settings", replies[0]["error"])
+
+    def test_corrupt_weights_are_one_error_line(self):
+        code, replies = self.run_main_with_load_raising(
+            RuntimeError("[load_safetensors] Invalid json header length file /models/damaged/model.safetensors")
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual([sorted(reply) for reply in replies], [["error"]])
+        self.assertIn("could not be read", replies[0]["error"])
+
+    def test_any_other_runtime_error_is_not_called_a_damaged_install(self):
+        """A Metal allocation failure is not a broken install (F598's rule): it propagates, and
+        sending the user to a multi-gigabyte repair would not help."""
+        with self.assertRaises(RuntimeError):
+            self.run_main_with_load_raising(RuntimeError("[metal::malloc] Attempting to allocate too much"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

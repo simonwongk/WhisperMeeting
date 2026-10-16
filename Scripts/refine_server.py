@@ -395,6 +395,32 @@ def apply_chat_template(tokenizer, messages):
         return tokenizer.apply_chat_template(messages, add_generation_prompt=True)
 
 
+# F756, F598's rule for this helper: what a partial or damaged install of the Summaries model raises
+# while it loads, measured against the installed runtime (mlx_lm 0.30.5) on 2026-10-16 with a
+# scratch copy of the model folder: a missing config.json is FileNotFoundError, a corrupt
+# model.safetensors is RuntimeError("[load_safetensors] Invalid json header length ..."). Kept beside
+# summarize_local.py's copy rather than imported: each helper is installed and run on its own.
+def is_unreadable_model_error(error: BaseException) -> bool:
+    """Whether `error`, raised while reading the model's files, means the install itself is damaged.
+
+    Only the RuntimeError that names the weights file counts: any other, such as a Metal allocation
+    failure, is not a broken install, and a repair would not help it."""
+    if isinstance(error, (OSError, ValueError)):
+        return True
+    return isinstance(error, RuntimeError) and str(error).startswith("[load_safetensors]")
+
+
+def model_unreadable_detail(model_dir: str, error: BaseException) -> str:
+    """The sentence the app reports when the refinement model cannot be read (F756)."""
+    reason = f"{type(error).__name__}: {error}"
+    if len(reason) > 300:
+        reason = reason[:300] + "…"
+    return (
+        f"The on-device model in {model_dir} could not be read ({reason}). Its files may be "
+        "incomplete or damaged. Use Repair or Update under Summaries in Settings, then try again."
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
@@ -411,7 +437,16 @@ def main() -> int:
 
     import mlx.core as mx
 
-    model, tokenizer = load(args.model)
+    try:
+        model, tokenizer = load(args.model)
+    except (OSError, ValueError, RuntimeError) as error:
+        # F756: a damaged install answers with one line the app reports as the helper's own
+        # failure, instead of a traceback and no reply.
+        if not is_unreadable_model_error(error):
+            raise
+        sys.stdout.write(json.dumps({"error": model_unreadable_detail(args.model, error)}) + "\n")
+        sys.stdout.flush()
+        return 1
     sampler = make_sampler(temp=0.0)  # greedy: a cleanup should be reproducible, not sampled.
     eos_ids = set(tokenizer.eos_token_ids)
 
