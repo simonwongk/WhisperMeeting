@@ -45,6 +45,16 @@ import WhisperCore
     /// next dictation recorded.
     @Published private(set) var historyEraseFailureMessage: String?
 
+    /// Why earlier versions of the history are not being kept, or nil while they are (F678).
+    ///
+    /// `BackupJSONStore.save` reports `.historyUnavailable` when `dictation-log.history` cannot be
+    /// used — a file squatting the name, a folder that cannot be written — and the save still
+    /// succeeds, so nothing else would say it. Its own channel: it is not a failed save
+    /// (`saveErrorMessage`), and it describes the history folder, not this dictation. Set by the first
+    /// save that reports it and cleared by a save that keeps a past version again, so it says what is
+    /// true now and appears once per session while the cause lasts.
+    @Published private(set) var historyNotice: String?
+
     /// Whether the next dictation would go unrecorded (F195).
     ///
     /// Exists so the UI can say so **before** the user holds the hotkey. The read-only banner lived
@@ -214,6 +224,7 @@ import WhisperCore
             token = outcome.token
             saveErrorMessage = nil
             unsavedEntryIDs.removeAll()
+            noteHistory(after: outcome)
         } catch {
             // Deliberately does NOT touch `health`, including on a lost race (F190). `health` is the
             // *load* verdict: a write that failed says nothing about whether the bytes on disk were
@@ -254,9 +265,21 @@ import WhisperCore
                 token = outcome.token
                 saveErrorMessage = nil
                 unsavedEntryIDs.removeAll()
+                noteHistory(after: outcome)
             } catch {
                 saveErrorMessage = error.localizedDescription
             }
         }
+    }
+
+    /// Sets or clears `historyNotice` from what a successful save found about the history (F678).
+    private func noteHistory(after outcome: BackupJSONStore<DictationLog>.SaveOutcome) {
+        for case let .historyUnavailable(reason) in outcome.repairs {
+            if historyNotice == nil {
+                historyNotice = "Your dictations are being saved, but WhisperMeet cannot keep earlier versions of the dictation history right now (\(reason)). Until that is fixed, a dictation history that is changed by mistake cannot be brought back from its saved versions."
+            }
+            return
+        }
+        if outcome.retainedName != nil { historyNotice = nil }
     }
 }

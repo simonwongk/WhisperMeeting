@@ -1,4 +1,5 @@
 import Foundation
+import os
 import WhisperCore
 
 enum MeetingStatus: String, Codable, Sendable {
@@ -879,13 +880,20 @@ final class MeetingStore: ObservableObject {
     private var replacementRulesToken: GenerationToken?
     private var leaseHandle: LibraryWriterLeaseHandle?
 
-    init(rootDirectory: URL? = nil, transcriptWriteDebounce: TimeInterval = MeetingStore.defaultTranscriptWriteDebounce) {
+    /// `indexRetention` is the meeting index's history policy: the shipping default everywhere but a
+    /// test that needs the byte budget's ceiling within reach (F679).
+    init(
+        rootDirectory: URL? = nil,
+        transcriptWriteDebounce: TimeInterval = MeetingStore.defaultTranscriptWriteDebounce,
+        indexRetention: RetentionPolicy = RetentionPolicy()
+    ) {
         // F312: one decision for the whole library, and one variable that can move it.
         self.rootDirectory = rootDirectory ?? WhisperMeetLibrary.root()
         self.transcriptWriteDebounce = transcriptWriteDebounce
         meetingFiles = BackupJSONStore(
             primaryURL: self.rootDirectory.appendingPathComponent("meetings.json"),
             backupURL: self.rootDirectory.appendingPathComponent("meetings.backup.json"),
+            retention: indexRetention,
             recordCount: { $0.count },
             // One bad record costs one record, not the library (F187) — see `salvageMeetings(from:)`.
             salvage: MeetingStore.salvageMeetings(from:),
@@ -3339,13 +3347,15 @@ final class MeetingStore: ObservableObject {
         do {
             switch list {
             case .vocabulary:
-                vocabularyToken = try vocabularyFiles.save(vocabulary, expecting: vocabularyToken).token
+                let outcome = try vocabularyFiles.save(vocabulary, expecting: vocabularyToken)
+                vocabularyToken = outcome.token
+                // The list's own history, said as the index's is (F678).
+                storageErrorMessage = historyNotice(after: outcome.repairs, of: .vocabulary)
             case .replacementRules:
-                replacementRulesToken = try replacementRulesFiles.save(
-                    replacementRules, expecting: replacementRulesToken
-                ).token
+                let outcome = try replacementRulesFiles.save(replacementRules, expecting: replacementRulesToken)
+                replacementRulesToken = outcome.token
+                storageErrorMessage = historyNotice(after: outcome.repairs, of: .replacementRules)
             }
-            storageErrorMessage = restingStorageMessage   // nil unless F553's notice is up
             return .saved
         } catch {
             let report = WriteConflictReport(error)
@@ -3405,7 +3415,7 @@ final class MeetingStore: ObservableObject {
     /// here guarantees; the fix does not rest on it.
     func clearStorageError() {
         if let notice = historyNoticeAwaitingDismissal, storageErrorMessage == notice {
-            historyNoticeAwaitingDismissal = nil
+            historyNoticesAwaitingDismissal.removeFirst()
         }
         storageErrorMessage = nil
         guard historyNoticeAwaitingDismissal != nil else { return }
@@ -3470,38 +3480,106 @@ final class MeetingStore: ObservableObject {
         return result
     }
 
-    /// Whether this session has already told the user that the meeting index's past versions are
-    /// not being kept (F553). Once per session: the condition is usually lasting — a file squatting
-    /// `meetings.history`, a permissions change — and nearly every edit saves the index.
-    private var didNoticeHistoryUnavailable = false
-    /// That notice, while it waits for the alert's OK on it (`clearStorageError()`).
+    /// The stores whose saved past versions a notice can be about (F553, F678). One fact per store:
+    /// the meeting index's history and a list's are different folders with different causes, so a
+    /// notice about one says nothing about the other.
+    enum HistoryStore: Hashable, Sendable {
+        case meetings, vocabulary, replacementRules
+    }
+
+    /// What a save of one store found about its history that the user is told once per session.
+    private enum HistoryFact: Hashable {
+        /// No past version is being kept (F553, F678).
+        case unavailable(HistoryStore)
+        /// The byte budget took an age-anchor generation (F679).
+        case trimmedByBudget(HistoryStore)
+    }
+
+    /// The facts this session has already told the user (F553, F678, F679). Once per session each:
+    /// the condition is usually lasting — a file squatting `meetings.history`, a permissions change,
+    /// a history at its ceiling — and nearly every edit saves.
+    private var noticedHistoryFacts: Set<HistoryFact> = []
+    /// Those notices, oldest first, while each waits for the alert's OK on it (`clearStorageError()`).
+    /// One is shown at a time; an OK on it brings the next (`reshowPendingNotice`).
     ///
     /// Held apart from `storageErrorMessage` because every successful save used to clear that, and
     /// the next save — as little as the transcript debounce later — would take the notice off
-    /// screen before anyone read it. Successful saves put THIS back instead of nil, so the notice
-    /// stays up and, being the same value, is not posted again to the windowless channel, whose
-    /// observer drops adjacent repeats. Since F669 so does every other path that clears the message
-    /// (`restingStorageMessage`), and an OK on a different message does not release it.
-    private var historyNoticeAwaitingDismissal: String?
+    /// screen before anyone read it. Successful saves put the first of these back instead of nil, so
+    /// the notice stays up and, being the same value, is not posted again to the windowless channel,
+    /// whose observer drops adjacent repeats. Since F669 so does every other path that clears the
+    /// message (`restingStorageMessage`), and an OK on a different message does not release it.
+    private var historyNoticesAwaitingDismissal: [String] = []
+    /// The notice shown now, of those waiting.
+    private var historyNoticeAwaitingDismissal: String? { historyNoticesAwaitingDismissal.first }
 
-    /// The user-facing words for `.historyUnavailable` (F553). Names no control: the recovery
-    /// list's button only appears while the library is read-only, which this library is not.
+    /// The user-facing words for the meeting index's `.historyUnavailable` (F553). Names no control:
+    /// the recovery list's button only appears while the library is read-only, which this library is not.
     static func historyUnavailableNotice(reason: String) -> String {
         "Your meetings are being saved, but WhisperMeet cannot keep earlier versions of the meeting index right now (\(reason)). Until that is fixed, a bad change to your meeting list cannot be undone from the saved history. Your recordings and the current index are not affected."
     }
 
-    /// What `storageErrorMessage` should read after a successful save: nil, unless this save — or
-    /// an earlier one this session — found that no past version could be kept and the user has
-    /// not yet dismissed the notice.
-    private func historyNotice(after repairs: [BackupJSONStore<[MeetingRecord]>.StoreRepair]) -> String? {
-        if !didNoticeHistoryUnavailable {
-            for case let .historyUnavailable(reason) in repairs {
-                didNoticeHistoryUnavailable = true
-                historyNoticeAwaitingDismissal = Self.historyUnavailableNotice(reason: reason)
-                break
+    /// The same notice for any store (F678): the meeting index's own words, or a list's.
+    static func historyUnavailableNotice(reason: String, for store: HistoryStore) -> String {
+        switch store {
+        case .meetings:
+            return historyUnavailableNotice(reason: reason)
+        case .vocabulary, .replacementRules:
+            let (list, file) = Self.historyNoticeNames(store)
+            return "Your \(list) is being saved, but WhisperMeet cannot keep earlier versions of \(file) right now (\(reason)). Until that is fixed, a bad change to the list cannot be undone from its saved history. Your meetings and recordings are not affected."
+        }
+    }
+
+    /// The user-facing words for `.historyTrimmedByBudget` (F679): an hour, day or week undo point
+    /// went for space alone. Says what is still kept, because that is what the user can act on.
+    static func historyTrimmedNotice(count: Int, for store: HistoryStore) -> String {
+        let versions = count == 1 ? "1 saved version" : "\(count) saved versions"
+        switch store {
+        case .meetings:
+            return "Earlier versions of the meeting index have reached the space WhisperMeet keeps for them, so \(versions) from more than an hour ago \(count == 1 ? "was" : "were") removed to make room. Recover Library still has the most recent versions and the one with the most meetings. Your recordings and the current index are not affected."
+        case .vocabulary, .replacementRules:
+            let (list, file) = Self.historyNoticeNames(store)
+            return "Earlier versions of \(file) have reached the space WhisperMeet keeps for them, so \(versions) of your \(list) from more than an hour ago \(count == 1 ? "was" : "were") removed to make room. The most recent versions are still kept."
+        }
+    }
+
+    private static func historyNoticeNames(_ store: HistoryStore) -> (list: String, file: String) {
+        switch store {
+        case .meetings: return ("meeting index", "meetings.json")
+        case .vocabulary: return ("Business Vocabulary", "vocabulary.json")
+        case .replacementRules: return ("replacement rules", "replacement-rules.json")
+        }
+    }
+
+    /// Where a budget-trimmed generation is logged, every time (F679) — the notice is once per session.
+    private static let historyLog = Logger(subsystem: "com.whispermeet.app", category: "library-history")
+
+    /// What `storageErrorMessage` should read after a successful save of `store`: nil, unless this
+    /// save — or an earlier one this session, of any store — found something about its history the
+    /// user has not yet dismissed. Generic over the store's value, because each `BackupJSONStore`
+    /// has its own `StoreRepair` type.
+    private func historyNotice<Value>(
+        after repairs: [BackupJSONStore<Value>.StoreRepair], of store: HistoryStore
+    ) -> String? {
+        for repair in repairs {
+            switch repair {
+            case let .historyUnavailable(reason):
+                noteHistoryFact(.unavailable(store), Self.historyUnavailableNotice(reason: reason, for: store))
+            case let .historyTrimmedByBudget(names):
+                for name in names {
+                    Self.historyLog.notice("The history byte budget removed \(name, privacy: .public) from \(Self.historyNoticeNames(store).file, privacy: .public)")
+                }
+                noteHistoryFact(.trimmedByBudget(store), Self.historyTrimmedNotice(count: names.count, for: store))
+            case .adoptedUnrecordedPrimary, .adoptedForeignRotation, .ledgerUnreadable, .ledgerNewerFormat, .primaryMissing:
+                continue
             }
         }
         return historyNoticeAwaitingDismissal
+    }
+
+    /// Queues `notice` unless this session already told the user `fact`.
+    private func noteHistoryFact(_ fact: HistoryFact, _ notice: String) {
+        guard noticedHistoryFacts.insert(fact).inserted else { return }
+        historyNoticesAwaitingDismissal.append(notice)
     }
 
     /// Runs just before each save of the meeting index or of a list, so a test can put another copy's
@@ -3525,7 +3603,7 @@ final class MeetingStore: ObservableObject {
             persistCommitCount += 1
             unsavedChanges = false
             writeConflict = nil
-            storageErrorMessage = historyNotice(after: outcome.repairs)   // nil unless F553's notice is up
+            storageErrorMessage = historyNotice(after: outcome.repairs, of: .meetings)   // nil unless a history notice is up
             // What actually reached disk (F433 follow-up) — a lost race's delta is diffed against
             // this, not against whatever any other writer happens to hold.
             lastPersistedMeetings = meetings

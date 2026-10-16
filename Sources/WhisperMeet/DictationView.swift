@@ -175,6 +175,18 @@ struct DictationView: View {
                         .accessibilityElement(children: .combine)
                         .padding(.bottom, 8)
                     }
+                    // The history's past versions are not being kept (F678): the saves succeed, so
+                    // nothing else here would say it.
+                    if let message = log.historyNotice {
+                        Label(message, systemImage: "clock.badge.exclamationmark")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .bannerSurface(.orange)
+                            .accessibilityElement(children: .combine)
+                            .padding(.bottom, 8)
+                    }
                     // A Clear All that could not fully remove every on-disk copy says so, rather
                     // than reporting success while a backup or history file still holds the text
                     // the user asked to remove (F456).
