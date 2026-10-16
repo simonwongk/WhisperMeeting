@@ -437,8 +437,10 @@ enum RecordingMixer {
     ///   transformed; per bin, over each stretch of `cancellationGroupFrames` frames, the channels'
     ///   cross-spectrum, their energies and how the energy is spread over the frames are summed; the stretch's
     ///   delays are found from its cross-correlation (`alignmentFrames16k`), and each bin's cancellation read at
-    ///   its best alignment (`RecordingMixPlan.cancels`), per band of `cancellationBands`. Every frame of the
-    ///   recording is measured, the last padded with silence. The copy plays no part.
+    ///   its best alignment (`RecordingMixPlan.cancels`), per band of `cancellationBands`. Beside it (F1009), the
+    ///   phase rule in each stretch and the brief rule in windows of `briefWindowFrames` frames count an opposite bin
+    ///   that no broadband delay explains (`phaseRuleCancels`, `briefCancels`; the windows go to `briefStretches`).
+    ///   Every frame of the recording is measured, the last padded with silence. The copy plays no part.
     /// - **Whether each channel is in the mix, and the mix in the copy** (`CopyLink`): `presenceFrameSeconds`
     ///   frames of both channels, of their mix formed as the encode mixes (`channelWeight`) and of the copy; per
     ///   bin in `presenceBand`, over `presenceGroupFrames` frames, never across a window's edge, the mix's
