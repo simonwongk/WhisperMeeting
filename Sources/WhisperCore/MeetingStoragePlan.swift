@@ -162,10 +162,6 @@ public enum MeetingStoragePlan {
         return nil
     }
 
-    /// The other `recording.<ext>` files a resume must check the copy against before it removes them
-    /// (F955): those with several audio tracks or more than two channels, which a mix holds and a copy
-    /// made before F942 did not — that build kept the first track or channel. Their length alone, which
-    /// F911 compares, cannot tell the two apart.
     /// Whether a WAV's two channels mix into one as left and right (F1001): a plain format with no positions,
     /// or `WAVE_FORMAT_EXTENSIBLE` marked front left and front right (0x3). afconvert's mono mix follows any
     /// other marking — of centre and LFE it drops the LFE channel, and the copy's checks see a channel of under
@@ -177,6 +173,20 @@ public enum MeetingStoragePlan {
         return mask == 0x3
     }
 
+    /// The same rule for any container's channel layout, read as one Core Audio channel label per channel
+    /// (F1001, review 2 of round 2, R2-A): afconvert's mix follows a CAF's or an AIFF's layout as it follows a
+    /// WAV's mask, and of a pair laid out centre + LFE it drops the LFE channel. No layout (nil) mixes as left
+    /// and right; two channels labelled left (1) and right (2) do; anything else is kept, fail-closed — an
+    /// empty list (a layout that could not be read) included.
+    public static func channelsAreLeftRight(labels: [UInt32]?) -> Bool {
+        guard let labels else { return true }
+        return labels == [1, 2]
+    }
+
+    /// The other `recording.<ext>` files a resume must check the copy against before it removes them
+    /// (F955): those with several audio tracks or more than two channels, which a mix holds and a copy
+    /// made before F942 did not — that build kept the first track or channel. Their length alone, which
+    /// F911 compares, cannot tell the two apart.
     public static func otherRecordingsToVerify(_ disk: DiskFacts) -> [FolderEntry] {
         otherRecordings(in: disk.entries, recordingName: disk.recordingName).filter { other in
             guard !other.isEmpty, let tracks = disk.otherRecordingTracks[other.name] else { return false }
@@ -338,9 +348,9 @@ public enum MeetingStoragePlan {
         /// `otherRecordingSeconds`, where it could be read (F955). A name missing here was not read, and is
         /// judged by its length alone, as before.
         public var otherRecordingTracks: [String: [RecordingMixPlan.Track]]
-        /// The first of the recording and the other `recording.<ext>` files that is a two-channel WAV whose
-        /// channels are marked as something other than front left and front right (`channelsAreLeftRight`);
-        /// nil when none is (F1001).
+        /// The first of the recording and the other `recording.<ext>` files that is a two-channel file whose
+        /// channels are marked as something other than front left and front right — a WAV's mask or any other
+        /// container's channel layout (`channelsAreLeftRight`); nil when none is (F1001).
         public var channelsNotLeftRight: String? = nil
 
         public init(recordingName: String, recordingExists: Bool, inOwnFolder: Bool, hasIntegrityProblem: Bool,
@@ -405,9 +415,9 @@ public enum MeetingStoragePlan {
         /// never mixed, or could not be read, or — outside a resume, which checks the copy against it
         /// before removing it — nothing compares it with the copy at all.
         case otherRecordingHasMoreTracks(name: String, tracks: Int, channels: Int)
-        /// A two-channel WAV — the recording, or another `recording.<ext>` Shrink would delete — marks its channels
-        /// as something other than front left and front right (`channelsAreLeftRight`), and the encode's mix
-        /// follows the marking and can drop a channel (F1001).
+        /// A two-channel file — the recording, or another `recording.<ext>` Shrink would delete — marks its
+        /// channels as something other than front left and front right (`channelsAreLeftRight`), and the encode's
+        /// mix follows the marking and can drop a channel (F1001).
         case channelsNotLeftRight(name: String)
         case cannotMeasureLength
         case alreadyShrunk

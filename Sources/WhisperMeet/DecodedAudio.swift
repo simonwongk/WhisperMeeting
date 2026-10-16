@@ -89,6 +89,49 @@ enum DecodedAudio {
         return Int(file.fileFormat.channelCount)
     }
 
+    /// What the container says each channel is — its channel layout, expanded to one Core Audio channel label per
+    /// channel (`kAudioChannelLabel_Left` 1, `_Right` 2, `_Center` 3, `_LFEScreen` 4, …) — for Shrink's rule on
+    /// what afconvert's mono mix keeps (F1001, review 2 of round 2, R2-A): afconvert mixes by these positions, in
+    /// a CAF, an AIFF or a WAV alike, and leaves out a channel laid out as LFE. Nil when the file has no layout,
+    /// or AVAudioFile cannot open it; an empty list when it has one that cannot be expanded to labels.
+    static func channelLabels(of url: URL) -> [UInt32]? {
+        guard let layout = (try? AVAudioFile(forReading: url))?.fileFormat.channelLayout else { return nil }
+        return channelLabels(of: layout)
+    }
+
+    static func channelLabels(of layout: AVAudioChannelLayout) -> [UInt32] {
+        let raw = layout.layout
+        let tag = raw.pointee.mChannelLayoutTag
+        if tag == kAudioChannelLayoutTag_UseChannelDescriptions { return descriptionLabels(raw) }
+        var size: UInt32 = 0
+        if tag == kAudioChannelLayoutTag_UseChannelBitmap {
+            var bitmap = raw.pointee.mChannelBitmap
+            let specifier = UInt32(MemoryLayout<AudioChannelBitmap>.size)
+            guard AudioFormatGetPropertyInfo(kAudioFormatProperty_ChannelLayoutForBitmap, specifier, &bitmap, &size) == noErr,
+                  size >= UInt32(MemoryLayout<AudioChannelLayout>.size - MemoryLayout<AudioChannelDescription>.size) else { return [] }
+            let buffer = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioChannelLayout>.alignment)
+            defer { buffer.deallocate() }
+            guard AudioFormatGetProperty(kAudioFormatProperty_ChannelLayoutForBitmap, specifier, &bitmap, &size, buffer) == noErr else { return [] }
+            return descriptionLabels(UnsafePointer(buffer.assumingMemoryBound(to: AudioChannelLayout.self)))
+        }
+        var value = tag
+        let specifier = UInt32(MemoryLayout<AudioChannelLayoutTag>.size)
+        guard AudioFormatGetPropertyInfo(kAudioFormatProperty_ChannelLayoutForTag, specifier, &value, &size) == noErr,
+              size >= UInt32(MemoryLayout<AudioChannelLayout>.size - MemoryLayout<AudioChannelDescription>.size) else { return [] }
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: MemoryLayout<AudioChannelLayout>.alignment)
+        defer { buffer.deallocate() }
+        guard AudioFormatGetProperty(kAudioFormatProperty_ChannelLayoutForTag, specifier, &value, &size, buffer) == noErr else { return [] }
+        return descriptionLabels(UnsafePointer(buffer.assumingMemoryBound(to: AudioChannelLayout.self)))
+    }
+
+    /// The labels of a layout's channel descriptions, read past the one the struct declares.
+    private static func descriptionLabels(_ layout: UnsafePointer<AudioChannelLayout>) -> [UInt32] {
+        let count = Int(layout.pointee.mNumberChannelDescriptions)
+        guard count > 0, let offset = MemoryLayout<AudioChannelLayout>.offset(of: \.mChannelDescriptions) else { return [] }
+        let first = (UnsafeRawPointer(layout) + offset).assumingMemoryBound(to: AudioChannelDescription.self)
+        return (0..<count).map { first[$0].mChannelLabel }
+    }
+
     /// The length the container declares, without decoding. Nil when AVAudioFile cannot open it.
     static func declaredDuration(of url: URL) -> TimeInterval? {
         guard let file = try? AVAudioFile(forReading: url), file.processingFormat.sampleRate > 0 else { return nil }

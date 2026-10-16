@@ -189,6 +189,64 @@ func shrinkKeepsADownloadWhoseChannelsCancelBesideItsMonoWAV() async throws {
     }
 }
 
+/// Writes `channels` (16 kHz) as a two-channel CAF or AIFF whose channel layout is `layout` — a raw
+/// `AudioChannelLayout`, its descriptions included.
+private func writeLaidOut(_ url: URL, _ channels: [[Float]], layout: [UInt8]) throws {
+    var settings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate, AVNumberOfChannelsKey: 2,
+                                   AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false]
+    if url.pathExtension == "aif" { settings[AVLinearPCMIsBigEndianKey] = true }
+    settings[AVChannelLayoutKey] = Data(layout)
+    let avLayout = layout.withUnsafeBytes { AVAudioChannelLayout(layout: $0.baseAddress!.assumingMemoryBound(to: AudioChannelLayout.self)) }
+    let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(rate), interleaved: false, channelLayout: avLayout)
+    let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+    let frames = Swift.min(channels[0].count, channels[1].count)
+    let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)))
+    buffer.frameLength = AVAudioFrameCount(frames)
+    let data = try #require(buffer.floatChannelData)
+    for channel in 0..<2 { for n in 0..<frames { data[channel][n] = channels[channel][n] } }
+    try file.write(from: buffer)
+}
+
+/// A raw `AudioChannelLayout`: `tag`, with `bitmap` or the channel `labels` it names.
+private func channelLayout(tag: AudioChannelLayoutTag, bitmap: UInt32 = 0, labels: [AudioChannelLabel] = []) -> [UInt8] {
+    let header = MemoryLayout<AudioChannelLayout>.size - MemoryLayout<AudioChannelDescription>.size
+    let total = header + Swift.max(1, labels.count) * MemoryLayout<AudioChannelDescription>.size
+    var bytes = [UInt8](repeating: 0, count: total)
+    bytes.withUnsafeMutableBytes { raw in
+        let layout = raw.baseAddress!.assumingMemoryBound(to: AudioChannelLayout.self)
+        layout.pointee.mChannelLayoutTag = tag
+        layout.pointee.mChannelBitmap = AudioChannelBitmap(rawValue: bitmap)
+        layout.pointee.mNumberChannelDescriptions = UInt32(labels.count)
+        let descriptions = (raw.baseAddress! + header).assumingMemoryBound(to: AudioChannelDescription.self)
+        for (index, label) in labels.enumerated() {
+            descriptions[index] = AudioChannelDescription(mChannelLabel: label, mChannelFlags: [], mCoordinates: (0, 0, 0))
+        }
+    }
+    return bytes
+}
+
+@Test("A CAF or AIFF laid out centre + LFE, whose LFE channel the compression drops, is kept (F1001 round 3, R2-A)")
+@MainActor
+func shrinkKeepsACAFOrAIFFLaidOutCentreAndLFE() async throws {
+    // Review 2 of round 2: voice B 16 dB down on the channel laid out as LFE was missing from the copy, under
+    // the copy's own check (a twentieth of the mix), and the original deleted.
+    let centreAndLFE = channelLayout(tag: kAudioChannelLayoutTag_UseChannelBitmap, bitmap: 0x4 | 0x8)
+    for ext in ["caf", "aif"] {
+        let f = try await MixFixture(recordingExtension: ext, duration: 12) { url in
+            try writeLaidOut(url, [a16, scaled(b16, 0.158)], layout: centreAndLFE)
+        }
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let original = try Data(contentsOf: f.recording)
+
+        await f.shrink()
+
+        let alert = f.model.alertMessage ?? "nil"
+        #expect((try? Data(contentsOf: f.recording)) == original, ".\(ext): \(alert)")
+        #expect(!f.exists("recording.m4a"), ".\(ext): \(alert)")
+        #expect(alert.contains("“recording.\(ext)”") && alert.contains("channels"), ".\(ext): \(alert)")
+    }
+}
+
 // MARK: - The copy's own link, and an unreadable leftover (reviews' mutants M15, M18)
 
 @Test("A copy that kept one channel of two voices is refused end to end, by the copy's check alone (F1001 round 2)")

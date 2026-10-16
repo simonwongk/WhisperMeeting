@@ -156,6 +156,11 @@ func channelMaskDecidesLeftAndRight() {
     #expect(!MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 2, mask: 0), "no positions")
     #expect(!MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 2, mask: nil), "a mask that was not read")
     #expect(MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 1, mask: 0x4), "one channel is not this rule's")
+    // Any other container's layout, by channel label (R2-A).
+    #expect(MeetingStoragePlan.channelsAreLeftRight(labels: nil), "no layout")
+    #expect(MeetingStoragePlan.channelsAreLeftRight(labels: [1, 2]), "left, right")
+    #expect(!MeetingStoragePlan.channelsAreLeftRight(labels: [3, 4]), "centre, LFE")
+    #expect(!MeetingStoragePlan.channelsAreLeftRight(labels: []), "a layout that could not be read")
     var disk = MeetingStoragePlan.DiskFacts(
         recordingName: "recording.wav", recordingExists: true, inOwnFolder: true, hasIntegrityProblem: false,
         rebuildOffered: false, durationSeconds: 600,

@@ -675,14 +675,18 @@ extension AppModel {
                 durationSeconds: length, entries: listed, audioTrackCount: tracks,
                 otherRecordingSeconds: otherSeconds, channelCount: channels, audioTracks: audioTracks,
                 otherRecordingTracks: otherTracks)
-            // F1001: a two-channel WAV whose channels are marked other than left and right, which the encode's
-            // mix follows — the recording, or one Shrink would remove.
+            // F1001: a two-channel file whose channels are marked other than left and right, which the encode's
+            // mix follows — a WAV by its mask, any other container by its channel layout (R2-A) — the recording,
+            // or one Shrink would remove.
             let candidates = (exists ? [name] : []) + MeetingStoragePlan.otherRecordings(in: listed, recordingName: name).map(\.name)
             facts.channelsNotLeftRight = candidates.first { candidate in
                 let url = candidate == name ? recordingURL : directory.appendingPathComponent(candidate)
-                guard let header = WAVInspection.header(at: url) else { return false }
-                return !MeetingStoragePlan.channelsAreLeftRight(formatTag: header.formatTag, channels: header.channels,
-                                                                mask: header.channelMask)
+                if let header = WAVInspection.header(at: url) {
+                    return !MeetingStoragePlan.channelsAreLeftRight(formatTag: header.formatTag, channels: header.channels,
+                                                                    mask: header.channelMask)
+                }
+                guard DecodedAudio.channelCount(of: url) == 2 else { return false }
+                return !MeetingStoragePlan.channelsAreLeftRight(labels: DecodedAudio.channelLabels(of: url))
             }
             return (facts, couldNotMeasure)
         }.value
