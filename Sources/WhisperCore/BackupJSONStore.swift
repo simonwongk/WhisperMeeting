@@ -110,21 +110,36 @@ private final class DecodableFileMemory: @unchecked Sendable {
             changedSeconds = info.st_ctimespec.tv_sec
             changedNanoseconds = info.st_ctimespec.tv_nsec
         }
+
+        /// The same file with the same contents as far as a rename can tell — everything but the
+        /// ctime, which the rename itself changes (F985).
+        func isSameFile(as other: Identity) -> Bool {
+            device == other.device && inode == other.inode && size == other.size
+                && modifiedSeconds == other.modifiedSeconds
+                && modifiedNanoseconds == other.modifiedNanoseconds
+        }
     }
 
     private let lock = NSLock()
     private var proven: [String: Identity] = [:]
 
-    /// Records that the file at `path` currently holds `byteCount` decodable bytes.
+    /// Records that the file at `path` holds `byteCount` decodable bytes because this process just
+    /// renamed it there from a file whose identity, taken before the rename, was `renamed` (F985).
     ///
-    /// Takes the identity twice and keeps it only if both agree, and only if the size matches what
-    /// was written. A foreign writer that slipped in between the write and the check would move one
-    /// of them, and the entry is dropped rather than attributed to bytes we never verified.
-    func remember(path: String, byteCount: Int) {
-        guard let first = Identity(path: path),
+    /// Two stats that agree and a size that matches are not enough: a same-size foreign write landing
+    /// in the instant after the rename passes both, and its bytes were remembered as decoded. F526's
+    /// before/after identity cannot be used either, because `rename` changes the ctime. What a rename
+    /// keeps is the file — device, inode, size and modification time — so the file at the path must
+    /// still be exactly the one renamed: a replacement has another inode, and a write through the
+    /// same inode moves the modification time. Anything else is forgotten rather than attributed to
+    /// bytes this process never verified. Taken twice, as before, so a write during the check misses.
+    func remember(path: String, byteCount: Int, renamedFrom renamed: Identity?) {
+        guard let renamed,
+              let first = Identity(path: path),
               let second = Identity(path: path),
               first == second,
-              first.size == Int64(byteCount)
+              first.size == Int64(byteCount),
+              first.isSameFile(as: renamed)
         else {
             forget(path)
             return
@@ -660,8 +675,11 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         //    touches the primary's inode afterwards (in particular no `link(2)`), so its ctime stays
         //    put and F211's memory stays warm for the next save.
         decodableMemory.forget(primaryURL.path)
+        // This save's own staging file, decodable by construction — remembered at the primary only
+        // while the primary is still that file (F985).
+        let staged = DecodableFileMemory.Identity(path: stagingURL.path)
         try io.rename(stagingURL, primaryURL, .install)
-        decodableMemory.remember(path: primaryURL.path, byteCount: newData.count)
+        decodableMemory.remember(path: primaryURL.path, byteCount: newData.count, renamedFrom: staged)
         phases.append(.install)
 
         let token = GenerationToken(
@@ -888,6 +906,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         // `.rotateBackup` occur a variable number of times per save, which broke occurrence-targeted
         // fault injection for no benefit.
         try io.copyItem(source, temporary, .rotateBackup)
+        let clone = DecodableFileMemory.Identity(path: temporary.path)
         try io.rename(temporary, backupURL, .rotateBackup)
         let sourceStillDecoded: Bool
         switch proof {
@@ -898,7 +917,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
                 && DecodableFileMemory.Identity(path: source.path) == decoded
         }
         guard sourceStillDecoded else { return }
-        decodableMemory.remember(path: backupURL.path, byteCount: byteCount)
+        // And only while the backup is still the clone this rotation renamed there (F985).
+        decodableMemory.remember(path: backupURL.path, byteCount: byteCount, renamedFrom: clone)
     }
 
     /// How many of the newest ledger records are kept whether or not their generation is still on

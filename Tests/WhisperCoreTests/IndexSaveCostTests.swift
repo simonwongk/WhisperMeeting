@@ -232,6 +232,76 @@ func aSaveThatLosesAfterASwapUnderItsReadLeavesNoFalseRecord() throws {
     #expect(kept.contains(swapped), "an undecodable primary, remembered as decoded from bytes that were never decoded, was replaced without being copied aside")
 }
 
+// MARK: - F985: a save records what it renamed only while it is still the file it renamed
+
+/// How a foreign writer replaces a file in the instant after this save's own `rename`.
+enum ForeignSameSizeWrite: String, CaseIterable, Sendable {
+    /// Temp file and rename: a new inode at the path.
+    case atomicReplace
+    /// Truncate and write through the same inode: only the modification time moves.
+    case inPlace
+
+    func write(_ data: Data, to url: URL) throws {
+        switch self {
+        case .atomicReplace: try data.write(to: url, options: .atomic)
+        case .inPlace: try data.write(to: url)
+        }
+    }
+}
+
+/// `save` step 9 renames its staging file onto the primary and `rotate` renames its clone onto the
+/// backup, and each then recorded the file at the path in F211's memory on two stats that agreed and
+/// a size that matched. A same-size foreign write landing just after the rename passed both, so its
+/// bytes were remembered as decoded, and the next save rotated (or replaced) them without the F187
+/// quarantine. F526's before/after identity cannot be used, because `rename` changes the ctime; the
+/// record now requires the file at the path to be the one that was renamed — same device, inode,
+/// size and modification time.
+@Test(
+    "A same-size foreign write just after a save's install or rotation is not remembered as decoded (F985)",
+    arguments: [StoreWritePhase.install, .rotateBackup], ForeignSameSizeWrite.allCases
+)
+func aForeignWriteJustAfterARenameIsNotTrusted(phase: StoreWritePhase, write: ForeignSameSizeWrite) throws {
+    let run = UUID().uuidString
+    let library = try seededLibrary(run: run)
+    defer { try? FileManager.default.removeItem(at: library.directory) }
+    let target = phase == .install ? library.primaryURL : library.backupURL
+    let targetPath = target.path
+    let swaps = SwapOnce()
+    let armed = Flag()
+    let swappedBytes = SwapRecord()
+    var io = StoreFileIO.live
+    io.rename = { source, destination, renamePhase in
+        try StoreFileIO.live.rename(source, destination, renamePhase)
+        // Another writer replaces the file this save just renamed into place, keeping its size.
+        guard armed.isSet, renamePhase == phase, destination.path == targetPath, swaps.take() else { return }
+        let renamed = try Data(contentsOf: destination)
+        let foreign = Data(repeating: UInt8(ascii: "x"), count: renamed.count)
+        try write.write(foreign, to: destination)
+        swappedBytes.set(foreign)
+    }
+    let store = library.store(io: io)
+    let loaded = try #require(try store.load())
+    armed.raise()
+
+    _ = try store.save(loaded.value + [CountedEntry(run: run, title: "entry 6")], expecting: loaded.token)
+    let foreign = try #require(swappedBytes.value, "fixture: the save never renamed onto \(target.lastPathComponent)")
+    try #require(try Data(contentsOf: target) == foreign, "fixture: the foreign write did not land")
+
+    // Unchecked, so the compare-and-swap cannot refuse it over the foreign primary: the only thing
+    // between the foreign bytes and a replacement without a copy is the decode memory.
+    let next = try store.save(loaded.value)
+
+    let kept = try next.quarantined.map { try Data(contentsOf: library.directory.appendingPathComponent($0)) }
+    #expect(kept.contains(foreign), "bytes written over \(target.lastPathComponent) after this save's rename were remembered as decoded and replaced without being copied aside")
+}
+
+private final class SwapRecord: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Data?
+    var value: Data? { lock.withLock { stored } }
+    func set(_ data: Data) { lock.withLock { stored = data } }
+}
+
 // MARK: - Element-wise encoding
 
 /// Every shape the meeting index has: nested objects and arrays, empty ones, optionals both ways,
