@@ -15,12 +15,12 @@ import Testing
 private let rate = 16_000
 
 /// A voice-like sound at 16 kHz: twelve tones, each swelling at its own rate.
-private func voice16(_ tones: [Double], amplitude: Double = 0.03, seconds: Double = 12) -> [Float] {
+private func voice16(_ tones: [Double], amplitude: Double = 0.03, seconds: Double = 12, detune: Double = 0) -> [Float] {
     let count = Int(seconds * Double(rate))
     var out = [Float](repeating: 0, count: count)
     for (index, tone) in tones.enumerated() {
         let swell = 2 + 5 * Double(index) / Double(Swift.max(1, tones.count - 1)), phase = Double(index) * 0.7
-        let step = 2 * Double.pi * tone / Double(rate), swellStep = 2 * Double.pi * swell / Double(rate)
+        let step = 2 * Double.pi * (tone + detune) / Double(rate), swellStep = 2 * Double.pi * swell / Double(rate)
         for n in 0..<count {
             out[n] += Float(amplitude * sin(step * Double(n)) * (0.55 + 0.45 * sin(swellStep * Double(n) + phase)))
         }
@@ -59,6 +59,14 @@ private func late(_ x: [Float], _ frames: Int) -> [Float] {
 }
 private func midSide(_ a: [Float], _ b: [Float]) -> [[Float]] { [mix(a, b), mix(a, b, -1)] }
 
+/// Seeded white noise, uniform in ±`amplitude`, as long as the voices.
+private func noise16(seed: UInt64, amplitude: Float) -> [Float] {
+    var state = seed
+    return (0..<a16.count).map { _ in
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return Float(Int64(bitPattern: state >> 11) % 2_000_001 - 1_000_000) / 1_000_000 * amplitude
+    }
+}
 
 /// A 16-bit PCM WAV at `rate`, `WAVE_FORMAT_EXTENSIBLE` with `mask` when one is given.
 private func pcm16(_ channels: [[Float]], rate: Int = rate, mask: UInt32? = nil) -> Data {
@@ -163,6 +171,25 @@ func shrinkKeepsWhatTheFirstRoundKept() async throws {
         if !outcome.kept { deleted.append("\(label): \(outcome.alert)") }
     }
     #expect(deleted.isEmpty, "\(deleted)")
+}
+
+@Test("A side voice only partly coherent across the channels is still caught; only the coherence gate lets through what beats (F1001 round 4)")
+@MainActor
+func shrinkKeepsAPartlyDecorrelatedCancellation() async throws {
+    // Review 1 of round 2: no app-level test failed with the coherence gate removed or raised to 0.95. These do,
+    // measured (gates/r4-08-mutant-*.txt): the side voice on the right is a fifth a 2 Hz-detuned copy, so its bins
+    // are coherent between the gate and 0.95, and the first round's link reads it at 0.18 and 0.14, under its own
+    // bound, so the stretch rule alone catches it.
+    let decorrelated = mix(scaled(b16, 0.894), scaled(voice16(toneB, detune: 2), 0.447))
+    let probes: [(String, [[Float]])] = [
+        ("side voice 6 dB down, a fifth decorrelated", [mix(a16, scaled(b16, 0.5)), mix(a16, scaled(decorrelated, 0.5), -1)]),
+        ("side voice alone for 1 s, a fifth decorrelated",
+         [mix(gated(a16, [(0, 2), (3, 12)]), gated(b16, [(2, 3)])), mix(gated(a16, [(0, 2), (3, 12)]), gated(decorrelated, [(2, 3)]), -1)]),
+    ]
+    for (label, channels) in probes {
+        let outcome = try await shrinkWAV(channels)
+        #expect(outcome.kept && outcome.alert.contains("cancel each other"), "\(label): \(outcome.alert)")
+    }
 }
 
 @Test("A WAV whose mask puts a channel where the compression leaves it out is kept; masks it mixes evenly shrink (F1001 round 3, R2-C)")
@@ -434,6 +461,10 @@ func shrinkStillShrinksOrdinaryStereo() async throws {
         ("a laptop's spacing (0.75 ms), one talker", [a16, late(a16, 12)]),
         ("a voice per channel, 1 s", [Array(a16.prefix(rate)), Array(b16.prefix(rate))]),
         ("a voice per channel, 0.3 s", [Array(a16.prefix(4_800)), Array(b16.prefix(4_800))]),
+        // Without the coherence gate both are refused (round 4, gates/r4-08-mutant-coh0.txt): their bins are
+        // opposite now and then, as unrelated sounds' are, never consistently.
+        ("independent noise on each channel", [noise16(seed: 1, amplitude: 0.05), noise16(seed: 2, amplitude: 0.05)]),
+        ("a voice beside itself 4 Hz higher", [a16, voice16(toneA, detune: 4)]),
     ]
     var refused: [String] = []
     for (label, channels) in controls {
@@ -456,7 +487,7 @@ func shrinkStillShrinksOrdinaryStereo() async throws {
     defer { try? FileManager.default.removeItem(at: f.root) }
     await f.shrink()
     if !(f.model.alertMessage ?? "").contains("Shrunk") { refused.append("float WAV: \(f.model.alertMessage ?? "nil")") }
-    print("F1001 round 2 controls: \(controls.count + 4 - refused.count) of \(controls.count + 4) shrunk")
+    print("F1001 round 4 controls: \(controls.count + 4 - refused.count) of \(controls.count + 4) shrunk")
     #expect(refused.isEmpty, "\(refused)")
 }
 
