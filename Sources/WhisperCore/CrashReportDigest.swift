@@ -378,8 +378,22 @@ public extension CrashReportInventory {
     }
 
     /// Nil on any failure: an unreadable, oversized or non-JSON report is listed without a digest.
+    ///
+    /// Only a regular file is read (F790). The listing goes by name, and a FIFO — or a link to one —
+    /// named like a report used to reach `FileHandle(forReadingFrom:)`, whose `open(O_RDONLY)` waits
+    /// for a writer that never comes. So the file is opened non-blocking and the check is made on
+    /// the descriptor that was opened (`fstat`), not on the directory entry beforehand: a link to a
+    /// real report is still read, and an entry swapped between a check and the open cannot slip
+    /// past. `O_NONBLOCK` changes nothing for a regular file's reads.
     private static func digest(of url: URL) -> CrashReportDigest? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        let descriptor = open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG else {
+            close(descriptor)
+            return nil
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: digestReadLimit + 1),
               data.count <= digestReadLimit else { return nil }

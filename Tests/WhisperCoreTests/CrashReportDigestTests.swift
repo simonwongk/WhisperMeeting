@@ -349,3 +349,51 @@ func crashReportInventoryDigestsTheNewestReports() throws {
     #expect(limited[0].digest != nil)
     #expect(limited[2].digest == nil)
 }
+
+// F790 — the reader filtered by name, extension and date only, and then opened each file with
+// `FileHandle(forReadingFrom:)`, whose `open(O_RDONLY)` waits for a writer on a FIFO and never
+// returns. A FIFO (or a link to one) named like a report hung Export Diagnostics. The wait below is
+// bounded and required, so the RED is a failure and not a hung suite; the cleanup opens the FIFO for
+// writing, which releases a reader stuck in `open` on the unfixed code.
+@Test("A FIFO named like a crash report, or a link to one, is listed without a digest and never blocks the reader (F790)")
+func crashReportInventoryNeverBlocksOnAFIFO() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("DiagnosticReports-F790-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let fifo = directory.appendingPathComponent("WhisperMeet-2026-10-01-120000.ips")
+    #expect(mkfifo(fifo.path, 0o600) == 0)
+    let link = directory.appendingPathComponent("WhisperMeet-2026-10-01-110000.ips")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: fifo)
+    // A link to a real report is still read: the check is on what is opened, not on the entry.
+    let real = directory.appendingPathComponent("elsewhere.json")
+    try Data(crashReportFixture.utf8).write(to: real)
+    let linkToReal = directory.appendingPathComponent("WhisperMeet-2026-10-01-100000.ips")
+    try FileManager.default.createSymbolicLink(at: linkToReal, withDestinationURL: real)
+    defer {
+        // Releases a reader stuck in open(O_RDONLY) on the unfixed code; harmless otherwise.
+        for _ in 0..<2 {
+            let writer = open(fifo.path, O_WRONLY | O_NONBLOCK)
+            if writer >= 0 { close(writer) }
+        }
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    final class Box: @unchecked Sendable { var records: [CrashReportRecord]? }
+    let box = Box()
+    let done = DispatchSemaphore(value: 0)
+    let reader = Thread {
+        box.records = CrashReportInventory.reportsForDiagnostics(in: directory)
+        done.signal()
+    }
+    reader.start()
+    // Generous: the fixed reader answers in milliseconds; only a blocked open takes this long.
+    let finished = done.wait(timeout: .now() + 20) == .success
+    try #require(finished, "the reader blocked opening a FIFO named like a report")
+    let records = try #require(box.records)
+    let byName = Dictionary(uniqueKeysWithValues: records.map { ($0.fileName, $0) })
+    let expectedNames: Set<String> = [fifo.lastPathComponent, link.lastPathComponent, linkToReal.lastPathComponent]
+    #expect(Set(byName.keys) == expectedNames, "still listed by name: the entry is named like a report")
+    #expect(byName[fifo.lastPathComponent]?.digest == nil)
+    #expect(byName[link.lastPathComponent]?.digest == nil)
+    #expect(byName[linkToReal.lastPathComponent]?.digest?.exceptionType == "EXC_CRASH")
+}
