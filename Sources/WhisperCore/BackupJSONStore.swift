@@ -240,19 +240,32 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         /// and is a lost race against any decodable file — which only another writer can have put
         /// there since. Nil only for a result built by hand.
         public let primaryAsRead: GenerationToken?
+        /// The copies this load made, by name, of files it found and will not choose between (F834):
+        /// both data files for `.divergentGenerations`, primary first. Empty for every other health —
+        /// an undecodable pair's copies are on `BackupJSONStoreError.noReadableCopy`, and a salvage's
+        /// are said by its own notice.
+        public let copiedAside: [String]
+        /// The data files this load tried to copy aside and could not, by file name (F834) — a full
+        /// disk, a folder that cannot be written. The load still returns: the files themselves are
+        /// unchanged, and only the caller can say that no copy of them exists.
+        public let notCopiedAside: [String]
 
         public init(
             value: Value,
             health: PersistedStoreHealth,
             token: GenerationToken? = nil,
             repairs: [StoreRepair] = [],
-            primaryAsRead: GenerationToken? = nil
+            primaryAsRead: GenerationToken? = nil,
+            copiedAside: [String] = [],
+            notCopiedAside: [String] = []
         ) {
             self.value = value
             self.health = health
             self.token = token
             self.repairs = repairs
             self.primaryAsRead = primaryAsRead
+            self.copiedAside = copiedAside
+            self.notCopiedAside = notCopiedAside
         }
     }
 
@@ -353,9 +366,17 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             if isDivergent(primaryBytes: data, ledger: ledger) {
                 // Preserve BOTH data files before reporting, so whichever branch the user does not
                 // choose still exists. Copies, never moves — the live files stay exactly as found,
-                // because they are the evidence.
-                _ = try? StoreQuarantine.preserve(fileAt: primaryURL, using: io)
-                _ = try? StoreQuarantine.preserve(fileAt: backupURL, using: io)
+                // because they are the evidence. What happened is reported (F834): a copy that
+                // failed used to be discarded here, so nothing could say whether one existed.
+                var copiedAside: [String] = []
+                var notCopiedAside: [String] = []
+                for url in [primaryURL, backupURL] {
+                    do {
+                        if let name = try StoreQuarantine.preserve(fileAt: url, using: io) { copiedAside.append(name) }
+                    } catch {
+                        notCopiedAside.append(url.lastPathComponent)
+                    }
+                }
                 // Returns the primary's value rather than throwing. A throw leaves
                 // `MeetingStore.meetings` empty, which renders as zero meetings plus a read-only
                 // banner — visually indistinguishable from the wipe this design exists to prevent.
@@ -363,7 +384,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
                 // `primaryAsRead` is these bytes, for the one save that keeps exactly them (F865).
                 return LoadResult(
                     value: value, health: .divergentGenerations, repairs: repairs,
-                    primaryAsRead: token(for: data, ledger: ledger)
+                    primaryAsRead: token(for: data, ledger: ledger),
+                    copiedAside: copiedAside, notCopiedAside: notCopiedAside
                 )
             }
             let generation = token(for: data, ledger: ledger)

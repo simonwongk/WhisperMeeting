@@ -3912,6 +3912,14 @@ final class MeetingStore: ObservableObject {
             if case let .partiallySalvaged(parked) = result.health {
                 startupRecoveryMessages.append(Self.partialSalvageMessage(parked: parked))
             }
+            // Which copies the load made of the two versions, or could not (F834). The standing
+            // sentences say only that neither version has been changed, which is true either way.
+            if result.health == .divergentGenerations,
+               let copies = ReadOnlyLibraryNotice.divergentCopies(
+                   copied: result.copiedAside, notCopied: result.notCopiedAside
+               ) {
+                startupRecoveryMessages.append(copies)
+            }
             // A valid but empty index sitting next to FINALIZED recordings is suspicious, not normal:
             // that is the wipe shape — meetings that demonstrably happened, an index claiming none.
             // Keyed off `result.health` rather than `health` so it still asks "did THIS load come back

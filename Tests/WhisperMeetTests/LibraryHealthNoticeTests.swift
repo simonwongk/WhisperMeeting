@@ -321,3 +321,40 @@ func restoringAnEmptyCopySaysTheWipeShape() async throws {
     // The resumed startup sweep would run in a Task of its own after this test; there is none to
     // resume, because the library is still read-only.
 }
+
+// MARK: - F834: the two-versions launch says which copies were made
+
+@MainActor
+@Test("A two-versions launch names the copies it set aside of both index files (F834)")
+func theTwoVersionsLaunchNamesItsCopies() async throws {
+    let (model, root, message) = try await launch(.twoVersions)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try #require(model.store.health == .divergentGenerations)
+
+    let copies = quarantineCopies(in: root)
+    try #require(copies.count == 2, "fixture: the load copies both files aside: \(copies)")
+    for copy in copies {
+        #expect(message.contains(copy), "the launch message does not name \(copy): \(message)")
+    }
+}
+
+@MainActor
+@Test("A two-versions launch whose copies could not be made says so, and claims none (F834)")
+func theTwoVersionsLaunchSaysWhenItsCopiesFailed() async throws {
+    let root = try makeLibrary(.twoVersions)
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    // A folder nothing can be written into: the load's copies fail, and nothing else it does writes.
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+    let defaults = try #require(UserDefaults(suiteName: testSuiteName()))
+    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(), defaults: defaults)
+    await model.performStartupRecovery()
+    let message = try #require(model.alertMessage, "a read-only library said nothing at launch")
+    try #require(model.store.health == .divergentGenerations, "fixture: \(model.store.health)")
+    try #require(quarantineCopies(in: root).isEmpty, "fixture: a copy was made after all")
+
+    #expect(message.contains("could not copy meetings.json and meetings.backup.json aside"), "\(message)")
+    #expect(!claimsACopy(message), "says a copy was set aside, and none is on disk: \(message)")
+}

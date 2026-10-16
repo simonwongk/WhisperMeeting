@@ -23,8 +23,9 @@ import WhisperCore
 /// rather than silently reading as the sentence of some other state.
 ///
 /// A sentence claims a copy only when one exists. `.recoveredFromBackup` and `.suspectEmpty` copy
-/// nothing, and `.divergentGenerations` copies both files on a best-effort basis the load cannot
-/// report back, so it says neither version "has been changed" — which is true whatever the copy did.
+/// nothing, and `.divergentGenerations` copies both files on a best-effort basis, so its standing
+/// sentence says neither version "has been changed" — which is true whatever the copy did — and the
+/// launch adds `divergentCopies`, built from what that load reports it made (F834).
 extension ReadOnlyLibraryNotice {
     /// What the meeting index's load found on disk that its health cannot say (F844, F881). Recorded by
     /// `MeetingStore.loadMeetings` beside the health, and passed with it to every sentence below.
@@ -89,6 +90,21 @@ extension ReadOnlyLibraryNotice {
         case let .unavailable(reason):
             return "WhisperMeet could not read the meeting index at all. \(reason)"
         }
+    }
+
+    /// What a two-versions load copied aside, or could not, for the launch message (F834). Names the
+    /// copies by file name, as `.unreadable`'s sentence does, and claims none it did not make. Nil when
+    /// the load neither made nor attempted a copy.
+    static func divergentCopies(copied: [String], notCopied: [String]) -> String? {
+        var sentences: [String] = []
+        if !copied.isEmpty {
+            sentences.append("Before opening read-only, WhisperMeet copied the index files aside as \(copied.joined(separator: " and ")).")
+        }
+        if !notCopied.isEmpty {
+            let them = notCopied.count == 1 ? "it is" : "they are"
+            sentences.append("WhisperMeet could not copy \(notCopied.joined(separator: " and ")) aside, so \(them) only where \(notCopied.count == 1 ? "it was" : "they were"), unchanged.")
+        }
+        return sentences.isEmpty ? nil : sentences.joined(separator: " ")
     }
 
     /// "1 finished recording is" / "3 finished recordings are".

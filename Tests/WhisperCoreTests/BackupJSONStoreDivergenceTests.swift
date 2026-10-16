@@ -241,3 +241,48 @@ func divergenceOutranksComplete() {
     #expect(!PersistedStoreHealth.complete.isWorse(than: .divergentGenerations))
     #expect(!PersistedStoreHealth.divergentGenerations.allowsMutation)
 }
+
+// F834 — a divergent load says which copies it made, and which it could not.
+//
+// The load copies both data files aside before reporting two versions, and used to discard the
+// result (`_ = try?`): a copy that failed — a full disk, a permission — was invisible, so nothing
+// could say whether the copies existed. The names, and the files that could not be copied, now
+// come back on the result.
+@Test("A divergent load names the copies it made of both files (F834)")
+func aDivergentLoadNamesItsCopies() throws {
+    let fix = try makeFix()
+    defer { try? FileManager.default.removeItem(at: fix.directory) }
+    _ = try seedTwoGenerationsThenAForeignPrimary(fix)
+
+    let loaded = try #require(try store(fix).load())
+
+    try #require(loaded.health == .divergentGenerations)
+    let onDisk = Set(try FileManager.default.contentsOfDirectory(atPath: fix.directory.path))
+    #expect(loaded.copiedAside.count == 2, "\(loaded.copiedAside)")
+    #expect(Set(loaded.copiedAside).isSubset(of: onDisk), "named copies that are not on disk: \(loaded.copiedAside)")
+    #expect(loaded.notCopiedAside.isEmpty, "\(loaded.notCopiedAside)")
+}
+
+@Test("A divergent load whose copies fail says which files were not copied, and still reports both versions (F834)")
+func aDivergentLoadSaysWhichCopiesFailed() throws {
+    let fix = try makeFix()
+    defer { try? FileManager.default.removeItem(at: fix.directory) }
+    let foreign = try seedTwoGenerationsThenAForeignPrimary(fix)
+    var io = StoreFileIO.live
+    io.writeAtomically = { data, url, phase in
+        if phase == .quarantine { throw StoreIOError.posix(operation: "write", path: url.path, code: ENOSPC) }
+        try StoreFileIO.live.writeAtomically(data, url, phase)
+    }
+    let failing = BackupJSONStore<[Note]>(
+        primaryURL: fix.primaryURL, backupURL: fix.backupURL, io: io,
+        writer: "aaaa0001", recordCount: { $0.count }
+    )
+
+    let loaded = try #require(try failing.load())
+
+    #expect(loaded.health == .divergentGenerations)
+    #expect(loaded.value == [Note(title: "a second lineage")])
+    #expect(loaded.copiedAside.isEmpty, "\(loaded.copiedAside)")
+    #expect(loaded.notCopiedAside == ["meetings.json", "meetings.backup.json"], "\(loaded.notCopiedAside)")
+    #expect(try Data(contentsOf: fix.primaryURL) == foreign, "the version on disk changed")
+}

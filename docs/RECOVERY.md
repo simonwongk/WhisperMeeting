@@ -275,8 +275,10 @@ means the index on disk belongs to no save WhisperMeet recorded, *and* the save 
 available — so there are genuinely two versions and it will not choose for you. Neither has been
 changed. Before it says so, WhisperMeet also tries to copy `meetings.json` and `meetings.backup.json`
 aside, under the names its copies of unreadable files get (`meetings.unreadable-<timestamp>.json`,
-`meetings.backup.unreadable-<timestamp>.json`) although both read; whether those copies were made is
-not yet reported (F834). The last save WhisperMeet recorded is in `meetings.history/`.
+`meetings.backup.unreadable-<timestamp>.json`) although both read. The message at launch names the
+copies it made, or says which file it could not copy aside — a full disk, a folder it cannot write —
+in which case that file exists only where it is, unchanged (F834). The last save WhisperMeet recorded
+is in `meetings.history/`.
 
 To take the other version, the last save WhisperMeet recorded, open Settings → Meeting library →
 **Recover Library…** and choose it from the list; or restore it by hand as above.
