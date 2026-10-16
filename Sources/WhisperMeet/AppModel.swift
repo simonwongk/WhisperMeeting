@@ -75,11 +75,16 @@ enum SegmentReRunError: LocalizedError {
     case unsupportedRecordingFormat
     case unsupportedAudioLayout
     case unreadableRecording
+    /// An import with more than one audio track (F660): its transcription heard every track mixed
+    /// (F942), and a slice decoder reads the first track only.
+    case severalAudioTracks
 
     var errorDescription: String? {
         switch self {
         case .unsupportedRecordingFormat:
-            return "This recording isn't a native WAV, so a single segment can't be re-transcribed in place. Re-transcribe the whole meeting instead."
+            return "This recording's format couldn't be decoded, so a single segment can't be re-transcribed in place. Re-transcribe the whole meeting instead."
+        case .severalAudioTracks:
+            return "This recording has several audio tracks, so a single segment can't be cut from it the way the meeting was transcribed. Re-transcribe the whole meeting instead."
         case .unsupportedAudioLayout:
             return "This recording's audio format couldn't be decoded, so a single segment can't be cut from it. Re-transcribe the whole meeting instead."
         case .unreadableRecording:
@@ -2866,7 +2871,7 @@ final class AppModel: ObservableObject {
         // must not idle-sleep partway through it.
         await withEngineActivityHeld(reason: "Re-transcribing a segment") {
             do {
-                let clipURL = try Self.makeSegmentClip(
+                let clipURL = try await Self.segmentClip(
                     from: store.recordingURL(for: meeting), startSeconds: start, endSeconds: end
                 )
                 defer { Self.removeSegmentClip(clipURL) }
@@ -2990,6 +2995,30 @@ final class AppModel: ObservableObject {
         auxiliaryEngineTask?.cancel()
     }
 
+    /// The clip a segment re-run transcribes, from any recording (F660): a WAV by `makeSegmentClip`, as
+    /// before; an import kept in its own container (.m4a, .mp3, .aiff, .caf…) decoded, span only, by
+    /// `decodedSegmentClip`, which AVFoundation reads them with as it reads a WAV of any layout (F581).
+    ///
+    /// An import with more than one audio track is refused (`severalAudioTracks`): its transcription
+    /// heard every track mixed (F942), and AVAudioFile reads the first one only, so a clip of it would be
+    /// other audio than the line came from. A file AVFoundation cannot read at all is refused as before
+    /// (`unsupportedRecordingFormat`). The recording is only read.
+    static func segmentClip(from recording: URL, startSeconds: Double, endSeconds: Double) async throws -> URL {
+        do {
+            return try makeSegmentClip(from: recording, startSeconds: startSeconds, endSeconds: endSeconds)
+        } catch SegmentReRunError.unsupportedRecordingFormat {
+            guard let tracks = await RecordingMixer.tracks(of: recording), !tracks.isEmpty else {
+                throw SegmentReRunError.unsupportedRecordingFormat
+            }
+            guard tracks.count == 1 else { throw SegmentReRunError.severalAudioTracks }
+            do {
+                return try decodedSegmentClip(from: recording, startSeconds: startSeconds, endSeconds: endSeconds)
+            } catch SegmentReRunError.unsupportedAudioLayout {
+                throw SegmentReRunError.unsupportedRecordingFormat
+            }
+        }
+    }
+
     /// Writes a temp WAV holding just one segment's audio, sliced from the meeting's recording. Reads
     /// the sample rate and where the audio starts from the WAV header (the recording is 48 kHz, not
     /// 16 kHz), then re-wraps the PCM slice with a fresh header. Never modifies the source (F92).
@@ -3007,7 +3036,8 @@ final class AppModel: ObservableObject {
         }
         // Only a RIFF/WAVE (or its 64-bit RF64 form, F302) can be byte-sliced. Imported recordings
         // keep their original container (.m4a/.mp3/.mp4/.mov/.aiff/.caf); slicing those as raw WAV
-        // bytes would produce garbage, so refuse and let the caller guide the user (F92 audit fix).
+        // bytes would produce garbage, so this refuses them (F92 audit fix), and `segmentClip`
+        // decodes them instead (F660).
         guard magic.prefix(4).elementsEqual(Array("RIFF".utf8)) || magic.prefix(4).elementsEqual(Array("RF64".utf8)),
               magic.subdata(in: 8..<12).elementsEqual(Array("WAVE".utf8)) else {
             throw SegmentReRunError.unsupportedRecordingFormat
@@ -3064,7 +3094,8 @@ final class AppModel: ObservableObject {
     }
 
     /// A segment clip from a WAV that cannot be byte-sliced — more than one channel, 24- or 32-bit,
-    /// float, or the WAVE_FORMAT_EXTENSIBLE wrapper (F581). Decodes just the segment's frames with
+    /// float, or the WAVE_FORMAT_EXTENSIBLE wrapper (F581) — or from a one-track import in its own
+    /// container, such as .m4a or .caf (F660, through `segmentClip`). Decodes just the segment's frames with
     /// AVFoundation, averages every channel into one, and writes 16-bit mono at the recording's own
     /// rate — the layout `makeSegmentClip` writes for a native recording, which every engine already
     /// takes. The recording is opened for reading only; the clip goes to a fresh temp file, as before.
