@@ -186,7 +186,11 @@ verified and the index saved.
      mask 0, back, side and centre-pair masks too, though nothing is lost: R2-C). It refuses a position it
      leaves out ("labels one of its two channels as a kind of channel … which the compression leaves out"), and,
      fail-closed, anything else ("in a way Shrink hasn't shown the compression keeps both of") — 147 measured
-     pairs that do keep both, left beside left total say, among them.
+     pairs that do keep both, left beside left total say, among them. That a pair is let through does not mean
+     every macOS can measure it: on macos-15 (CI run 38859340988) a WAV masked as the side pair, the centre pair
+     or front left beside centre was kept, fail-closed, as "could not be read to check the compressed copy" —
+     most likely the measure's AVAssetReader, the one reader on that path asked to convert a layout (two channels
+     at 16 kHz with no layout given). macOS 27 reads all three; versions between are untried.
    - A two-channel `recording.<ext>` beside the recording — a link import's download beside the mono WAV ffmpeg
      extracted from it — is removed with it, so the copy is checked against it the same way first, and if that
      is not shown, nothing is removed (review 2, F2-1). A download AVFoundation cannot read (WebM) has no channel

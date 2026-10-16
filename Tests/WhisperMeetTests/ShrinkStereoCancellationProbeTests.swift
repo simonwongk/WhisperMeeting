@@ -113,6 +113,35 @@ private func shrinkWAV(_ channels: [[Float]], rate: Int = rate, mask: UInt32? = 
     return (kept, alert)
 }
 
+/// `shrinkWAV`, and what this host makes of the file. Removed: `copy` is the copy Shrink kept, decoded. Kept: whether
+/// the readers Shrink uses — `decodeForShrink`, and `channelPresenceForShrink` against a copy from `encodeForShrink`,
+/// the model's own — can read the file here; `unreadable` names the first that cannot, and why, or is nil.
+@MainActor
+private func shrinkWAVAskingTheHost(_ channels: [[Float]], mask: UInt32) async throws
+    -> (kept: Bool, alert: String, unreadable: String?, copy: [Float]?) {
+    let seconds = Double(channels.map(\.count).min() ?? 0) / Double(rate)
+    let f = try await MixFixture(recordingExtension: "wav", duration: seconds) { url in
+        try pcm16(channels, mask: mask).write(to: url)
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    let original = try Data(contentsOf: f.recording)
+    await f.shrink()
+    let alert = f.model.alertMessage ?? "nil"
+    guard (try? Data(contentsOf: f.recording)) == original, !f.exists("recording.m4a") else {
+        let copy = try? fixtureDecode(f.folder.appendingPathComponent("recording.m4a")).channels.first
+        return (false, alert, nil, copy ?? [])
+    }
+    let copy = f.root.appendingPathComponent("host.m4a")
+    do { _ = try await f.model.decodeForShrink(f.recording) } catch { return (true, alert, "decodeForShrink: \(error)", nil) }
+    do { try f.model.encodeForShrink(f.recording, copy, f.root.appendingPathComponent("host.wav")) } catch {
+        return (true, alert, "encodeForShrink: \(error)", nil)
+    }
+    do { _ = try await f.model.channelPresenceForShrink(f.recording, copy) } catch {
+        return (true, alert, "channelPresenceForShrink: \(error)", nil)
+    }
+    return (true, alert, nil, nil)
+}
+
 // MARK: - Every review probe keeps its original (CI-safe, synthetic)
 
 @Test("Every channel cancellation the reviews of F1001 made deletes nothing now (F1001 round 2)")
@@ -192,7 +221,7 @@ func shrinkKeepsAPartlyDecorrelatedCancellation() async throws {
     }
 }
 
-@Test("A WAV whose mask puts a channel where the compression leaves it out is kept; masks it mixes evenly shrink (F1001 round 3, R2-C)")
+@Test("A WAV whose mask puts a channel where the compression leaves it out is kept; masks it mixes evenly shrink wherever this host can read them (F1001 round 3, R2-C)")
 @MainActor
 func shrinkJudgesAWAVByWhatTheCompressionKeepsOfItsMask() async throws {
     // Review 1 of round 2: afconvert's mix follows the mask and drops an LFE channel, here a voice 12 dB down.
@@ -204,10 +233,29 @@ func shrinkJudgesAWAVByWhatTheCompressionKeepsOfItsMask() async throws {
         #expect(outcome.kept, "\(name): \(outcome.alert)")
         #expect(outcome.alert.contains("which the compression leaves out of a mono copy"), "\(name): \(outcome.alert)")
     }
+    // The masks it mixes evenly, judged by what this host's readers can do. On macos-15 (run 38859340988) the
+    // side pair, the centre pair and a front left beside a centre were kept, "could not be read to check": fail-
+    // closed, so nothing was lost; macOS 27 reads all six. So on every host nothing may be removed unless
+    // the copy holds both voices; and a file is expected to shrink only where the readers Shrink itself uses can
+    // read it here (`shrinkWAVAskingTheHost`) — and where they cannot, kept for exactly that reason.
+    let unreadable = AppModel.ShrinkFailure.unreadableOriginal.errorDescription ?? "?"
+    let ownA = fixtureToneAmplitude(a16, rate: Double(rate), frequency: toneA[0]), ownB = fixtureToneAmplitude(quietB, rate: Double(rate), frequency: toneB[0])
     for (name, mask) in [("front left and right", UInt32(0x3)), ("no positions", UInt32(0)), ("back left and right", UInt32(0x30)),
                          ("side left and right", UInt32(0x600)), ("the centre pair", UInt32(0xC0)), ("front left and centre", UInt32(0x5))] {
-        let outcome = try await shrinkWAV([a16, quietB], mask: mask)
-        #expect(!outcome.kept && outcome.alert.contains("Shrunk"), "\(name): \(outcome.alert)")
+        let outcome = try await shrinkWAVAskingTheHost([a16, quietB], mask: mask)
+        if let copy = outcome.copy {
+            // Removed: only as Shrunk, and only with both voices in the copy — an even mix holds each at about half.
+            let heldA = fixtureToneAmplitude(copy, rate: Double(rate), frequency: toneA[0])
+            let heldB = fixtureToneAmplitude(copy, rate: Double(rate), frequency: toneB[0])
+            #expect(outcome.alert.contains("Shrunk"), "\(name): removed, but \(outcome.alert)")
+            #expect(heldA > ownA / 4 && heldB > ownB / 4,
+                    "\(name): removed, but the copy holds A \(heldA) of \(ownA) and B \(heldB) of \(ownB)")
+        } else if let reader = outcome.unreadable {
+            print("F1001 host: \(name) kept, as this host's \(reader)")
+            #expect(outcome.alert.contains(unreadable), "\(name): \(reader), but \(outcome.alert)")
+        } else {
+            Issue.record("\(name): kept though this host's readers read it: \(outcome.alert)")
+        }
     }
 }
 
