@@ -206,12 +206,16 @@ extension AppModel {
             let audit = auditForShrink, presence = channelPresenceForShrink
             let twoChannels = disk.channelCount == 2
             let besideRecording = MeetingStoragePlan.twoChannelRecordingsToVerify(disk)
+            let unread = MeetingStoragePlan.unreadRecordingsToVerify(disk), decodeUnread = decodeUnreadableForShrink
+            let decodedWAV = folder.appendingPathComponent(".shrink-\(token).decoded.wav")
             let flush = flushForShrink
             let declaredLength = disk.durationSeconds
             let needed = MeetingStoragePlan.totalBytes([
                 .init(name: "", bytes: Int64(saturating: declaredLength * 32_000)),
                 .init(name: "", bytes: mixed ? Int64(saturating: declaredLength * 32_000) : 0),
                 .init(name: "", bytes: MeetingStoragePlan.predictedOutputBytes(durationSeconds: declaredLength)),
+                // F1004: a download AVFoundation cannot read is decoded, one at a time, to 16 kHz 16-bit stereo.
+                .init(name: "", bytes: unread.isEmpty ? 0 : Int64(saturating: declaredLength * 64_000)),
                 .init(name: "", bytes: 100_000_000),
             ])
             let encoded: Result<Int64, Error> = await Task.detached(priority: .userInitiated) {
@@ -298,6 +302,19 @@ extension AppModel {
                             throw ShrinkFailure.otherUnchecked(name: other.name)
                         }
                     }
+                    // F1004: and so is one AVFoundation cannot read — a WebM/Opus download — once the installed ffmpeg
+                    // has decoded it. One that cannot be decoded, or holds more than two channels, is not shown.
+                    for other in unread {
+                        do {
+                            try await Self.checkUnreadChannelsInCopy(folder.appendingPathComponent(other.name), scratch: decodedWAV,
+                                                                     copy: tempM4A, decodeUnread: decodeUnread,
+                                                                     decode: decode, measure: presence)
+                        } catch let ShrinkFailure.leftoverChannelNotInCopy(name, finding) {
+                            throw ShrinkFailure.otherChannelNotInCopy(name: name, finding: finding)
+                        } catch {
+                            throw ShrinkFailure.otherUnchecked(name: other.name)
+                        }
+                    }
                     // On stable storage before anything is committed or removed (final review).
                     try flush(tempM4A)
                     let size = (try? tempM4A.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? nil
@@ -306,6 +323,7 @@ extension AppModel {
                     try? FileManager.default.removeItem(at: tempM4A)
                     try? FileManager.default.removeItem(at: tempWAV)
                     try? FileManager.default.removeItem(at: mixWAV)
+                    try? FileManager.default.removeItem(at: decodedWAV)
                     return .failure(error)
                 }
             }.value
@@ -394,9 +412,13 @@ extension AppModel {
             // not to cancel when mixed and to have its mix in the copy before it is removed, as an encode checks
             // it: a mid/side leftover's side voice is in it and not in the copy.
             let leftovers = MeetingStoragePlan.twoChannelRecordingsToVerify(disk)
+            // F1004: and one AVFoundation cannot read — a link import's WebM/Opus download — decoded by the installed
+            // ffmpeg first; kept when it cannot be.
+            let unread = MeetingStoragePlan.unreadRecordingsToVerify(disk), decodeUnread = decodeUnreadableForShrink
+            let decodedWAV = folder.appendingPathComponent(".shrink-\(UUID().uuidString).decoded.wav")
             let copyURL = store.recordingURL(for: meeting)
             let decode = decodeForShrink, presence = channelPresenceForShrink
-            let checked: ShrinkFailure? = leftovers.isEmpty ? nil : await Task.detached(priority: .userInitiated) {
+            let checked: ShrinkFailure? = leftovers.isEmpty && unread.isEmpty ? nil : await Task.detached(priority: .userInitiated) {
                 for leftover in leftovers {
                     let url = folder.appendingPathComponent(leftover.name)
                     let original: DecodedAudio.Decoded
@@ -404,6 +426,17 @@ extension AppModel {
                     do {
                         try await Self.checkChannelsInCopy(original: original, recording: url, copy: copyURL,
                                                            measure: presence, subject: leftover.name)
+                    } catch let failure as ShrinkFailure {
+                        return failure
+                    } catch {
+                        return .leftoverUnchecked(name: leftover.name)
+                    }
+                }
+                for leftover in unread {
+                    do {
+                        try await Self.checkUnreadChannelsInCopy(folder.appendingPathComponent(leftover.name), scratch: decodedWAV,
+                                                                 copy: copyURL, decodeUnread: decodeUnread,
+                                                                 decode: decode, measure: presence)
                     } catch let failure as ShrinkFailure {
                         return failure
                     } catch {
@@ -459,6 +492,38 @@ extension AppModel {
         }
         throw subject.map { ShrinkFailure.leftoverChannelNotInCopy(name: $0, finding: finding) }
             ?? ShrinkFailure.channelNotInCopy(finding)
+    }
+
+    /// Decodes `url` — a file Shrink would remove whose tracks AVFoundation cannot read, a link import's WebM/Opus
+    /// download — with `decodeUnread` into `scratch`, then checks its channels against `copy` as
+    /// `checkChannelsInCopy` checks a two-channel file (F1004): one channel has nothing to cancel against; two are
+    /// measured; any other count, or a decode or read that fails, throws `leftoverUnchecked` with the file's name, and
+    /// a cancellation `leftoverChannelNotInCopy`. `scratch` is removed whatever happens.
+    nonisolated static func checkUnreadChannelsInCopy(
+        _ url: URL, scratch: URL, copy: URL,
+        decodeUnread: @Sendable (_ input: URL, _ output: URL) async throws -> Void,
+        decode: @Sendable (URL) async throws -> DecodedAudio.Decoded,
+        measure: @Sendable (_ original: URL, _ copy: URL) async throws -> RecordingMixPlan.ChannelPresence
+    ) async throws {
+        let name = url.lastPathComponent
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let decoded: DecodedAudio.Decoded, channels: Int
+        do {
+            try await decodeUnread(url, scratch)
+            guard let header = WAVInspection.header(at: scratch) else { throw ShrinkFailure.leftoverUnchecked(name: name) }
+            channels = Int(header.channels)
+            decoded = try await decode(scratch)
+        } catch {
+            throw ShrinkFailure.leftoverUnchecked(name: name)
+        }
+        switch channels {
+        case 1:
+            return
+        case 2:
+            try await checkChannelsInCopy(original: decoded, recording: scratch, copy: copy, measure: measure, subject: name)
+        default:
+            throw ShrinkFailure.leftoverUnchecked(name: name)
+        }
     }
 
     /// Said whenever a verified `.m4a` is left beside the originals it did not replace.

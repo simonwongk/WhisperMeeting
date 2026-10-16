@@ -46,6 +46,11 @@ private struct Fixture {
         model.decodeForShrink = { _ in DecodedAudio.Decoded(duration: wavSeconds, level: 0.1) }
         model.declaredDurationForShrink = { _ in wavSeconds }
         model.availableBytesForShrink = { _ in .max }
+        // F1004: the stand-in files AVFoundation cannot read are decoded by the installed ffmpeg to check their
+        // channels; here each decodes to one channel, which has nothing to cancel against.
+        model.decodeUnreadableForShrink = { _, output in
+            try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 16_000), sampleRate: 16_000).write(to: output)
+        }
     }
 
     /// A finished capture: a real WAV (or, for a shrunk recording, opaque bytes), both raw tracks

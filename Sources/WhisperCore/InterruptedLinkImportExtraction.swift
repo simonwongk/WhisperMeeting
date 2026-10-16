@@ -491,6 +491,36 @@ extension InterruptedLinkImportExtraction {
         return probedDuration(fromOutput: outcome.output)
     }
 
+    /// Why `decodeForChannelCheck` produced nothing to check (F1004).
+    public enum ChannelCheckDecodeError: Error, Equatable {
+        case ffmpegMissing
+        case failed(exitStatus: Int32)
+        case noOutput
+    }
+
+    /// Decodes `download` with the installed ffmpeg into `output`, a 16 kHz 16-bit WAV keeping its channels
+    /// (`MediaDownloadArguments.decodeForChannelCheck`), for Shrink's channel check of a download AVFoundation
+    /// cannot read (F1004). Throws without an ffmpeg, on a nonzero exit, or when nothing was written; an output it
+    /// left on a failure is removed. The caller removes the output when it is done with it.
+    public static func decodeForChannelCheck(
+        _ download: URL, to output: URL, ffmpeg: URL?, stallTimeout: TimeInterval = 30
+    ) async throws {
+        guard let ffmpeg else { throw ChannelCheckDecodeError.ffmpegMissing }
+        do {
+            let outcome = try await ProcessGroupRunner().run(
+                executableURL: ffmpeg,
+                arguments: MediaDownloadArguments.decodeForChannelCheck(input: download.path, output: output.path),
+                environment: MediaDownloadClient.makeEnvironment(),
+                stallTimeout: stallTimeout
+            )
+            guard outcome.exitStatus == 0 else { throw ChannelCheckDecodeError.failed(exitStatus: outcome.exitStatus) }
+            guard WAVInspection.header(at: output) != nil else { throw ChannelCheckDecodeError.noOutput }
+        } catch {
+            try? FileManager.default.removeItem(at: output)
+            throw error
+        }
+    }
+
     /// The seconds in `ffprobe`'s merged output for `probeDuration`, or nil unless that output is one
     /// line holding one finite positive number. `probeDuration` runs at warning level, so the line
     /// libavformat prints when it estimates a duration from the bitrate ("Estimating duration from

@@ -243,6 +243,18 @@ public enum MeetingStoragePlan {
         }
     }
 
+    /// The other `recording.<ext>` files whose tracks could not be read — a link import's WebM/Opus download,
+    /// which AVFoundation cannot open — so neither `twoChannelRecordingsToVerify` nor `otherRecordingsToVerify`
+    /// sees their channels (F1004). Shrink decodes each with the installed ffmpeg and checks it against the copy
+    /// as it checks a two-channel file, before it removes anything; one it cannot decode, or that holds more
+    /// than two channels, is kept. Their length alone, which F911 compares, cannot show a voice in opposite
+    /// polarity on the two channels, which the mono copy does not hold. An empty file holds nothing.
+    public static func unreadRecordingsToVerify(_ disk: DiskFacts) -> [FolderEntry] {
+        otherRecordings(in: disk.entries, recordingName: disk.recordingName).filter { other in
+            !other.isEmpty && disk.otherRecordingTracks[other.name] == nil
+        }
+    }
+
     /// **The switch for Shrink of a recording that needs mixing — off (F980).** Wave 6 built it (F942):
     /// mix every track and channel into the copy, then show with `RecordingMixer.audit` and
     /// `RecordingMixPlan.firstFinding` that the copy holds each one before deleting the original. Its

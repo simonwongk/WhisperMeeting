@@ -193,9 +193,11 @@ verified and the index saved.
      at 16 kHz with no layout given). macOS 27 reads all three; versions between are untried.
    - A two-channel `recording.<ext>` beside the recording — a link import's download beside the mono WAV ffmpeg
      extracted from it — is removed with it, so the copy is checked against it the same way first, and if that
-     is not shown, nothing is removed (review 2, F2-1). A download AVFoundation cannot read (WebM) has no channel
-     count, and is removed on F911's length check as before; that is F1004's decision, for a resume's leftover
-     and this route alike.
+     is not shown, nothing is removed (review 2, F2-1). A download AVFoundation cannot read (a WebM/Opus one) is
+     decoded first with the installed ffmpeg into a 16 kHz WAV that keeps its channels (`.shrink-<token>.decoded.wav`,
+     removed afterwards), and checked the same way: one channel has nothing to check, two are measured, and one that
+     cannot be decoded — no ffmpeg, a decode that fails, more than one audio stream — or holds more than two channels
+     is not shown, so nothing is removed (F1004). The same holds for a resume's leftover.
    - For a mixed recording (F942) the level checks above are replaced, because levels cannot show a track lost while
      another sounds over it, nor a track whose channels cancel when combined: the review deleted an original both ways
      (review of F942, R2 and M8). Instead `RecordingMixer.audit` reads every channel of every track again, the way the

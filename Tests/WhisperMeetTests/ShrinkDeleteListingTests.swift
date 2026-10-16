@@ -35,6 +35,11 @@ private struct ListingFixture {
         // The recording runs 60 s; any other `recording.<ext>` measures a second, so F911's rule lets it go.
         model.declaredDurationForShrink = { $0.pathExtension == "wav" ? 60 : 1 }
         model.availableBytesForShrink = { _ in .max }
+        // F1004: the stand-in files AVFoundation cannot read are decoded by the installed ffmpeg to check their
+        // channels; here each decodes to one channel, which has nothing to cancel against.
+        model.decodeUnreadableForShrink = { _, output in
+            try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 16_000), sampleRate: 16_000).write(to: output)
+        }
     }
 
     func url(_ name: String) -> URL { folder.appendingPathComponent(name) }

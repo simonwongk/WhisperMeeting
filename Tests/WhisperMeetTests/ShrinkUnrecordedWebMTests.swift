@@ -58,6 +58,11 @@ private func recoveredWebMImportWithoutARecord(_ label: String) async throws -> 
         return finished
     }
     model.availableBytesForShrink = { _ in .max }
+    // F1004: Shrink decodes the WebM with the installed ffmpeg to check its channels; here it decodes to what
+    // the conversion holds, one channel, which has nothing to cancel against.
+    model.decodeUnreadableForShrink = { _, output in
+        try WAVWriter.wavData(from: tone(seconds: 6, rate: 16_000), sampleRate: 16_000).write(to: output)
+    }
     await model.performStartupRecovery()
     let meeting = try #require(model.store.meeting(id: id), "the interrupted import was not indexed")
     try #require(meeting.recordingPath.hasSuffix("recording.wav"), "indexed against \(meeting.recordingPath)")

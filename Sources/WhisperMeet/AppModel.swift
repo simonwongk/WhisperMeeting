@@ -703,6 +703,16 @@ final class AppModel: ObservableObject {
         return await InterruptedLinkImportExtraction.measureDownload(download, ffprobe: MediaDownloadRuntime.findFFprobe())
     }
 
+    /// Decodes a `recording.<ext>` Shrink would remove that AVFoundation cannot read — a link import's WebM/Opus
+    /// download — into a 16 kHz WAV that keeps its channels, so the copy is checked against them before it is
+    /// deleted (F1004). The default runs the installed ffmpeg
+    /// (`InterruptedLinkImportExtraction.decodeForChannelCheck`) and throws without one, so Shrink keeps the file.
+    /// In a test process it throws without spawning anything (F442); a test that wants a decode stubs it.
+    var decodeUnreadableForShrink: @Sendable (_ input: URL, _ output: URL) async throws -> Void = { input, output in
+        guard TestProcess.allowsRealAccess(to: "ffmpeg decode") else { throw CocoaError(.fileReadUnknown) }
+        try await InterruptedLinkImportExtraction.decodeForChannelCheck(input, to: output, ffmpeg: MediaDownloadRuntime.findFFmpeg())
+    }
+
     /// Downloads `measureDownloadForShrink` answered nil for this session, by path, so a refresh of
     /// the Storage sheet does not spawn the same failing probe again (F962).
     var downloadsShrinkCouldNotMeasure: Set<String> = []

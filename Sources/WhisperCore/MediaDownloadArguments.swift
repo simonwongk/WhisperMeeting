@@ -91,6 +91,18 @@ public enum MediaDownloadArguments {
             + ["-f", "wav", "file:\(output)"]
     }
 
+    /// ffmpeg's arguments to decode a download Shrink cannot read with AVFoundation — a WebM/Opus one — into a
+    /// 16 kHz 16-bit WAV that keeps its channels as they are, so Shrink can check them against its copy before
+    /// it deletes the download (F1004). `repeat+info`, as `finishExtraction`, so the progress lines keep
+    /// `ProcessGroupRunner`'s stall watch fed through a long decode; no `-ac`, so nothing is downmixed; and
+    /// `-map 0:a`, every audio stream, so a download holding more than one fails (the WAV muxer takes one:
+    /// "wav muxer does not support more than one stream of type audio", ffmpeg 8.1.2) instead of having one
+    /// stream checked and the rest deleted unchecked. `file:` on both paths, as `finishExtraction`.
+    public static func decodeForChannelCheck(input: String, output: String) -> [String] {
+        ["-nostdin", "-y", "-loglevel", "repeat+info", "-i", "file:\(input)", "-vn", "-map", "0:a",
+         "-c:a", "pcm_s16le", "-ar", "16000", "-f", "wav", "file:\(output)"]
+    }
+
     /// `ffprobe` printing only the container's duration in seconds, one bare number, or `N/A` (F962):
     /// `-v warning` so the warning ffprobe prints when it estimates a duration from the bitrate
     /// reaches the output beside the number (an answer with anything beside it measures nothing),
