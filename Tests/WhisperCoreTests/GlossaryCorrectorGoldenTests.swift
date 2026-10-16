@@ -34,6 +34,9 @@ import Testing
 //   more words is then not compared with such a line at all, a three-word term keeps its three.
 // - F972 fourth: a three-word term on such a line is compared with its four-word windows too, but
 //   only where a window of up to three words already scored for it (round 2 of Wave 7, F968's stray word).
+//
+// Not an amendment: the oracle remembers its scores across runs (F1011, `OracleScores`), which
+// changes no answer — only how often the same pair is scored.
 
 private struct Amendments {
     var f819 = true
@@ -55,12 +58,37 @@ private struct OracleWord {
     let range: Range<String.Index>
 }
 
+/// The oracle's scores, remembered (F1011). `similarity` is a function of its two strings alone, so a
+/// remembered score is the score and no answer changes. Its LCS over `Character`s was 97% of the
+/// oracle's time in a debug build, and the corpus test runs the oracle fourteen times over the same
+/// windows and terms — once for the answer, and thirteen times with one to three amendments switched
+/// off to show the corpus exercises each — which is what took that test from about 15 s in Wave 6
+/// to 31 s in Wave 7: seven runs became fourteen, each as slow as before. A class, so the corpus
+/// test's runs share one and each pair is scored once; any other call gets a fresh one.
+private final class OracleScores {
+    private struct Pair: Hashable {
+        let window: String
+        let term: String
+    }
+
+    private var scores: [Pair: Double] = [:]
+
+    func similarity(_ window: String, _ term: String) -> Double {
+        let pair = Pair(window: window, term: term)
+        if let known = scores[pair] { return known }
+        let score = PreF536GlossaryCorrector.similarity(window, term)
+        scores[pair] = score
+        return score
+    }
+}
+
 private enum PreF536GlossaryCorrector {
     static let similarityThreshold = 0.5
     static let maxWindow = 3
 
     static func corrections(
-        vocabulary: [String], segments: [TranscriptSegment], amended: Amendments = Amendments()
+        vocabulary: [String], segments: [TranscriptSegment], amended: Amendments = Amendments(),
+        scores: OracleScores = OracleScores()
     ) -> [GlossaryCorrection] {
         var results: [GlossaryCorrection] = []
         for (index, segment) in segments.enumerated() {
@@ -96,7 +124,7 @@ private enum PreF536GlossaryCorrector {
                         let splitWord = amended.f968 && size > termWords // amended
                         if windowNormalized == termNormalized, !splitWord { presentAsAWindow = true } // amended
                         guard !windowNormalized.isEmpty, windowNormalized != termNormalized || splitWord else { continue } // amended
-                        let score = similarity(windowNormalized, termNormalized)
+                        let score = scores.similarity(windowNormalized, termNormalized) // F1011: remembered
                         if score >= similarityThreshold, score > (best?.similarity ?? 0) {
                             best = (score, start..<(start + size))
                         }
@@ -353,18 +381,24 @@ func englishSuggestionsMatchThePreF536Oracle() {
         TranscriptSegment(speaker: nil, start: Double(60 + $0.offset), end: Double(61 + $0.offset), text: $0.element)
     }
 
-    let expected = PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments)
+    // Every run of the oracle below shares one memo of its scores (F1011): fourteen runs over the
+    // same windows and terms, each pair scored once.
+    let scores = OracleScores()
+    func oracle(_ amended: Amendments = Amendments()) -> [GlossaryCorrection] {
+        PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: amended, scores: scores)
+    }
+    let expected = oracle()
     let actual = GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments)
 
     // The premise: the transcript is rich enough to exercise the search, and each amendment.
     #expect(expected.count >= 20, "only \(expected.count) proposals — the corpus exercises too little")
     var withoutF819 = Amendments()
     withoutF819.f819 = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF819) != expected,
+    #expect(oracle(withoutF819) != expected,
             "no proposal in the corpus carries punctuation, so F819's amendment is untested here")
     var byCount = Amendments()
     byCount.f819ByIdentity = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: byCount) != expected,
+    #expect(oracle(byCount) != expected,
             "no window in the corpus has a mark that is not the term's, so F819's identity rule is untested here")
     // Judged with the no-op amendment off on both sides: a row the in-place rule leaves untrimmed
     // and unfindable is a row that changes nothing, which the no-op amendment drops either way.
@@ -374,28 +408,27 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withInPlaceOnly.f914 = false
     var withoutInPlace = withInPlaceOnly
     withoutInPlace.f819InPlace = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutInPlace)
-        != PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withInPlaceOnly),
+    #expect(oracle(withoutInPlace) != oracle(withInPlaceOnly),
             "no trimmed proposal in the corpus would be applied elsewhere, so F819's in-place amendment is untested here")
     var withoutF914 = Amendments()
     withoutF914.f914 = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF914) != expected,
+    #expect(oracle(withoutF914) != expected,
             "no window in the corpus stands across a separator or after an earlier occurrence of its text, so F914's amendment is untested here")
     var withoutF915 = Amendments()
     withoutF915.f915 = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF915) != expected,
+    #expect(oracle(withoutF915) != expected,
             "no window in the corpus has a possessive or a dash, so F915's amendment is untested here")
     var withoutF968 = Amendments()
     withoutF968.f968 = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF968) != expected,
+    #expect(oracle(withoutF968) != expected,
             "no term in the corpus is misheard with a word split in two, so F968's amendment is untested here")
     var withoutF972 = Amendments()
     withoutF972.f972 = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF972) != expected,
+    #expect(oracle(withoutF972) != expected,
             "no line in the corpus is misheard in more than half a long term's words, so F972's amendment is untested here")
     var withoutF972Fourth = Amendments()
     withoutF972Fourth.f972Fourth = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF972Fourth) != expected,
+    #expect(oracle(withoutF972Fourth) != expected,
             "no three-word term in the corpus is misheard across four words on a line holding none of its own, so F972's fourth window is untested here")
     // With F914 off too: a placed row is a genuine occurrence where it stands, so with F914 on no
     // row changes nothing and the no-op rule is a consequence rather than a step of its own.
@@ -403,8 +436,7 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withNoOpOnly.f914 = false
     var withoutNoOp = withNoOpOnly
     withoutNoOp.f820NoOp = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutNoOp)
-        != PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withNoOpOnly),
+    #expect(oracle(withoutNoOp) != oracle(withNoOpOnly),
             "no proposal in the corpus changes nothing, so F820's no-op amendment is untested here")
     // With F968 off on both sides: F968's allowance (one more word than the term) covers F940's
     // (the term's own words), so F940's switch answers only with F968 off.
@@ -412,8 +444,7 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withF940Only.f968 = false
     var withoutF940 = withF940Only
     withoutF940.f940 = false
-    #expect(PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withoutF940)
-        != PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: withF940Only),
+    #expect(oracle(withoutF940) != oracle(withF940Only),
             "no term in the corpus has four or more words and a mishearing, so F940's amendment is untested here")
     let identical = actual == expected
     #expect(identical, "first difference: \(zip(actual, expected).first { $0 != $1 }.map { "\($0) vs \($1)" } ?? "counts \(actual.count) vs \(expected.count)")")
