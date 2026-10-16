@@ -278,6 +278,10 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         case ledgerUnreadable
         case ledgerNewerFormat(Int)
         case historyUnavailable(reason: String)
+        /// The byte budget removed these age-anchor generations (F679): undo points an hour, a day
+        /// or a week back that no other rule kept, gone to keep the history inside its ceiling.
+        /// Saves only.
+        case historyTrimmedByBudget(names: [String])
         /// A load found no primary at all and opened the backup (F844) — a missing file, not a
         /// damaged one, which `.recoveredFromBackup` alone cannot tell apart. Loads only.
         case primaryMissing
@@ -298,7 +302,8 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         public let quarantined: [String]
         public let conflictBranchBacklog: Int
         /// What this save worked around rather than failed on (F553) — an unreadable ledger, an
-        /// adopted primary, and `.historyUnavailable` when the retained-history step could not run.
+        /// adopted primary, `.historyUnavailable` when the retained-history step could not run, and
+        /// `.historyTrimmedByBudget` when the byte budget took an age anchor (F679).
         /// Retention is never fatal, so a save that kept no past version returns normally; this,
         /// beside `retainedName == nil`, is how a caller learns that happened, and why.
         public let repairs: [StoreRepair]
@@ -741,14 +746,19 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
 
         // 11. prune — best-effort, never throws, never a `conflict-` entry. Reuses the fingerprints
         //     already computed rather than re-reading anything.
-        let pruned = pruneHistory(
+        let prune = pruneHistory(
             ledger: StoreLedger.read(at: ledgerURL, using: io),
             rediscovered: rediscovered,
             liveFingerprints: [newFingerprint, primaryFingerprint].compactMap { $0 },
             indexBytes: newData.count,
             now: now
         )
+        let pruned = prune.removed
         if !pruned.isEmpty { phases.append(.prune) }
+        // An undo point lost for space alone is said (F679), never only counted among the prunes.
+        if !prune.trimmedByBudget.isEmpty {
+            repairs.append(.historyTrimmedByBudget(names: prune.trimmedByBudget))
+        }
 
         return SaveOutcome(
             token: token,
@@ -1049,7 +1059,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         liveFingerprints: [String],
         indexBytes: Int,
         now: Int
-    ) -> [String] {
+    ) -> StoreHistory.Pruned {
         var counts: [String: Int] = [:]
         var times: [String: Int] = [:]
         // The rediscovered records first, so the committed ledger's own records win where both
@@ -1062,7 +1072,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         }
         // The budget scales with the larger of this index and the largest generation the rules
         // keep (F527, F650). `prune` does that sizing, because only it knows what the rules keep.
-        return history.prune(
+        return history.pruneReporting(
             policy: retention, now: now, recordCounts: counts, writtenAt: times,
             liveFingerprints: liveFingerprints, indexBytes: indexBytes
         )

@@ -378,6 +378,32 @@ public struct StoreHistory: Sendable {
         liveFingerprints: [String],
         indexBytes: Int? = nil
     ) -> [String] {
+        pruneReporting(
+            policy: policy, now: now, recordCounts: recordCounts, writtenAt: writtenAt,
+            liveFingerprints: liveFingerprints, indexBytes: indexBytes
+        ).removed
+    }
+
+    /// What one prune removed, and which of those the byte budget took (F679).
+    public struct Pruned: Sendable, Equatable {
+        /// Every name removed, in the order removed.
+        public let removed: [String]
+        /// The age anchors the byte budget trimmed and that were removed — undo points no other rule
+        /// kept. A subset of `removed`; empty unless the history was over its budget.
+        public let trimmedByBudget: [String]
+    }
+
+    /// `prune`, reporting which removals were the byte budget's (F679). The budget trims only age
+    /// anchors — rules 1, 3 and 4 are exempt — so each name here is an hour, day or week undo point
+    /// the user loses for space alone, which nothing reported.
+    public func pruneReporting(
+        policy: RetentionPolicy,
+        now: Int,
+        recordCounts: [String: Int],
+        writtenAt: [String: Int],
+        liveFingerprints: [String],
+        indexBytes: Int? = nil
+    ) -> Pruned {
         let entries = entries().map { entry -> RetainedGeneration in
             guard let count = recordCounts[entry.name] else { return entry }
             return RetainedGeneration(
@@ -387,7 +413,7 @@ public struct StoreHistory: Sendable {
                 recordCount: count, bytesMatchName: entry.bytesMatchName
             )
         }
-        guard !entries.isEmpty else { return [] }
+        guard !entries.isEmpty else { return Pruned(removed: [], trimmedByBudget: []) }
         let live = Set(liveFingerprints)
 
         // Rule 1 — the newest `recentCount`.
@@ -445,11 +471,13 @@ public struct StoreHistory: Sendable {
         let budget = indexBytes.map { newIndex in
             policy.effectiveByteBudget(forIndexBytes: max(newIndex, ruleKept.map(\.byteCount).max() ?? 0))
         } ?? policy.byteBudget
+        var trimmed: Set<String> = []
         if keptBytes > budget {
             for entry in entries.reversed()
             where anchored.contains(entry.name) && !keep.contains(entry.name) {
                 guard keptBytes > budget else { break }
                 doomed.append(entry)
+                trimmed.insert(entry.name)
                 keptBytes -= entry.byteCount
             }
         }
@@ -460,7 +488,7 @@ public struct StoreHistory: Sendable {
             else { continue }
             removed.append(entry.name)
         }
-        return removed
+        return Pruned(removed: removed, trimmedByBudget: removed.filter(trimmed.contains))
     }
 
     /// The alphabet `StoreFingerprint.of` emits — `%016llx`, sixteen lowercase hex characters. It
