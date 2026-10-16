@@ -100,7 +100,8 @@ struct BackupRestorePlan: Equatable, Sendable {
            let path = manifest.files.map(\.relativePath).sorted().first(where: { !isRestorablePath($0) }) {
             throw BackupRestoreError.unrestorablePath(path)
         }
-        let verification = try BackupManifest.verify(in: generation, deep: deep)
+        // The outcome read above, not a second read (F696): the plan and its check describe one list.
+        let verification = try BackupManifest.verify(outcome, in: generation, deep: deep)
 
         // The backup's file set. From the manifest when there is one — it is the authoritative
         // list, and using it means a file the manifest omits is not silently restored — and from

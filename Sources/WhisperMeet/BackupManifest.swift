@@ -106,6 +106,13 @@ struct BackupManifest: Codable, Equatable, Sendable {
 
     static func readOutcome(in generationDirectory: URL) -> ReadOutcome {
         let url = generationDirectory.appendingPathComponent(fileName)
+        // A link at the manifest's path is damage, whatever it points at (F696). The backup writes the
+        // manifest as a regular file and never as a link, so one there was placed — and a DANGLING
+        // link reads as "no such file" below, which is `.absent`, the one outcome that offers
+        // Restore Anyway. Asked of the item itself (`lstat`), before anything follows it.
+        if (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType == .typeSymbolicLink {
+            return .corrupt
+        }
         let data: Data
         do {
             data = try Data(contentsOf: url)
@@ -150,8 +157,16 @@ struct BackupManifest: Codable, Equatable, Sendable {
     /// omitting it would let silent corruption through. The caller chooses and the result says
     /// which was done.
     static func verify(in generationDirectory: URL, deep: Bool) throws -> VerificationResult {
+        try verify(readOutcome(in: generationDirectory), in: generationDirectory, deep: deep)
+    }
+
+    /// `verify(in:deep:)` against a manifest the caller already read (F696), so a caller that plans
+    /// from the same read checks exactly the list it planned. `BackupRestorePlan.make` read the
+    /// manifest once for its plan and `verify` read it again: a change between the two reads could
+    /// plan one list and verify another.
+    static func verify(_ outcome: ReadOutcome, in generationDirectory: URL, deep: Bool) throws -> VerificationResult {
         let manifest: BackupManifest
-        switch readOutcome(in: generationDirectory) {
+        switch outcome {
         case .absent:
             // No manifest at all — an older backup, not a defect. Stays restorable through the
             // explicit "Restore Anyway" override (F557).

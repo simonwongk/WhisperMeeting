@@ -232,3 +232,44 @@ func preManifestGenerationIsStillUsable() throws {
     #expect(result.isUnverifiable)
     #expect(result.problems.contains { $0.lowercased().contains("no manifest") })
 }
+
+// F696 — a link at the manifest's path is damage, and a restore plan reads the manifest once.
+//
+// A backup writes `.backup-manifest.json` as a regular file and never as a link, so a link there was
+// placed. A DANGLING one read as "no such file" — `.absent` — which is the one outcome that means
+// "made by an earlier version" and offers Restore Anyway for a generation whose integrity evidence
+// someone replaced. And `BackupRestorePlan.make` read the manifest twice (once for the plan, once
+// inside `verify`), so a change between the reads could plan one list and check another.
+@Test(
+    "A link at the manifest's path is damage, never 'made by an earlier version' (F696)",
+    arguments: [true, false]
+)
+func aLinkAtTheManifestPathIsDamage(dangling: Bool) throws {
+    let (root, source, destination) = try makeLibrary("manifest-link-\(dangling)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let summary = try BackupCoordinator.backUp(source: source, destination: destination, now: 11, retain: 3)
+    let generation = generationURL(destination, summary.generation)
+    let manifestURL = generation.appendingPathComponent(BackupManifest.fileName)
+    // Kept as the link's target when it is not dangling: the real manifest, moved out of the way.
+    let elsewhere = root.appendingPathComponent("moved-manifest.json")
+    try FileManager.default.moveItem(at: manifestURL, to: elsewhere)
+    if dangling { try FileManager.default.removeItem(at: elsewhere) }
+    try FileManager.default.createSymbolicLink(at: manifestURL, withDestinationURL: elsewhere)
+
+    #expect(BackupManifest.readOutcome(in: generation) == .corrupt)
+    let plan = try BackupRestorePlan.make(from: generation, into: source, deep: false)
+    #expect(!plan.isSafeToApply)
+    #expect(!plan.requiresExplicitOverride, "a replaced manifest was offered Restore Anyway")
+    #expect(!plan.verification.problems.contains { $0.contains("earlier version") }, "\(plan.verification.problems)")
+}
+
+@Test("BackupRestorePlan.make reads the manifest once and checks the outcome it read (F696)")
+func theRestorePlanReadsTheManifestOnce() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/BackupRestorePlan.swift")
+    let start = try #require(source.range(of: "static func make(from generation: URL"))
+    let end = try #require(source.range(of: "static func isRestorablePath", range: start.upperBound..<source.endIndex))
+    let body = String(source[start.lowerBound..<end.lowerBound])
+    #expect(body.components(separatedBy: "BackupManifest.readOutcome(").count - 1 == 1, "make reads the manifest more than once")
+    #expect(body.contains("BackupManifest.verify(outcome, in: generation"), "make no longer verifies the outcome it read")
+    #expect(!body.contains("BackupManifest.verify(in:"), "make re-reads the manifest through verify(in:deep:)")
+}
