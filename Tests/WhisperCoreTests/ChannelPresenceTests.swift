@@ -13,6 +13,13 @@ private typealias Stretch = RecordingMixPlan.ChannelPresence.Stretch
 private typealias Presence = RecordingMixPlan.ChannelPresence
 
 private let held = Measure(energy: 1, missing: 0)
+
+private extension RecordingMixPlan.ChannelPresence {
+    /// A measure whose first-round link holds both channels in every window it has a mix for.
+    init(channels: Int, stretches: [RecordingMixPlan.ChannelPresence.Stretch], mix: [RecordingMixPlan.ChannelPresence.Measure]) {
+        self.init(channels: channels, stretches: stretches, mix: mix, channelWindows: mix.map { _ in [held, held] })
+    }
+}
 private let bandCount = RecordingMixPlan.cancellationBands.count - 1
 
 /// A stretch at `start` seconds, level 0.1, every band holding `band` (or `held`).
@@ -43,6 +50,7 @@ func channelPresenceConstantsArePinned() {
     #expect(RecordingMixPlan.alignmentCandidates == 2)
     #expect(RecordingMixPlan.alignmentMinimumCorrelation == 0.3)
     #expect(RecordingMixPlan.mostCopyMissingShare == 0.05)
+    #expect(RecordingMixPlan.mostChannelMissingShare == 0.25)
     #expect(RecordingMixPlan.presenceShare == 0.25)
     #expect(RecordingMixPlan.presenceGroupFrames == 4)
     #expect(RecordingMixPlan.presenceBand == 80...4_000)
@@ -127,6 +135,28 @@ func channelPresenceFailsClosed() {
                                                    nativeChannelWindows: sounding(2)) == .unmeasured(window: 1, channel: nil))
     #expect(RecordingMixPlan.firstChannelNotInCopy(Presence(channels: 2, stretches: stretches(10), mix: [held, held]),
                                                    nativeChannelWindows: [[0.1, .nan], [0.1, 0.1]]) == .unmeasured(window: 1, channel: 0))
+}
+
+@Test("Beside the stretch rule, the first round's link refuses a window where a quarter of a sounding channel is not in the mix (F1001 round 4)")
+func channelPresenceKeepsTheFirstRoundsLink() {
+    let quarter = Measure(energy: 1, missing: 0.25), over = Measure(energy: 1, missing: 0.251)
+    // The stretch rule sees nothing (an inverted steady tone it reads as a delay); the first round's link refuses.
+    let tone = Presence(channels: 2, stretches: stretches(10), mix: [held, held], channelWindows: [[held, held], [held, over]])
+    #expect(RecordingMixPlan.firstChannelNotInCopy(tone, nativeChannelWindows: sounding(2)) == .missing(window: 1, channel: 1))
+    let bound = Presence(channels: 2, stretches: stretches(10), mix: [held, held], channelWindows: [[quarter, quarter], [held, held]])
+    #expect(RecordingMixPlan.firstChannelNotInCopy(bound, nativeChannelWindows: sounding(2)) == nil, "a quarter is allowed")
+    // A window where the channel does not sound — under a tenth of its own level — is not judged.
+    #expect(RecordingMixPlan.firstChannelNotInCopy(tone, nativeChannelWindows: [[0.1, 0.1], [0.1, 0.001]]) == nil)
+    // Fail-closed: a sounding window with no first-round measure, or one not a number.
+    let short = Presence(channels: 2, stretches: stretches(10), mix: [held, held], channelWindows: [[held, held]])
+    #expect(RecordingMixPlan.firstChannelNotInCopy(short, nativeChannelWindows: sounding(2)) == .unmeasured(window: 1, channel: 0))
+    let notANumber = Presence(channels: 2, stretches: stretches(10), mix: [held, held],
+                              channelWindows: [[held, Measure(energy: .nan, missing: 0)], [held, held]])
+    #expect(RecordingMixPlan.firstChannelNotInCopy(notANumber, nativeChannelWindows: sounding(2)) == .unmeasured(window: 0, channel: 1))
+    // The stretch rule still speaks first where both would refuse.
+    let both = Presence(channels: 2, stretches: stretches(10, [1.024: [2: Measure(energy: 1, missing: 1)]]), mix: [held, held],
+                        channelWindows: [[over, over], [held, held]])
+    #expect(RecordingMixPlan.firstChannelNotInCopy(both, nativeChannelWindows: sounding(2)) == .cancels(seconds: 1.024, band: 2))
 }
 
 @Test("A resume checks a leftover of one track of two channels, and nothing else (F1001)")

@@ -23,6 +23,10 @@ extension RecordingMixPlan {
         /// Per `MeetingStoragePlan.levelWindowSeconds` window: the mix's energy in `presenceBand`, and the part
         /// of it in bins the copy does not hold.
         public var mix: [Measure]
+        /// Per window, per channel: the channel's energy in `presenceBand`, and the part of it in bins the
+        /// channels' mix does not hold — F1001's first-round link, kept beside `stretches` (round 4,
+        /// `mostChannelMissingShare`).
+        public var channelWindows: [[Measure]]
 
         public struct Measure: Sendable, Equatable {
             public var energy: Double
@@ -51,10 +55,11 @@ extension RecordingMixPlan {
             }
         }
 
-        public init(channels: Int, stretches: [Stretch], mix: [Measure]) {
+        public init(channels: Int, stretches: [Stretch], mix: [Measure], channelWindows: [[Measure]]) {
             self.channels = channels
             self.stretches = stretches
             self.mix = mix
+            self.channelWindows = channelWindows
         }
     }
 
@@ -129,6 +134,20 @@ extension RecordingMixPlan {
         return -alignedReal
     }
 
+    // MARK: Beside link 1 — the first round's channel against the mix
+
+    /// The most of a channel's energy in a `levelWindowSeconds` window, in `presenceBand`, that may lie in bins
+    /// where the channels' mix does not hold it (`soundFound` at the channel's weight in the mix) — F1001's
+    /// first-round link, kept as a refusal beside link 1 because each misses what the other catches (round 4;
+    /// AGENTS.md: prefer two checks with different blind spots, the new one additional, not replacing). Link 1's
+    /// spaced-microphone allowance reads a steady tone inverted on one channel as one delayed half a period —
+    /// the same signal, which the mix cancels — so a loud inverted tone or odd-harmonic buzz read 0.000 and was
+    /// deleted, as were a side voice under a talker on microphones 2.5–3 ms apart and a 0.1 s file (review 1 of
+    /// round 2, 16 probes round 1 kept); this link has no allowance and, over five seconds, needs no three
+    /// frames' spread. A quarter, as round 1 measured it (its ordinary stereo read at most 0.16; an echo-free
+    /// pair a metre apart, 0.34, is refused).
+    public static let mostChannelMissingShare = 0.25
+
     // MARK: Link 2 — does the copy hold the mix?
 
     /// Each frame of the copy's measure against the mix: 4,096 frames at 16 kHz, 256 ms, a bin every 3.9 Hz.
@@ -169,6 +188,9 @@ extension RecordingMixPlan {
         /// The channels cancel each other when mixed into one: more than `mostCancelledShare` of a judged
         /// band's energy in the stretch starting at `seconds`. `band` indexes `cancellationBands`.
         case cancels(seconds: TimeInterval, band: Int)
+        /// More than `mostChannelMissingShare` of a channel's sound in this `levelWindowSeconds` window is not in
+        /// the channels' mix: it cancels against the other channel (the first round's link, round 4).
+        case missing(window: Int, channel: Int)
         /// More than `mostCopyMissingShare` of the mix's sound in this `levelWindowSeconds` window is not in the copy.
         case copyMissing(window: Int)
         /// Something that sounds was not measured, or a measure is not a number: not shown, so not deleted.
@@ -184,6 +206,8 @@ extension RecordingMixPlan {
     ///   stretches measured in it;
     /// - in every stretch above `silenceLevel`, judged against its own energy and no one else's, no band holding
     ///   at least `judgedBandShare` of it has more than `mostCancelledShare` cancelling;
+    /// - beside that, in every window in which a channel sounds (`audibleShare` of its own level), no more than
+    ///   `mostChannelMissingShare` of that channel is missing from the mix (the first round's link, round 4);
     /// - and in every window in which a channel sounds (`audibleShare` of its own level), no more than
     ///   `mostCopyMissingShare` of the mix is missing from the copy.
     public static func firstChannelNotInCopy(_ presence: ChannelPresence,
@@ -224,12 +248,26 @@ extension RecordingMixPlan {
                 }
             }
         }
-        // And the copy holds the mix, in every window where a channel sounds — `audibleShare` of its own level
-        // over the whole recording, as F1001's first round measured it: a near-silent tail is the encoder's.
+        // A channel "sounds" in a window at `audibleShare` of its own level over the whole recording, as F1001's
+        // first round measured it, for the two window-level links below.
         let floors = nativeChannelWindows.map { levels in
             Swift.max(MeetingStoragePlan.silenceLevel, audibleShare
                 * (levels.isEmpty ? 0 : (levels.reduce(0) { $0 + $1 * $1 } / Double(levels.count)).squareRoot()))
         }
+        // Beside link 1, the first round's link: each sounding channel is in the mix (round 4).
+        for index in 0..<windows {
+            for channel in 0..<2 where index < nativeChannelWindows[channel].count && nativeChannelWindows[channel][index] >= floors[channel] {
+                guard index < presence.channelWindows.count, presence.channelWindows[index].count == 2,
+                      valid(presence.channelWindows[index][channel]) else {
+                    return .unmeasured(window: index, channel: channel)
+                }
+                let measure = presence.channelWindows[index][channel]
+                if measure.energy > 0, !(measure.missing <= measure.energy * mostChannelMissingShare) {
+                    return .missing(window: index, channel: channel)
+                }
+            }
+        }
+        // And the copy holds the mix, in every window where a channel sounds: a near-silent tail is the encoder's.
         for (index, measure) in presence.mix.enumerated() {
             guard valid(measure) else { return .unmeasured(window: index, channel: nil) }
             let sounds = nativeChannelWindows.indices.contains { index < nativeChannelWindows[$0].count && nativeChannelWindows[$0][index] >= floors[$0] }

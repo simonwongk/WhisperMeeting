@@ -501,6 +501,9 @@ extension AppModel {
             switch finding {
             case let .cancels(seconds, _):
                 return "\(owner) left and right channels cancel each other at about \(TranscriptFormatter.clock(seconds)) when they are mixed into one, so a mono copy would lose sound"
+            case let .missing(index, channel):
+                let side = channel == 0 ? "left" : "right", other = channel == 0 ? "right" : "left"
+                return "sound on \(owner) \(side) channel at about \(window(index)) is not in the compressed copy, because it cancels against the \(other) channel when they are mixed into one"
             case let .copyMissing(index):
                 return "the compressed copy is missing sound \(owner == "the recording's" ? "the recording has" : "it has") at about \(window(index))"
             case let .unmeasured(index, channel?):
@@ -577,7 +580,10 @@ extension AppModel {
             case let .channelNotInCopy(finding):
                 let text = Self.sentence(finding, owner: "the recording's")
                 var ending = ", so the copy was discarded."
-                if case .cancels = finding { ending = "; the recording is kept as it is." }
+                switch finding {
+                case .cancels, .missing: ending = "; the recording is kept as it is."
+                default: break
+                }
                 return String(text.prefix(1)).uppercased() + String(text.dropFirst()) + ending
             case let .leftoverChannelNotInCopy(name, finding):
                 return "“\(name)”, which the compressed copy replaced, was kept: " + Self.sentence(finding, owner: "its") + "."

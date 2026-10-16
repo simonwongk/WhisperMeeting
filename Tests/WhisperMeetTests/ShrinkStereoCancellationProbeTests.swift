@@ -59,6 +59,7 @@ private func late(_ x: [Float], _ frames: Int) -> [Float] {
 }
 private func midSide(_ a: [Float], _ b: [Float]) -> [[Float]] { [mix(a, b), mix(a, b, -1)] }
 
+
 /// A 16-bit PCM WAV at `rate`, `WAVE_FORMAT_EXTENSIBLE` with `mask` when one is given.
 private func pcm16(_ channels: [[Float]], rate: Int = rate, mask: UInt32? = nil) -> Data {
     let count = channels.count, frames = channels.map(\.count).min() ?? 0
@@ -132,6 +133,34 @@ func shrinkKeepsEveryCancellationTheReviewsMade() async throws {
         let outcome = try await shrinkWAV(channels)
         if !outcome.kept || !outcome.alert.contains("nothing was removed") { deleted.append("\(label): \(outcome.alert)") }
         #expect(outcome.alert.contains("cancel each other"), "\(label): \(outcome.alert)")
+    }
+    #expect(deleted.isEmpty, "\(deleted)")
+}
+
+@Test("What F1001's first round kept, its second round's spaced-microphone allowance does not delete (F1001 round 4)")
+@MainActor
+func shrinkKeepsWhatTheFirstRoundKept() async throws {
+    // Review 1 of round 2: the 3 ms alignment search reads an inverted steady tone as a delayed one — an inverted
+    // tone and one half a period late are the same signal — so a loud cancelling tone read 0.000; a side voice under
+    // a talker on microphones 3 ms apart read 0.075; and a 0.1 s file has no stretch of three frames' spread. Round 1
+    // (48ef1c4) kept all three. Each cancels exactly in the mix.
+    let tone = voice16([953], amplitude: 0.1)
+    var buzz = [Float](repeating: 0, count: a16.count)
+    for (index, harmonic) in stride(from: 1, through: 31, by: 2).map({ Double($0) * 200 }).enumerated() where harmonic < 7_800 {
+        let step = 2 * Double.pi * harmonic / Double(rate), amplitude = 0.06 / Double(2 * index + 1)
+        for n in buzz.indices { buzz[n] += Float(amplitude * sin(step * Double(n))) }
+    }
+    let side = scaled(b16, 0.708)
+    let probes: [(String, [[Float]])] = [
+        ("a 953 Hz tone inverted under voice A, at its level", midSide(a16, tone)),
+        ("a 200 Hz odd-harmonic buzz inverted under voice A", midSide(a16, buzz)),
+        ("voice A on microphones 3 ms apart, voice B inverted 3 dB down", [mix(a16, side), mix(late(a16, 48), side, -1)]),
+        ("a whole file of 0.1 s, mid/side", midSide(Array(a16.prefix(1_600)), Array(b16.prefix(1_600)))),
+    ]
+    var deleted: [String] = []
+    for (label, channels) in probes {
+        let outcome = try await shrinkWAV(channels)
+        if !outcome.kept { deleted.append("\(label): \(outcome.alert)") }
     }
     #expect(deleted.isEmpty, "\(deleted)")
 }

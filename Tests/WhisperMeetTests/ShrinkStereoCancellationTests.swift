@@ -159,6 +159,8 @@ func shrinkSaysWhichChannelIsNotInTheCopy() {
     typealias Failure = AppModel.ShrinkFailure
     #expect(Failure.channelNotInCopy(.cancels(seconds: 4.096, band: 2)).errorDescription
         == "The recording's left and right channels cancel each other at about 0:04 when they are mixed into one, so a mono copy would lose sound; the recording is kept as it is.")
+    #expect(Failure.channelNotInCopy(.missing(window: 1, channel: 1)).errorDescription
+        == "Sound on the recording's right channel at about 0:05 is not in the compressed copy, because it cancels against the left channel when they are mixed into one; the recording is kept as it is.")
     #expect(Failure.channelNotInCopy(.copyMissing(window: 2)).errorDescription
         == "The compressed copy is missing sound the recording has at about 0:10, so the copy was discarded.")
     #expect(Failure.channelNotInCopy(.unmeasured(window: 0, channel: 1)).errorDescription
@@ -382,13 +384,13 @@ func shrinkKeepsAStereoRecordingMeasuredWrongly() async throws {
         .init(start: $0, level: 0.1, bands: [Measure](repeating: good, count: RecordingMixPlan.cancellationBands.count - 1))
     }
     let wrong: [RecordingMixPlan.ChannelPresence] = [
-        .init(channels: 1, stretches: stretches, mix: [good, good, good]),
+        .init(channels: 1, stretches: stretches, mix: [good, good, good], channelWindows: [[good, good], [good, good], [good, good]]),
         .init(channels: 2, stretches: stretches.enumerated().map { index, stretch in
             var bad = stretch
             if index == 12 { bad.bands[2] = Measure(energy: .nan, missing: 0) }
             return bad
-        }, mix: [good, good, good]),
-        .init(channels: 2, stretches: Array(stretches.prefix(9)), mix: [good]),
+        }, mix: [good, good, good], channelWindows: [[good, good], [good, good], [good, good]]),
+        .init(channels: 2, stretches: Array(stretches.prefix(9)), mix: [good], channelWindows: [[good, good]]),
     ]
     for presence in wrong {
         let f = try await MixFixture(recordingExtension: "wav", duration: 12) { url in
