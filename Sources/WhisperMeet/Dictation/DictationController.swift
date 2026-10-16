@@ -1454,6 +1454,9 @@ final class DictationController: ObservableObject {
             : []
         let prompt = VocabularyPrompt.build(vocab)
         let initialPrompt = prompt.isEmpty ? nil : prompt
+        // F768: the whole vocabulary, whatever the engine — Qwen, which takes no prompt, is the
+        // engine that writes 王老师 as "Wang老师" — but only while the user lets dictation use it.
+        let transliterationTerms = useVocabulary ? vocabularyProvider() : []
         let refinerRelease = refinerReleaseForCapture
         let gpuUtilization = self.gpuUtilization
         let clock = self.dictationClock
@@ -1514,6 +1517,16 @@ final class DictationController: ObservableObject {
                     cleaned, terms: vocab, noSpeechProb: result.noSpeechProb) {
                     cleaned = ""
                 }
+                // F768, the user's decision of 2026-10-16: a vocabulary name the recognizer wrote
+                // half in pinyin ("Wang老师") goes back into characters (王老师) before refinement,
+                // so the refiner sees, and must keep, the user's own term. The history keeps what
+                // the recognizer heard in `rawText`.
+                let recognized = cleaned
+                cleaned = TransliteratedTermCorrection.corrected(cleaned, terms: transliterationTerms)
+                var rawText: String? = cleaned == recognized ? nil : recognized
+                if rawText != nil {
+                    log.notice("a vocabulary name written partly in pinyin was put back into characters")
+                }
                 // The GPU share is on the line because it is the one thing that made this slow
                 // on 2026-10-08 (F890): a reader of the log can tell a busy GPU from a slow model.
                 let gpuNote = gpuBusy.map { " (GPU \($0)% busy before the request)" } ?? ""
@@ -1525,7 +1538,6 @@ final class DictationController: ObservableObject {
                     // report of a "short" dictation finds out why.
                     log.error("the recognizer cut this dictation short (its reply deadline or token cap); the text is a fragment")
                 }
-                var rawText: String?
                 var refinement: String?
                 var refineSeconds: TimeInterval?
                 if refineOn, !cleaned.isEmpty, let gpuBusy, gpuBusy >= Self.refineSkipGPUBusyPercent {
@@ -1546,7 +1558,7 @@ final class DictationController: ObservableObject {
                     refineSeconds = clock() - refineStarted
                     refinement = attempt.outcome.rawValue
                     if attempt.outcome == .refined {
-                        rawText = cleaned
+                        rawText = rawText ?? cleaned
                         cleaned = attempt.text
                     } else if attempt.outcome == .rawError {
                         // A crashed/helper-missing refiner is not actually resident. Clear the
