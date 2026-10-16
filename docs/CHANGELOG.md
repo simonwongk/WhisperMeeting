@@ -9,6 +9,47 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
+## Maintenance cycle — Wave 7: 56 tickets closed, 2026-10-13 to 2026-10-16
+
+Eight lanes, each worked test-first in its own worktree and reviewed by a second agent. Shrink's audit of mixed copies was reviewed
+twice, and its stereo rule four times over four rounds. The full trail is in the ticket log under each ID. The user answered in chat on
+2026-10-15 that Shrink should refuse any stereo recording whose channels cancel when mixed. They gave that answer after an earlier
+answer had rested on a bound I had stated wrongly and then corrected.
+
+**What changed for the user**
+- **Stereo Shrink (F1001).** Shrink keeps full size any two-channel recording whose channels cancel when mixed into one. It also keeps any
+  recording whose channel layout the compression is measured to leave a channel out of, in WAV, CAF and AIFF alike. It says why.
+  Before this, a mid/side recording could lose its side voice. Some recordings with nothing to lose are now kept too (spaced microphones,
+  Haas widening). One ordinary test file in 59 is newly refused. What is still not caught is listed in the letter (F1009).
+- **Shrink of mixed recordings (F980, F978, F953, F979).** It stays off. Its audit turned away about a third of good copies of tracks that
+  share sound, so turning it on is F998. Averaging a track's channels was measured to change no word at −10 to −20 dB (F979).
+- **Reasons for greyed controls (F800, F832, F843).** Shrink's refusal is written under its button. Transcribe Again and the alignment
+  notice say why they are greyed. A restore refused for a queued transcription names that meeting.
+- **The recording window (F959, F960, F969, F970).** The health panel leads with the worst warning. A track whose audio is not saved no
+  longer reads "Silent". A changed write-failure advice is announced again. A failed Stop no longer carries its title into the next
+  recording.
+- **Library saves and recovery (F905, F908, F912, F933–F936).** A missing vocabulary or rules file with a readable backup is called
+  missing, not damaged. An unsaved finished recording beside an empty index no longer opens the library read-only. A long link-import
+  conversion at launch is finished in the background instead of asking for a second download.
+- **Link imports and leftovers (F943, F944, F961, F962, F965, F975, F976).** Only one link import runs at a time across windows. Quit stops
+  recovery's ffmpeg. Finder-locked and alias imports from older builds are handled or named. A WebM import recovered before Wave 6 can
+  be shrunk. Leftover temp files are swept, including on volumes without file locking.
+- **Rules and vocabulary (F914–F916, F920, F921, F967, F968, F972).** Apply Replacement Rules handles every occurrence in one pass, off
+  the main thread. Vocabulary proposals land where they were scored, keep possessives, handle extra words, and cost less. Chinese
+  sound-alike proposals no longer rename other real words or people, and can now propose near-homophones such as 预选 → 预算.
+- **Tests and docs (F710–F788, F806, F879, F882, F883, F886, F896, F937, F957, F958, F963, F977).** Tests wait against deadlines and
+  never read the real Application Support. Stale doc comments and README and RECOVERY.md sentences were corrected. This changelog
+  gained Wave 3 and Wave 4 entries. The F974 report was measured and closed invalid, because the mixing cost is linear.
+
+**How it was checked.** The suite went from 3211 to 3367 tests, and the full gate passed on `6c0bba6`. Reviews sent work back in stereo
+Shrink (a wrongly stated bound, then a round that deleted files the first round kept), library recovery (F936), link-import leftovers (F976,
+F962), Chinese corrections (F916) and a doc comment (F896). All were fixed before the push. 29 new tickets were filed (F982–F1010).
+
+**What is not claimed.**
+- Nothing was clicked through on screen. The sitting is F1010 in `NEEDS_HUMAN.md`.
+- The dictation lane (F922, F923, F925, F926, F901, F903, F853) did not run this wave. Those tickets stay open.
+- Shrinking a three-hour stereo recording may take minutes with no progress shown (F1008).
+
 ## Maintenance cycle — Wave 6: 28 tickets closed, 2026-10-12
 
 Five lanes, each test-first in its own worktree and reviewed by a second agent; Shrink (the step that deletes audio) was reviewed twice. The
