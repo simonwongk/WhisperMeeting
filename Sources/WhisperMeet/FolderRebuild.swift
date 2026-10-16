@@ -81,12 +81,22 @@ enum FolderRebuild {
                 ?? Date()
             let title = notesTitle(in: folder)
                 ?? "Recovered Meeting \(created.formatted(date: .abbreviated, time: .shortened))"
+            // `finalizedRecording` reports 0 for a recording WhisperCore cannot read as a WAV — a
+            // shrunk capture's `.m4a`, a non-WAV import — and the meeting showed 0:00 (F797).
+            // AVFoundation is here, so the container's declared length fills it; still 0 when even
+            // that cannot open the file, which is what it was before.
+            var duration = finalized.duration
+            if duration <= 0,
+               let declared = DecodedAudio.declaredDuration(of: finalized.recordingURL),
+               declared.isFinite, declared > 0 {
+                duration = declared
+            }
 
             meetings.append(MeetingRecord(
                 id: id,
                 title: title,
                 createdAt: created,
-                duration: finalized.duration,
+                duration: duration,
                 recordingPath: "Recordings/\(folder.lastPathComponent)/\(finalized.recordingURL.lastPathComponent)",
                 // Never `.completed`: there is no transcript in this record, and `.completed` is
                 // what makes the app render a transcript section for it.

@@ -147,3 +147,37 @@ func emptyLibraryProposesNothing() throws {
     #expect(proposal.deferredToRecovery == 0)
     #expect(!proposal.isWorthApplying)
 }
+
+@Test("A folder rebuild reads the length of a recording that is not a WAV (F797)")
+func rebuildReadsTheLengthOfANonWAVRecording() throws {
+    // `finalizedRecording` reports 0 for every recording WhisperCore cannot read as a WAV — a shrunk
+    // capture's `meeting.m4a`, a `recording.m4a` import — so the rebuilt meeting showed 0:00. The
+    // container's own length is readable here, in WhisperMeet, through AVFoundation.
+    let (root, library) = try makeOrphanedLibrary("nonwav")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let shrunk = UUID()
+    let imported = UUID()
+    for (id, name) in [(shrunk, "meeting.m4a"), (imported, "recording.m4a")] {
+        let folder = library.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let source = folder.appendingPathComponent("source.wav")
+        try WAVWriter.wavData(from: [Float](repeating: 0.2, count: 48_000 * 3), sampleRate: 48_000).write(to: source)
+        try AudioCompressor.compressSpeech(
+            input: source,
+            output: folder.appendingPathComponent(name),
+            workingWAV: folder.appendingPathComponent("working.wav")
+        )
+        try FileManager.default.removeItem(at: source)
+    }
+
+    let proposal = try FolderRebuild.propose(in: library)
+
+    let byID = Dictionary(uniqueKeysWithValues: proposal.meetings.map { ($0.id, $0) })
+    let shrunkMeeting = try #require(byID[shrunk])
+    let importedMeeting = try #require(byID[imported])
+    #expect(shrunkMeeting.recordingPath.hasSuffix("meeting.m4a"))
+    #expect(importedMeeting.recordingPath.hasSuffix("recording.m4a"))
+    // AAC adds priming frames; the container's declared length is within a fraction of a second.
+    #expect(abs(shrunkMeeting.duration - 3) < 0.25, "\(shrunkMeeting.duration)")
+    #expect(abs(importedMeeting.duration - 3) < 0.25, "\(importedMeeting.duration)")
+}
