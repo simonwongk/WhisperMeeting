@@ -321,10 +321,14 @@ public enum InterruptedRecordingRecovery {
                 //
                 // The rebuild path below does the opposite and throws, because there the frame count
                 // decides what gets mixed — a wrong answer silently produces a silent channel.
+                //
+                // Labelled as a capture whose offsets are unknown, not `captured-timeline` (F754):
+                // `rebuilt` writes 0 for each track's offset, and under the capture label that read
+                // as measured alignment.
                 try? writeRecoveryManifestIfNeeded(
                     in: directory,
                     sampleRate: sampleRate,
-                    alignment: "captured-timeline",
+                    alignment: SourceTrackManifest.capturedUnknownOffsetsAlignment,
                     sizeOf: sizeLookup
                 )
             }

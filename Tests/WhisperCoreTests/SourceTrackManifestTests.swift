@@ -260,7 +260,34 @@ func finishedCaptureRecoveryReportsPaddingFromTheSidecar() throws {
         from: try Data(contentsOf: directory.appendingPathComponent("source-tracks.recovered.json"))
     )
     #expect(manifest.paddedGaps.count == 1)
-    #expect(manifest.recoveryAlignment == SourceTrackManifest.paddedAlignment)
+    // Padded, and — since F754 — saying its offsets were not measured: this session sidecar has no
+    // capture-time offsets, so the tracks' zeros are not a captured alignment.
+    #expect(manifest.recoveryAlignment == SourceTrackManifest.paddedUnknownOffsetsAlignment)
+}
+
+@Test("A finished capture recovered without its offsets never labels zero offsets as a captured timeline (F754)")
+func finishedCaptureRecoveryDoesNotClaimZeroOffsetsWereCaptured() throws {
+    // `recover()`'s finalized branch wrote `SourceTrackManifest.rebuilt`'s `startOffsetSeconds: 0`
+    // under `captured-timeline` — the label `stop()` uses for offsets it measured. The true offsets
+    // here are unknown (the microphone may have started 0.2 s after the system audio), so the
+    // manifest must either carry no offsets or say they are unknown.
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F754-finished-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 48_000), sampleRate: 48_000)
+        .write(to: directory.appendingPathComponent("meeting.wav"))
+    try Data(count: 48_000 * 4).write(to: directory.appendingPathComponent("system-audio.f32"))
+    try Data(count: 38_400 * 4).write(to: directory.appendingPathComponent("microphone-audio.f32"))
+
+    _ = try InterruptedRecordingRecovery.recover(in: directory, sampleRate: 48_000)
+
+    let object = try #require(try JSONSerialization.jsonObject(
+        with: Data(contentsOf: directory.appendingPathComponent("source-tracks.recovered.json"))
+    ) as? [String: Any])
+    let label = try #require(object["recoveryAlignment"] as? String)
+    #expect(label != "captured-timeline", "zero offsets labelled as a measured capture timeline")
+    #expect(label == SourceTrackManifest.capturedUnknownOffsetsAlignment)
 }
 
 // MARK: - F151: a track that had buffers dropped says how many frames are silence

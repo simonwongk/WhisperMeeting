@@ -52,8 +52,9 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
         /// Zero is the same value this build writes for that folder, not a made-up default. Both
         /// recovery branches build their manifest through `rebuilt`, which writes 0. For a
         /// zero-aligned rebuild's manifest, 0 is true by construction. For a finished capture's
-        /// recovered manifest (`captured-timeline`), it is the approximation this build already
-        /// writes, because the offsets from `stop()` were never saved. A capture's
+        /// recovered manifest, it is the placeholder this build writes when the offsets from
+        /// `stop()` were never saved — labelled `captured-timeline-offsets-unknown` since F754,
+        /// though manifests written before it say `captured-timeline`. A capture's
         /// `source-tracks.json` has had the key since the first one was written (41de66e), so this
         /// default never replaces a measured offset. Encoding stays synthesized and always writes
         /// the key, because every build since F282 decodes a track strictly and needs to find it.
@@ -140,6 +141,20 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
     /// were joined; the gaps say which spans are not audio at all.
     public static let rebuiltPaddedAlignment = "zero-aligned-after-interruption-with-padding"
 
+    /// A finished capture whose own manifest never landed, described afterwards by recovery
+    /// without the per-track offsets `stop()` had (F754).
+    ///
+    /// The mix in `meeting.wav` was aligned by presentation time, so the timeline is a captured
+    /// one — but the offsets died with the process, and the tracks' `startOffsetSeconds` here are
+    /// 0 because the key must be present (builds between F282 and F558 decode it strictly), not
+    /// because they were measured. Labelled `captured-timeline` they read as measured; this label
+    /// says they are not. A recovery that has the capture-time offsets (F753) writes them and the
+    /// plain capture labels instead.
+    public static let capturedUnknownOffsetsAlignment = "captured-timeline-offsets-unknown"
+
+    /// `capturedUnknownOffsetsAlignment` for a capture that had also padded a gap.
+    public static let paddedUnknownOffsetsAlignment = "padded-after-restart-offsets-unknown"
+
     public init(
         recoveryAlignment: String = SourceTrackManifest.capturedAlignment,
         paddedGaps: [PaddedGap] = [],
@@ -174,8 +189,11 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
         // with `"captured-timeline"` as its base — and until this case existed, that base had no
         // padded counterpart registered here, so a padded capture's recovered manifest kept the
         // clean-capture label even though `paddedGaps` (read from the session sidecar) was
-        // non-empty right beside it.
+        // non-empty right beside it. Since F754 that fallback's base is
+        // `capturedUnknownOffsetsAlignment` when it has no capture-time offsets; the plain capture
+        // base is kept for a recovery that has them (F753).
         case capturedAlignment: return paddedAlignment
+        case capturedUnknownOffsetsAlignment: return paddedUnknownOffsetsAlignment
         // An unrecognised base means a caller introduced an alignment without adding its padded
         // counterpart here. Returning the base unchanged loses the padding from the LABEL, which is
         // the lesser harm: `paddedGaps` still carries the positions, and those are what a consumer
