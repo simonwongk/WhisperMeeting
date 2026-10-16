@@ -3412,11 +3412,10 @@ final class AppModel: ObservableObject {
                 // transcribed", until a relaunch runs this sweep. Only this sweep, because on a
                 // healthy library the launch runs the rest of its startup work itself; that is what
                 // separates this branch from the one above, which re-runs all of it because the
-                // launch skipped it. Leaving the rest out does not keep the message below true
-                // either: the orphan sweep in that work treats every recording folder the index does
-                // not list as an interrupted recording, which after a restore includes the ones the
-                // message says the restored index leaves out. By reading, the branch above indexes
-                // them straight away, and the next launch does on either branch (F699). Synchronous,
+                // launch skipped it. The orphan sweep in that work lists again every recording folder
+                // the restored index does not reference — the recordings made since the backup — so
+                // the branch above lists them now and the next launch does on this one; the message
+                // below says which (F699, tested in `RestoreLeftOutRecordingsTests`). Synchronous,
                 // and after the hold ends, because it writes to the library.
                 recoverInterruptedTranscriptions()
             }
@@ -3435,8 +3434,31 @@ final class AppModel: ObservableObject {
                 // disposed of their previous library would not be reversible.
                 message += " Your previous library was kept at \(snapshot.lastPathComponent) inside the library folder."
             }
-            if !pending.plan.notInBackup.isEmpty {
-                message += " \(pending.plan.notInBackup.count) file(s) recorded since that backup were left in place but are not listed in the restored index."
+            // F699: what happens to the recordings the backup lacks, said per branch, because the
+            // branches differ. The repaired read-only library re-runs startup recovery above, whose
+            // orphan sweep lists them again now; a healthy one leaves that to the next launch; and a
+            // library still read-only lists nothing until it opens normally (`orphanedRecordings`
+            // returns nothing while degraded).
+            let recordings = pending.plan.recordingsNotInBackup.count
+            if recordings > 0 {
+                let one = recordings == 1
+                let comeBack: String
+                let when: String
+                if wasReadOnly, !store.isDegraded {
+                    comeBack = one ? "is being added back now as a recovered recording" : "are being added back now as recovered recordings"
+                    when = ""
+                } else {
+                    comeBack = one ? "will come back as a recovered recording" : "will come back as recovered recordings"
+                    when = store.isDegraded ? ", once the library opens normally" : ", the next time WhisperMeet opens"
+                }
+                let without = one ? "without its title, notes or transcript" : "without their titles, notes or transcripts"
+                message += one
+                    ? " 1 recording made since that backup is not in it. It stays on disk and \(comeBack), \(without)\(when)."
+                    : " \(recordings) recordings made since that backup are not in it. They stay on disk and \(comeBack), \(without)\(when)."
+            }
+            let others = pending.plan.otherFilesNotInBackup.count
+            if others > 0 {
+                message += " \(others) \(recordings > 0 ? "other " : "")file(s) not in that backup were left in place."
             }
             alertMessage = message
         } catch {
@@ -3491,11 +3513,27 @@ final class AppModel: ObservableObject {
     /// It leads with what is NOT in the backup when there is anything, because that is the only
     /// item on the list the user cannot undo by restoring again — E1 computes that set precisely so
     /// this sentence can exist.
-    static func restoreConfirmationMessage(_ pending: PendingLibraryRestore) -> String {
+    ///
+    /// It counts recordings, not files, and says they come back as recovered recordings (F699): the
+    /// launch's orphan sweep lists them again, and the user chose keeping that over hiding them.
+    /// `libraryIsReadOnly` because a restore that repairs a read-only library re-runs that sweep
+    /// at once, so "the next time WhisperMeet opens" would be wrong there.
+    static func restoreConfirmationMessage(
+        _ pending: PendingLibraryRestore,
+        libraryIsReadOnly: Bool = false
+    ) -> String {
         let plan = pending.plan
         var lines: [String] = []
-        if !plan.notInBackup.isEmpty {
-            lines.append("\(plan.notInBackup.count) file(s) in your library are not in this backup. They will be left on disk, but the restored index will not list them.")
+        let recordings = plan.recordingsNotInBackup.count
+        if recordings > 0 {
+            let when = libraryIsReadOnly ? "as soon as the restored library opens" : "the next time WhisperMeet opens"
+            lines.append(recordings == 1
+                ? "1 recording in your library is not in this backup. It will stay on disk, and will come back as a recovered recording, without its title, notes or transcript, \(when)."
+                : "\(recordings) recordings in your library are not in this backup. They will stay on disk, and will come back as recovered recordings, without their titles, notes or transcripts, \(when).")
+        }
+        let others = plan.otherFilesNotInBackup.count
+        if others > 0 {
+            lines.append("\(others) \(recordings > 0 ? "other " : "")file(s) in your library are not in this backup. They will be left on disk.")
         }
         lines.append("\(plan.wouldOverwrite.count) file(s) will be replaced and \(plan.wouldAdd.count) restored.")
         lines.append("Your current library will be copied aside first and kept, so this can be undone.")

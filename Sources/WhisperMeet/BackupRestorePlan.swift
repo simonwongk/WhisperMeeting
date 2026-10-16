@@ -38,6 +38,41 @@ struct BackupRestorePlan: Equatable, Sendable {
     /// `notInBackup`: they are not left on disk, and they are not meetings.
     let wouldSetAside: [String]
 
+    /// **The recordings in `notInBackup`** (F699): the `Recordings/<id>/` folders the backup has no
+    /// file in at all, by folder name. One meeting is several files, and the user decides about
+    /// meetings, so this is what the copy counts.
+    ///
+    /// Only UUID-named folders, because those are the ones the launch's orphan sweep
+    /// (`MeetingStore.orphanedRecordings`) lists again — the restored index does not reference them,
+    /// so each comes back as a recovered recording. That is what the copy promises, and the user
+    /// chose keeping it over hiding them (2026-10-16). A folder the backup holds any file of is not
+    /// counted: the restored index describes it, so it is not coming back as a stranger.
+    var recordingsNotInBackup: [String] {
+        let inBackup = Set((wouldOverwrite + wouldAdd).compactMap(Self.recordingFolder))
+        return Set(notInBackup.compactMap(Self.recordingFolder))
+            .subtracting(inBackup)
+            .filter { UUID(uuidString: $0) != nil }
+            .sorted()
+    }
+
+    /// The rest of `notInBackup`: files the backup lacks that do not belong to one of
+    /// `recordingsNotInBackup` — a file added later to a meeting the backup has, say. Left on disk
+    /// like the recordings, but nothing lists them again, so the copy says only that.
+    var otherFilesNotInBackup: [String] {
+        let recordings = Set(recordingsNotInBackup)
+        return notInBackup.filter { path in
+            guard let folder = Self.recordingFolder(path) else { return true }
+            return !recordings.contains(folder)
+        }
+    }
+
+    /// `<id>` for a path inside `Recordings/<id>/`, or nil.
+    private static func recordingFolder(_ relativePath: String) -> String? {
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: true)
+        guard components.count >= 3, components[0] == "Recordings" else { return nil }
+        return String(components[1])
+    }
+
     let bytesToWrite: Int64
     let verification: BackupManifest.VerificationResult
 

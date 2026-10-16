@@ -1734,7 +1734,9 @@ struct SettingsView: View {
                         Button("Cancel", role: .cancel) { model.cancelLibraryRestore() }
                     } message: {
                         if let pending = model.pendingLibraryRestore {
-                            Text(AppModel.restoreConfirmationMessage(pending))
+                            Text(AppModel.restoreConfirmationMessage(
+                                pending, libraryIsReadOnly: model.store.isDegraded
+                            ))
                         }
                     }
                 // F239, F295: "Delete Meeting" removes the recording folder at once and the
