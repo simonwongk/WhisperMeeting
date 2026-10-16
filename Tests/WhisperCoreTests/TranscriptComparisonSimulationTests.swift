@@ -20,8 +20,9 @@ import Testing
 // Every guarantee below rests on that model, and in particular on this transcript's boundaries
 // being the sentences' own, so that all disagreement is the other engine's jitter. With both
 // engines' boundaries jittered by ±0.5 s the lane R review measured 3 of 827 offered rows dropping
-// words even for 1 s sentences, and the offer rate falling to ~50 % / ~9 %. Widening the model, and
-// measuring two real engines on one clip, is F872.
+// words even for 1 s sentences, and the offer rate falling to ~50 % / ~9 %. `primaryJitter` widens the
+// model to that case (F872); the test that uses it is at the end, and F872's log entry has the real
+// Whisper/Qwen pair measured on one clip.
 
 /// A deterministic generator (SplitMix64), so a failure names a configuration that can be re-run.
 private struct SplitMix {
@@ -54,7 +55,7 @@ private struct Meeting {
 }
 
 private func simulate(seed: UInt64, jitter: Double, sameSplit: Bool, sentences count: Int = 6_000,
-                      shortest: Double = 0.6) -> Meeting {
+                      shortest: Double = 0.6, primaryJitter: Double = 0) -> Meeting {
     var rng = SplitMix(state: seed)
     var spans: [(start: Double, end: Double)] = []
     var clock = 0.0
@@ -76,9 +77,14 @@ private func simulate(seed: UInt64, jitter: Double, sameSplit: Bool, sentences c
     var meeting = Meeting()
     let primaryGroups = groups(&rng)
     let secondaryGroups = sameSplit ? primaryGroups : groups(&rng)
+    // F872: with `primaryJitter`, this transcript's own boundaries move too, drawn from a generator of
+    // their own so the other engine's draws — and so every configuration measured before — are unchanged.
+    var primaryRNG = SplitMix(state: seed ^ 0xF872_F872_F872_F872)
     for group in primaryGroups {
+        let start = spans[group.first!].start + (primaryJitter > 0 ? primaryRNG.uniform(-primaryJitter...primaryJitter) : 0)
+        let end = max(start + 0.05, spans[group.last!].end + (primaryJitter > 0 ? primaryRNG.uniform(-primaryJitter...primaryJitter) : 0))
         meeting.primary.append(TranscriptSegment(
-            speaker: nil, start: spans[group.first!].start, end: spans[group.last!].end,
+            speaker: nil, start: start, end: end,
             text: group.map { "w\($0)." }.joined(separator: " ")
         ))
         meeting.lineSentences.append(group)
@@ -130,11 +136,11 @@ private func tally(_ meeting: Meeting, offering: (TranscriptComparisonSpan) -> B
 
 /// Three seeds of each configuration: one meeting is 6,000 sentences, so three is about 50,000
 /// diverging rows across the six configurations.
-private func run(jitter: Double, sameSplit: Bool, shortest: Double) -> (f572: Tally, f658: Tally) {
+private func run(jitter: Double, sameSplit: Bool, shortest: Double, primaryJitter: Double = 0) -> (f572: Tally, f658: Tally) {
     var before = Tally(), after = Tally()
     for seed in 0..<3 {
         let meeting = simulate(seed: 0xF658_0000 + UInt64(seed) * 0x1_0001 + UInt64(jitter * 10),
-                               jitter: jitter, sameSplit: sameSplit, shortest: shortest)
+                               jitter: jitter, sameSplit: sameSplit, shortest: shortest, primaryJitter: primaryJitter)
         // F572 offered Replace on every diverging row — the sheet's only condition.
         before += tally(meeting) { _ in true }
         after += tally(meeting) { $0.offersReplacement }
@@ -185,4 +191,37 @@ func replaceOffersOnlyTheLinesOwnSentencesWhenTheSplitsDiffer() {
         #expect(f658.dropped == 0, "±\(jitter) s: \(f658)")
         #expect(Double(f658.offered) >= 0.15 * Double(f658.diverging), "±\(jitter) s: \(f658)")
     }
+}
+
+// F868: the sentences timing cannot tell from jitter — 0.25–1.5 s short sentences at ±0.5 s, F658's
+// residue — are mostly caught by the words at the reading's edges (`readingCrossesALine`). A 10-seed run
+// (F868's log entry) measured, independent groupings: F658 alone 199 offered rows carrying a
+// neighbour's sentence and 79 leaving one out, F658 + F868 73 and 20, for 2 % fewer rows offered; same
+// grouping 34 → 21 and 0 → 0. What is left is mostly the three sentences in ten the other engine heard
+// differently ("v17"): their words match no one's. The bounds below are this seeded run's (3 seeds:
+// 10/0 same, 32/6 independent) with a little room, and sit below F658's alone.
+@Test("A short sentence joined across lines is caught by its words where timing cannot see it (F868)")
+func edgeWordsCatchShortSentencesJoinedAcrossLines() {
+    let (_, same) = run(jitter: 0.5, sameSplit: true, shortest: 0.25)
+    #expect(same.outside <= 12 && same.dropped == 0, "\(same)")
+    #expect(Double(same.offered) >= 0.85 * Double(same.diverging), "\(same)")
+    let (_, independent) = run(jitter: 0.5, sameSplit: false, shortest: 0.25)
+    #expect(independent.outside <= 36 && independent.dropped <= 8, "\(independent)")
+    #expect(Double(independent.offered) >= 0.15 * Double(independent.diverging), "\(independent)")
+}
+
+// F872: with BOTH engines' boundaries moved by up to ±0.5 s — this transcript's too, which the model
+// above pins to the sentences — on sentences of at least 1 s. The lane R review measured F658 offering
+// ~50 % (same grouping) / ~9 % (independent) of diverging rows here and 3 of 827 offered rows dropping
+// words. A 10-seed run (F872's log entry): F658 alone 4 rows outside and 2 dropping of 2,863 offered at
+// ±0.5 s independent; with F868, 1 and 0. The offer rate is the cost of two engines disagreeing by up to
+// a second where the tolerance allows half: 48 % and 9.5 %, measured, and asserted not to fall further.
+@Test("With both engines' boundaries off by up to half a second, Replace still offers only a line's own (F872)")
+func bothEnginesJitteredStillOfferOnlyTheLinesOwn() {
+    let (_, same) = run(jitter: 0.5, sameSplit: true, shortest: 1.0, primaryJitter: 0.5)
+    #expect(same.outside == 0 && same.dropped == 0, "\(same)")
+    #expect(Double(same.offered) >= 0.45 * Double(same.diverging), "\(same)")
+    let (_, independent) = run(jitter: 0.5, sameSplit: false, shortest: 1.0, primaryJitter: 0.5)
+    #expect(independent.outside + independent.dropped <= 1, "\(independent)")
+    #expect(Double(independent.offered) >= 0.08 * Double(independent.diverging), "\(independent)")
 }

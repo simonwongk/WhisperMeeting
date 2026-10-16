@@ -40,9 +40,11 @@ public enum TranscriptComparison {
     ) -> [TranscriptComparisonSpan] {
         let texts = primary.map { normalize($0.text) }
         let primaryIndex = CounterpartIndex(primary)
+        let secondaryIndex = CounterpartIndex(secondary)
         return spans(
-            primary, texts, counterparts(primary, texts, secondary), in: secondary,
-            linesOverlapping: { primaryIndex.overlapping(start: $0, end: $1) }
+            primary, texts, counterparts(primary, texts, through: secondaryIndex), in: secondary,
+            linesOverlapping: { primaryIndex.overlapping(start: $0, end: $1) },
+            segmentsOverlapping: { secondaryIndex.overlapping(start: $0, end: $1) }
         )
     }
 
@@ -56,7 +58,8 @@ public enum TranscriptComparison {
         let texts = primary.map { normalize($0.text) }
         return spans(
             primary, texts, referenceCounterparts(primary, texts, secondary), in: secondary,
-            linesOverlapping: { start, end in scanOverlapping(primary, start: start, end: end) }
+            linesOverlapping: { start, end in scanOverlapping(primary, start: start, end: end) },
+            segmentsOverlapping: { start, end in scanOverlapping(secondary, start: start, end: end) }
         )
     }
 
@@ -64,15 +67,21 @@ public enum TranscriptComparison {
     static func counterparts(
         _ primary: [TranscriptSegment], _ texts: [String], _ secondary: [TranscriptSegment]
     ) -> [Counterpart?] {
-        let index = CounterpartIndex(secondary)
-        return zip(primary, texts).map { index.counterpart(of: $0, normalized: $1) }
+        counterparts(primary, texts, through: CounterpartIndex(secondary))
+    }
+
+    /// Each line's counterpart, through an index `compare` also asks which segments are near a line.
+    static func counterparts(
+        _ primary: [TranscriptSegment], _ texts: [String], through index: CounterpartIndex
+    ) -> [Counterpart?] {
+        zip(primary, texts).map { index.counterpart(of: $0, normalized: $1) }
     }
 
     /// Indices, ascending, of the timed segments of `segments` sharing time with `start..<end` by
     /// `sharedSeconds` — what `CounterpartIndex.overlapping` finds, by the plain scan. The one
-    /// question the F658 rule asks of this transcript's lines (which lines a segment reaches),
-    /// answered by the index in `compare` and by this in `referenceCompare`, so the rule itself is
-    /// written once.
+    /// question the F658 rule asks of this transcript's lines (which lines a segment reaches), and
+    /// F868's of both transcripts (which lines and segments are near a line), answered by the index
+    /// in `compare` and by this in `referenceCompare`, so the rules themselves are written once.
     private static func scanOverlapping(_ segments: [TranscriptSegment], start: Double, end: Double) -> [Int] {
         let probe = TranscriptSegment(speaker: nil, start: start, end: end, text: "")
         return segments.indices.filter { (sharedSeconds(probe, segments[$0]) ?? 0) > 0 }
@@ -89,7 +98,8 @@ public enum TranscriptComparison {
 
     private static func spans(
         _ primary: [TranscriptSegment], _ texts: [String], _ found: [Counterpart?], in secondary: [TranscriptSegment],
-        linesOverlapping: (Double, Double) -> [Int]
+        linesOverlapping: (Double, Double) -> [Int],
+        segmentsOverlapping: (Double, Double) -> [Int]
     ) -> [TranscriptComparisonSpan] {
         // How many lines each of the other engine's segments is offered to, or agrees with.
         var claims = [Int](repeating: 0, count: secondary.count)
@@ -110,17 +120,100 @@ public enum TranscriptComparison {
                 saying[line].append(index)
             }
         }
+        // Each line's and each segment's words, for F868's edge check; made once, read per offered row.
+        let lineWords = texts.map(words)
+        let segmentWords = secondary.map { words(normalize($0.text)) }
         return primary.indices.map { line in
             let row = span(for: primary[line], normalized: texts[line], found[line], in: secondary)
             guard row.kind == .diverge, case let .covering(pieces)? = found[line] else { return row }
+            let offers = offersReplacement(
+                line: line, pieces: pieces, primary: primary, secondary: secondary,
+                claims: claims, gaps: gaps, saying: saying, linesOverlapping: linesOverlapping
+            ) && !readingCrossesALine(
+                line: line, pieces: pieces, reading: words(normalize(row.secondaryText ?? "")),
+                primary: primary, lineWords: lineWords, secondary: secondary, segmentWords: segmentWords,
+                linesOverlapping: linesOverlapping, segmentsOverlapping: segmentsOverlapping
+            )
             return TranscriptComparisonSpan(
                 kind: row.kind, start: row.start, primaryText: row.primaryText, secondaryText: row.secondaryText,
-                offersReplacement: offersReplacement(
-                    line: line, pieces: pieces, primary: primary, secondary: secondary,
-                    claims: claims, gaps: gaps, saying: saying, linesOverlapping: linesOverlapping
-                )
+                offersReplacement: offers
             )
         }
+    }
+
+    /// The words of a `normalize`d text. A run of Chinese has no spaces, so it is one word here.
+    static func words(_ normalized: String) -> [Substring] {
+        normalized.split(separator: " ")
+    }
+
+    /// The most words F868's edge check matches at a line's edge: longer than any short sentence it
+    /// is for ("OK, sure, let's do that"), short enough to stay a check of the edge.
+    static let edgeWordLimit = 6
+
+    /// Whether the end of `a` and the start of `b` are the same `k` words, for some `k` up to
+    /// `edgeWordLimit`: every such `k`, ascending.
+    static func sharedEdge(endOf a: [Substring], startOf b: [Substring]) -> [Int] {
+        guard !a.isEmpty, !b.isEmpty else { return [] }
+        return (1...Swift.min(edgeWordLimit, a.count, b.count)).filter { a.suffix($0).elementsEqual(b.prefix($0)) }
+    }
+
+    /// Whether a diverging row's reading carries a neighbouring line's words, or leaves this line's
+    /// edge words to a neighbouring segment, by what the words say (F868).
+    ///
+    /// `offersReplacement` decides by timing, and timing cannot see a sentence no longer than
+    /// `boundaryTolerance` plus the engines' boundary disagreement that the other engine joined
+    /// across lines: it leaves too little gap or overlap in either line to tell from jitter. Its words
+    /// can. Replace is withheld when, for some `k` of `edgeWordLimit` or fewer words:
+    ///
+    /// - **the reading ends with a later line's first `k` words** that this line does not end with,
+    ///   or starts with an earlier line's last `k` that this line does not start with — the reading
+    ///   carries that neighbour's sentence, and Replace would write it twice;
+    /// - **a segment outside the reading starts with this line's last `k` words** that the reading
+    ///   does not end with, or ends with its first `k` that the reading does not start with — the
+    ///   other engine heard this line's edge sentence, put it with a neighbour, and Replace would
+    ///   delete it.
+    ///
+    /// The neighbours looked at are the lines and segments sharing any time with the line and its
+    /// reading, widened by `boundaryTolerance`; "later" means starting after this line starts, and
+    /// "earlier" ending before it ends. Each condition asks the reading to disagree with this line at
+    /// that edge, so a reading that ends as the line does is never withheld for a neighbour that
+    /// happens to start with the same word.
+    ///
+    /// What it cannot see: a sentence the other engine heard differently ("v17" for "w17") matches
+    /// no one's words, and a Chinese run is one word here (`words`), so a joined Chinese sentence is
+    /// caught only when the whole run matches. Withholding is the safe direction: the row still shows
+    /// the reading.
+    static func readingCrossesALine(
+        line: Int, pieces: [Int], reading: [Substring], primary: [TranscriptSegment], lineWords: [[Substring]],
+        secondary: [TranscriptSegment], segmentWords: [[Substring]],
+        linesOverlapping: (Double, Double) -> [Int], segmentsOverlapping: (Double, Double) -> [Int]
+    ) -> Bool {
+        let own = lineWords[line]
+        guard !own.isEmpty, !reading.isEmpty,
+              let lineStart = primary[line].start, let lineEnd = primary[line].end,
+              lineStart.isFinite, lineEnd.isFinite else { return false }
+        let pieceStarts = pieces.compactMap { secondary[$0].start }.filter(\.isFinite)
+        let pieceEnds = pieces.compactMap { secondary[$0].end }.filter(\.isFinite)
+        let from = Swift.min(lineStart, pieceStarts.min() ?? lineStart) - boundaryTolerance
+        let to = Swift.max(lineEnd, pieceEnds.max() ?? lineEnd) + boundaryTolerance
+        func endsDiffer(_ k: Int) -> Bool { !reading.suffix(k).elementsEqual(own.suffix(k)) }
+        func startsDiffer(_ k: Int) -> Bool { !reading.prefix(k).elementsEqual(own.prefix(k)) }
+
+        for other in linesOverlapping(from, to) where other != line {
+            let theirs = lineWords[other]
+            if let start = primary[other].start, start > lineStart,
+               sharedEdge(endOf: reading, startOf: theirs).contains(where: endsDiffer) { return true }
+            if let end = primary[other].end, end < lineEnd,
+               sharedEdge(endOf: theirs, startOf: reading).contains(where: startsDiffer) { return true }
+        }
+        for segment in segmentsOverlapping(from, to) where !pieces.contains(segment) {
+            let theirs = segmentWords[segment]
+            if let start = secondary[segment].start, start > lineStart,
+               sharedEdge(endOf: own, startOf: theirs).contains(where: endsDiffer) { return true }
+            if let end = secondary[segment].end, end < lineEnd,
+               sharedEdge(endOf: theirs, startOf: own).contains(where: startsDiffer) { return true }
+        }
+        return false
     }
 
     /// How far two engines' boundaries for the same sentence may disagree, in seconds (F658).
@@ -164,7 +257,9 @@ public enum TranscriptComparison {
     /// What timing alone cannot catch: a sentence no longer than `boundaryTolerance` plus the two
     /// engines' boundary disagreement leaves too little of a gap, or of an overlap, in either line to
     /// tell from jitter, so when the other engine joins one to a neighbouring line's reading it can
-    /// still be offered. The seeded simulation in the tests measures this on 0.25–1.5 s sentences.
+    /// still be offered. The seeded simulation in the tests measures this on 0.25–1.5 s sentences;
+    /// `readingCrossesALine` (F868) catches most of it by the words at the edges, and `spans` asks
+    /// both.
     ///
     /// When in doubt the row shows the reading without Replace: the user can still type it in, and a
     /// Replace that is withheld loses nothing, where one that duplicates or deletes words does.
@@ -504,7 +599,8 @@ extension TranscriptComparison {
         /// Indices, ascending, of the timed segments sharing time with `start..<end` by the scan's
         /// own test (`sharedSeconds`): the segment starts before the line ends, and ends after it
         /// starts. A NaN bound compares false both ways, so it finds nothing, as the scan does.
-        /// Also, built over this transcript's own lines, which lines a segment reaches (F658).
+        /// Also, built over this transcript's own lines, which lines a segment reaches (F658); and
+        /// over either, which lines or segments are near a line (F868).
         func overlapping(start: Double, end: Double) -> [Int] {
             overlappingIndices(start: start, end: end)
         }
