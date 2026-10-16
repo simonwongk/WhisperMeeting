@@ -3211,15 +3211,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Why a restore is refused while launch's startup recovery is still running (F612).
-    nonisolated static let startupRecoveryRestoreRefusal = "WhisperMeet is still recovering recordings from the last session. Wait for it to finish before restoring the library; a restore now would leave out what it recovers."
-
-    /// Why a whole-library restore cannot start now, or nil (F506).
-    ///
-    /// Anything that writes into a meeting when it finishes would write into the restored one:
-    /// a transcription, a summary, a second opinion or segment re-run. A recording or import in
-    /// progress would have its index entry overwritten. And so would launch's startup recovery while it is
-    /// still indexing interrupted recordings (F612).
     /// Why Improve ▸ Suggest Vocabulary Terms… is unavailable, or nil (F611). The terms it suggests go
     /// into the vocabulary, so a list that would refuse them — read-only by itself (F464), or with the
     /// library — must not offer them: the user picked terms and they were refused and lost.
@@ -3229,6 +3220,15 @@ final class AppModel: ObservableObject {
         return "Suggest Vocabulary Terms is unavailable while the vocabulary list is read-only. Choose \(DamagedListNotice.actionTitle(for: .vocabulary, health: store.health(of: .vocabulary))) in Business Vocabulary first."
     }
 
+    /// Why a restore is refused while launch's startup recovery is still running (F612).
+    nonisolated static let startupRecoveryRestoreRefusal = "WhisperMeet is still recovering recordings from the last session. Wait for it to finish before restoring the library; a restore now would leave out what it recovers."
+
+    /// Why a whole-library restore cannot start now, or nil (F506).
+    ///
+    /// Anything that writes into a meeting when it finishes would write into the restored one:
+    /// a transcription, a summary, a second opinion or segment re-run. A recording or import in
+    /// progress would have its index entry overwritten. And so would launch's startup recovery
+    /// while it is still indexing interrupted recordings (F612).
     private var libraryRestoreBlockedReason: String? {
         if store.isRestoringLibrary {
             return "A restore is already running. Wait for it to finish."
