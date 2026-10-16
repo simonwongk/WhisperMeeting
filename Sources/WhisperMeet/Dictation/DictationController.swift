@@ -1610,7 +1610,10 @@ final class DictationController: ObservableObject {
                     gpuBusyPercent: gpuBusy
                 )
                 await MainActor.run {
-                    self.finish(text: cleaned, rawText: rawText, refinement: refinement, timings: timings)
+                    self.finish(
+                        text: cleaned, rawText: rawText, refinement: refinement, timings: timings,
+                        truncated: result.truncated
+                    )
                 }
             } catch {
                 try? FileManager.default.removeItem(at: clip.url)
@@ -1639,9 +1642,12 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// `truncated`: the recognizer cut the reply short (F762, F1015). The user's decision of
+    /// 2026-10-16 (F1016): delivered as before, the pill says the end may be missing, and the
+    /// history marks it. A secure-input pill keeps its own Copy pill and caption, and is not recorded.
     private func finish(
         text: String, rawText: String? = nil, refinement: String? = nil,
-        timings: DictationTimings = DictationTimings()
+        timings: DictationTimings = DictationTimings(), truncated: Bool = false
     ) {
         guard enabled else { return } // feature was disabled mid-transcribe — drop the result, don't paste
         switch session.handle(.transcriptReady(text)) {
@@ -1650,12 +1656,15 @@ final class DictationController: ObservableObject {
             lastFailureReason = nil // the last dictation is this one, and it did not fail (F687)
             let delivery = textInjector.deliver(payload, autoPaste: autoPaste, pressedIn: pressTarget)
             _ = session.handle(.delivered)
+            let delivered = { (phase: DictationOverlay.Phase) in
+                truncated ? DictationOverlay.Phase.endMayBeMissing(phase) : phase
+            }
             switch delivery {
-            case .pasted: showPhase(.done)
+            case .pasted: showPhase(delivered(.done))
             // Pasted, and on the clipboard too: no "press ⌘V" notice, which would paste it twice (F600).
-            case .pastedUnconfirmed: showPhase(.pastedUnconfirmed)
-            case .clipboard: showPhase(.copied); clipboardNotifier()
-            case .appChanged: showPhase(.appChanged); clipboardNotifier()
+            case .pastedUnconfirmed: showPhase(delivered(.pastedUnconfirmed))
+            case .clipboard: showPhase(delivered(.copied)); clipboardNotifier()
+            case .appChanged: showPhase(delivered(.appChanged)); clipboardNotifier()
             // Not on the clipboard, so no notice: the pill's Copy button is the only way to it (F586).
             case .secureInput: showSecureCopyPill(.secureInput, holding: payload)
             case let .secureKeyboardEntry(app): showSecureCopyPill(.secureKeyboardEntry(app: app), holding: payload)
@@ -1673,9 +1682,11 @@ final class DictationController: ObservableObject {
                     outcome: delivery.wasPasted ? .pasted : .clipboard,
                     rawText: rawText,
                     refinement: refinement,
-                    timings: timings
+                    timings: timings,
+                    truncated: truncated
                 )
-                scheduleDismiss(after: 1.1)
+                // Longer when the pill has a second line to read (F1016).
+                scheduleDismiss(after: truncated ? 2.5 : 1.1)
             }
         case .none where session.state == .failed(.emptyTranscript):
             lastFailureReason = nil // nothing heard is not a failure (F687)
@@ -1954,6 +1965,9 @@ final class DictationController: ObservableObject {
         case let .secureKeyboardEntry(app):
             "Dictation not pasted, because Secure Keyboard Entry is on in \(app). Use Copy to copy it."
         case .listening, .transcribing, .refining, .modelDownloading: nil
+        // F1016: the delivery's own sentence, then why the text may be short.
+        case let .endMayBeMissing(delivered):
+            [announcement(for: delivered, detail: detail), "The end may be missing."].compactMap { $0 }.joined(separator: " ")
         }
     }
 

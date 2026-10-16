@@ -35,6 +35,10 @@ final class DictationOverlay {
         /// As `secureInput`, with the app the window server names for it (F585) — the app in front
         /// when secure input came on, which is a hint and not the owner.
         case secureKeyboardEntry(app: String)
+        /// A delivered dictation the recognizer cut short (F1016, the user's decision of
+        /// 2026-10-16): the delivery's own pill — pasted, copied — with a caption saying the end may
+        /// be missing.
+        indirect case endMayBeMissing(Phase)
 
         /// The pill has a Copy button, the only way to a dictation made into secure input (F586).
         var offersCopy: Bool {
@@ -47,7 +51,10 @@ final class DictationOverlay {
         /// Wider when it offers Copy: the button (48 pt measured) and a caption such as "It came on
         /// while Terminal was in front" (197 pt at 11 pt) then fit beside the icon, in the ~222 pt
         /// left; the caption may scale to 0.75, so names up to ~296 pt of caption still fit.
-        var pillWidth: CGFloat { offersCopy ? 340 : 220 }
+        var pillWidth: CGFloat {
+            if case .endMayBeMissing = self { return 300 }
+            return offersCopy ? 340 : 220
+        }
 
         /// A second, smaller line under the label, or nil (F585).
         ///
@@ -58,6 +65,7 @@ final class DictationOverlay {
         /// already says "Not pasted — secure input".
         var caption: String? {
             if case let .secureKeyboardEntry(app) = self { return "It came on while \(app) was in front" }
+            if case .endMayBeMissing = self { return "The end may be missing" }
             return nil
         }
     }
@@ -228,8 +236,14 @@ private struct DictationPill: View {
         )
     }
 
+    /// The phase whose icon and label the pill shows: a cut-short delivery shows its delivery's.
+    private var shown: DictationOverlay.Phase {
+        if case let .endMayBeMissing(delivered) = model.phase { return delivered }
+        return model.phase
+    }
+
     @ViewBuilder private var icon: some View {
-        switch model.phase {
+        switch shown {
         case .listening: Circle().fill(.red).frame(width: 10, height: 10)
         case .transcribing, .refining: ProgressView().controlSize(.small).tint(.white)
         case .done, .pastedUnconfirmed: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
@@ -239,11 +253,12 @@ private struct DictationPill: View {
         case .error: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         case .busy: Image(systemName: "hourglass").foregroundStyle(.white)
         case .modelDownloading: Image(systemName: "arrow.down.circle").foregroundStyle(.white)
+        case .endMayBeMissing: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         }
     }
 
     private var label: String {
-        switch model.phase {
+        switch shown {
         case .listening: "Listening…"
         case .transcribing: "Transcribing…"
         case .refining: "Polishing…"
@@ -256,6 +271,7 @@ private struct DictationPill: View {
         case .error: "Dictation failed"
         case .busy: "Busy…"
         case .modelDownloading: "Downloading model…"
+        case .endMayBeMissing: "Pasted"
         }
     }
 }

@@ -272,7 +272,16 @@ private struct DictationHistoryRow: View {
                 .frame(width: 68, alignment: .leading)
             VStack(alignment: .leading, spacing: 3) {
                 content
-                badge
+                HStack(spacing: 6) {
+                    badge
+                    // F1016: the recognizer cut this dictation short (its reply deadline or token
+                    // cap), so the end of what was said may be missing from the text above.
+                    if entry.truncated == true {
+                        Text("The end may be missing")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
             }
             Spacer()
             // Gated on there being text to copy rather than on `isSuccess` (F251). The two agree for

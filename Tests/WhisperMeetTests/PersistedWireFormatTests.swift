@@ -176,12 +176,14 @@ struct PersistedWireFormatTests {
             rawText: "helo",
             refinement: DictationRefinement.refined.rawValue,
             outcomeKind: "discarded",
-            timings: DictationTimings(clipSeconds: 4, transcribeSeconds: 6.93, refineSeconds: 1.04, gpuBusyPercent: 28)
+            timings: DictationTimings(clipSeconds: 4, transcribeSeconds: 6.93, refineSeconds: 1.04, gpuBusyPercent: 28),
+            // F1016: set, since it is written only when true.
+            truncated: true
         )
         try expectEveryStoredFieldEncoded(
             entry,
             mustCheck: ["id", "date", "text", "outcome", "rawText", "refinement", "outcomeKind",
-                        "clipSeconds", "transcribeSeconds", "refineSeconds", "gpuBusyPercent"]
+                        "clipSeconds", "transcribeSeconds", "refineSeconds", "gpuBusyPercent", "truncated"]
         )
     }
 

@@ -193,6 +193,13 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
     public let refineSeconds: Double?
     public let gpuBusyPercent: Int?
 
+    /// True when the recognizer cut this dictation short (F1016: F762's and F1015's `truncated`), so
+    /// the end of what was said may be missing. The user's decision of 2026-10-16: it is pasted as
+    /// before, the pill says so, and the history marks it. Append-only and optional per the
+    /// persisted-schema rules, written only when true — so every other entry keeps its bytes — and
+    /// read leniently: a value of the wrong type costs this flag, never the entry.
+    public let truncated: Bool?
+
     public init(
         id: UUID,
         date: Date,
@@ -201,7 +208,8 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
         rawText: String? = nil,
         refinement: String? = nil,
         outcomeKind: String? = nil,
-        timings: DictationTimings = DictationTimings()
+        timings: DictationTimings = DictationTimings(),
+        truncated: Bool? = nil
     ) {
         self.id = id
         self.date = date
@@ -214,6 +222,7 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
         self.transcribeSeconds = timings.transcribeSeconds
         self.refineSeconds = timings.refineSeconds
         self.gpuBusyPercent = timings.gpuBusyPercent
+        self.truncated = truncated
     }
 
     /// The four figures together (F892).
@@ -229,6 +238,7 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case id, date, text, outcome, rawText, refinement, outcomeKind
         case clipSeconds, transcribeSeconds, refineSeconds, gpuBusyPercent
+        case truncated
     }
 
     /// Accepts any key, to read the `outcome` object's own case name (F266).
@@ -260,6 +270,8 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
         transcribeSeconds = timings.transcribeSeconds
         refineSeconds = timings.refineSeconds
         gpuBusyPercent = timings.gpuBusyPercent
+        // F1016: leniently, like the timings — a flag is a note on the entry, never a reason to lose it.
+        truncated = (try? container.decodeIfPresent(Bool.self, forKey: .truncated)) ?? nil
 
         if let stated = try container.decodeIfPresent(String.self, forKey: .outcomeKind) {
             // A newer build wrote it, or this build wrote it on a previous save. Either way the
@@ -312,6 +324,8 @@ public struct DictationLogEntry: Codable, Sendable, Equatable, Identifiable {
         try container.encodeIfPresent(transcribeSeconds, forKey: .transcribeSeconds)
         try container.encodeIfPresent(refineSeconds, forKey: .refineSeconds)
         try container.encodeIfPresent(gpuBusyPercent, forKey: .gpuBusyPercent)
+        // F1016. Absent unless the dictation was cut short, so an ordinary entry keeps its bytes.
+        try container.encodeIfPresent(truncated, forKey: .truncated)
     }
 
     /// True when a transcript was actually produced and delivered.

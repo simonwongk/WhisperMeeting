@@ -121,12 +121,15 @@ import WhisperCore
         outcome: DictationLogEntry.Outcome,
         rawText: String? = nil,
         refinement: String? = nil,
-        timings: DictationTimings = DictationTimings()
+        timings: DictationTimings = DictationTimings(),
+        truncated: Bool = false
     ) {
         guard health.allowsMutation else { return }
         let entry = DictationLogEntry(
             id: UUID(), date: Date(), text: text, outcome: outcome,
-            rawText: rawText, refinement: refinement, timings: timings
+            rawText: rawText, refinement: refinement, timings: timings,
+            // Written only when true (F1016), so an ordinary dictation keeps its pre-F1016 bytes.
+            truncated: truncated ? true : nil
         )
         persist({ $0.adding(entry) }, afterALostRace: .makeAgain)
         if saveErrorMessage != nil { unsavedEntryIDs.insert(entry.id) }

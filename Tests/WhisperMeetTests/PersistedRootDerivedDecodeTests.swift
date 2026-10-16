@@ -388,7 +388,7 @@ struct PersistedRootDerivedDecodeTests {
 
     static func fullyPopulatedDictationEntry() -> DictationLogEntry {
         // `outcomeKind` is set explicitly: it is nil for every case this build knows. F892's
-        // timings too: each is nil until measured.
+        // timings too: each is nil until measured. F1016's mark too: written only when true.
         DictationLogEntry(
             id: UUID(),
             date: Date(timeIntervalSince1970: 1_700_000_000),
@@ -397,7 +397,8 @@ struct PersistedRootDerivedDecodeTests {
             rawText: "helo",
             refinement: DictationRefinement.refined.rawValue,
             outcomeKind: "discarded",
-            timings: DictationTimings(clipSeconds: 4, transcribeSeconds: 6.93, refineSeconds: 1.04, gpuBusyPercent: 28)
+            timings: DictationTimings(clipSeconds: 4, transcribeSeconds: 6.93, refineSeconds: 1.04, gpuBusyPercent: 28),
+            truncated: true
         )
     }
 }

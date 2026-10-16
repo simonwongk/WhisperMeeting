@@ -171,11 +171,13 @@ final class WarmUpCountingEngine: DictationEngine, @unchecked Sendable {
 /// A dictation engine that returns a fixed transcript, for refine wiring tests.
 struct FixedTextDictationEngine: DictationEngine {
     let text: String
+    /// What the helper says about the reply (F762, F1016): cut short by its deadline or token cap.
+    var truncated = false
     func warmUp() async throws {}
     func transcribe(
         wavAt url: URL, language: WhisperLanguage, initialPrompt: String?
     ) async throws -> DictationResult {
-        DictationResult(text: text, languageCode: "en")
+        DictationResult(text: text, languageCode: "en", truncated: truncated)
     }
     func shutdown() {}
 }
