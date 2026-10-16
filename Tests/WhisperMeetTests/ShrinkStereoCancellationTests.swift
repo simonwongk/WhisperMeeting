@@ -29,11 +29,15 @@ private func stereoVoice(_ tones: [Double], amplitude: Double = 0.03, seconds: D
 private let toneA: [Double] = [311, 457, 619, 737, 911, 1_171, 1_409, 1_777, 2_389, 2_917, 3_571, 4_283]
 private let toneB: [Double] = [353, 419, 541, 823, 953, 1_291, 1_613, 2_011, 2_557, 2_963, 3_803, 4_621]
 
-/// Voices A and B, twelve seconds each, made once: generating one takes about a second and a half in a
-/// test build, and almost every test here needs both.
-private let voiceA = stereoVoice(toneA, seconds: 12)
-private let voiceB = stereoVoice(toneB, seconds: 12)
-private let silence12 = [Float](repeating: 0, count: 12 * 48_000)
+/// How long the voices run: six seconds since the macos-15 suite reached its watchdog (CI fix after run
+/// 38859340988). Nothing here needs more; each test's verdict, under each of the rule's mutants, was compared
+/// at twelve seconds and at six and is the same.
+private let voiceSeconds: Double = 6
+
+/// Voices A and B, made once: generating one is slow in a test build, and almost every test here needs both.
+private let voiceA = stereoVoice(toneA, seconds: voiceSeconds)
+private let voiceB = stereoVoice(toneB, seconds: voiceSeconds)
+private let silence = [Float](repeating: 0, count: voiceA.count)
 
 private func sum(_ a: [Float], _ b: [Float], _ k: Float = 1) -> [Float] { zip(a, b).map { $0 + k * $1 } }
 
@@ -48,7 +52,7 @@ private let leftCancels: [[Float]] = [voiceB, sum(voiceA, voiceB, -1)]
 @Test("A mid/side stereo recording, whose side voice cancels in the mono copy, keeps its original (F1001 S1)")
 @MainActor
 func shrinkKeepsAMidSideStereoRecording() async throws {
-    let f = try await MixFixture(recordingExtension: "wav", duration: 12) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: voiceSeconds) { url in
         try fixturePolyWAV(midSide).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -68,7 +72,7 @@ func shrinkKeepsAMidSideStereoRecording() async throws {
 @Test("A stereo recording whose left voice cancels against the right channel keeps its original (F1001 S2)")
 @MainActor
 func shrinkKeepsAStereoRecordingWhoseLeftVoiceCancels() async throws {
-    let f = try await MixFixture(recordingExtension: "wav", duration: 12) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: voiceSeconds) { url in
         try fixturePolyWAV(leftCancels).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -129,7 +133,7 @@ private struct StereoResumeFixture {
 @Test("A resume keeps a mid/side stereo leftover whose copy lost the side voice (F1001)")
 @MainActor
 func shrinkResumeKeepsAMidSideLeftover() async throws {
-    let f = try await StereoResumeFixture(channels: midSide, seconds: 12)
+    let f = try await StereoResumeFixture(channels: midSide, seconds: voiceSeconds)
     defer { try? FileManager.default.removeItem(at: f.root) }
     let original = try Data(contentsOf: f.leftover)
 
@@ -144,7 +148,7 @@ func shrinkResumeKeepsAMidSideLeftover() async throws {
 @Test("A resume keeps a stereo leftover whose left voice cancels in the copy (F1001)")
 @MainActor
 func shrinkResumeKeepsALeftCancellingLeftover() async throws {
-    let f = try await StereoResumeFixture(channels: leftCancels, seconds: 12)
+    let f = try await StereoResumeFixture(channels: leftCancels, seconds: voiceSeconds)
     defer { try? FileManager.default.removeItem(at: f.root) }
 
     await f.shrink()
@@ -186,7 +190,7 @@ private final class SeamCalls: @unchecked Sendable {
 /// Shrinks a two-channel import written by `write` and requires that it was shrunk: the copy replaced the
 /// original, the alert says so, and the channels were checked against the copy once.
 @MainActor
-private func expectShrunk(_ ext: String, seconds: Double = 12, _ label: String,
+private func expectShrunk(_ ext: String, seconds: Double = voiceSeconds, _ label: String,
                           write: (URL) async throws -> Void) async throws {
     let f = try await MixFixture(recordingExtension: ext, duration: seconds, write: write)
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -215,10 +219,10 @@ func shrinkStillShrinksAStereoCallWithAVoicePerChannel() async throws {
 @MainActor
 func shrinkStillShrinksAStereoRecordingWithASilentChannel() async throws {
     try await expectShrunk("wav", "right silent") { url in
-        try fixturePolyWAV([voiceA, silence12]).write(to: url)
+        try fixturePolyWAV([voiceA, silence]).write(to: url)
     }
     try await expectShrunk("wav", "left silent") { url in
-        try fixturePolyWAV([silence12, voiceB]).write(to: url)
+        try fixturePolyWAV([silence, voiceB]).write(to: url)
     }
 }
 
@@ -238,7 +242,7 @@ func shrinkStillShrinksAStereoLinkImport() async throws {
 func shrinkStillShrinksACorrelatedStereoMovie() async throws {
     // A chord panned a little, one side 3 ms late (a widening), in a movie container and an MPEG-4 one.
     // Only the outcome is pinned: macOS 15 reads AVAssetWriter `.mov` files with different track timing.
-    let chord = stereoVoice([196, 247, 294, 392, 494, 587, 784, 988, 1_175, 1_568, 1_976, 2_349], amplitude: 0.04, seconds: 12)
+    let chord = stereoVoice([196, 247, 294, 392, 494, 587, 784, 988, 1_175, 1_568, 1_976, 2_349], amplitude: 0.04, seconds: voiceSeconds)
     let late: [Float] = [Float](repeating: 0, count: 144) + Array(chord.dropLast(144))
     let left: [Float] = chord.map { $0 * 0.9 }
     let right: [Float] = late.map { $0 * 0.7 }
@@ -258,7 +262,7 @@ func shrinkLeavesAMonoCaptureAsItWas() async throws {
     let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
     // The capture's rule: the microphone's and the system audio's voices summed at 0.95.
-    let seconds = 12.0
+    let seconds = voiceSeconds
     let mixed: [Float] = sum(voiceA, voiceB).map { $0 * 0.95 }
     try WAVWriter.wavData(from: mixed, sampleRate: 48_000).write(to: folder.appendingPathComponent("meeting.wav"))
     let frames = Int(seconds * 48_000)
@@ -292,7 +296,7 @@ func shrinkLeavesAMonoCaptureAsItWas() async throws {
 @Test("A mono import shrinks as before and is never checked channel by channel (F1001 control)")
 @MainActor
 func shrinkLeavesAMonoImportAsItWas() async throws {
-    let f = try await MixFixture(recordingExtension: "wav", duration: 12) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: voiceSeconds) { url in
         try fixturePolyWAV([voiceA]).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -311,7 +315,7 @@ func shrinkLeavesAMonoImportAsItWas() async throws {
 @MainActor
 func shrinkResumeStillRemovesOrdinaryLeftovers() async throws {
     let stereo = try await StereoResumeFixture(
-        channels: [voiceA, voiceB], seconds: 12)
+        channels: [voiceA, voiceB], seconds: voiceSeconds)
     defer { try? FileManager.default.removeItem(at: stereo.root) }
     let stereoCalls = SeamCalls()
     let real = stereo.model.channelPresenceForShrink
@@ -322,7 +326,7 @@ func shrinkResumeStillRemovesOrdinaryLeftovers() async throws {
     #expect(stereoAlert.contains("Shrunk"), "\(stereoAlert)")
     #expect(stereoCalls.value == 1)
 
-    let mono = try await StereoResumeFixture(channels: [voiceA], seconds: 12)
+    let mono = try await StereoResumeFixture(channels: [voiceA], seconds: voiceSeconds)
     defer { try? FileManager.default.removeItem(at: mono.root) }
     let monoCalls = SeamCalls()
     mono.model.channelPresenceForShrink = { _, _ in monoCalls.add(); throw CocoaError(.fileReadUnknown) }
@@ -334,24 +338,24 @@ func shrinkResumeStillRemovesOrdinaryLeftovers() async throws {
 
 @Test("A copy a little shorter than a recording whose last window is short still has every window measured (F1001)")
 func channelPresenceMeasuresARecordingPastItsCopysEnd() async throws {
-    // 10.05 s of a voice per channel, its copy made from the first 10 s: within the length check's half
-    // second, and the recording's last window, [10, 10.05), lies past the copy's end. It is still measured
+    // 5.05 s of a voice per channel, its copy made from the first 5 s: within the length check's half
+    // second, and the recording's last window, [5, 5.05), lies past the copy's end. It is still measured
     // against the mix — that needs no copy — and has no mix measured against the copy, so nothing refuses it.
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F1001-short-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let channels: [[Float]] = [Array(voiceA.prefix(482_400)), Array(voiceB.prefix(482_400))]
+    let channels: [[Float]] = [Array(voiceA.prefix(242_400)), Array(voiceB.prefix(242_400))]
     let original = root.appendingPathComponent("recording.wav"), shorter = root.appendingPathComponent("shorter.wav")
     try fixturePolyWAV(channels).write(to: original)
-    try fixturePolyWAV(channels.map { Array($0.prefix(10 * 48_000)) }).write(to: shorter)
+    try fixturePolyWAV(channels.map { Array($0.prefix(5 * 48_000)) }).write(to: shorter)
     let copy = root.appendingPathComponent("copy.m4a")
     try AudioCompressor.compressSpeech(input: shorter, output: copy, workingWAV: root.appendingPathComponent("work.wav"))
 
     let native = try DecodedAudio.fullyDecoded(of: original)
-    try #require(native.channelWindowLevels.map(\.count) == [3, 3], "fixture: a third, short window")
+    try #require(native.channelWindowLevels.map(\.count) == [2, 2], "fixture: a second, short window")
     let presence = try await RecordingMixer.channelPresence(of: original, against: copy)
     #expect(presence.mix.count >= 2)
-    #expect((presence.stretches.last?.start ?? 0) + 0.512 > 10.05, "the last stretch reaches the recording's end")
+    #expect((presence.stretches.last?.start ?? 0) + 0.512 > 5.05, "the last stretch reaches the recording's end")
     #expect(RecordingMixPlan.firstChannelNotInCopy(presence, nativeChannelWindows: native.channelWindowLevels) == nil,
             "\(presence)")
 }
@@ -361,7 +365,7 @@ func channelPresenceMeasuresARecordingPastItsCopysEnd() async throws {
 @Test("A stereo recording whose channels cannot be measured against the copy keeps its original (F1001)")
 @MainActor
 func shrinkKeepsAStereoRecordingItCannotMeasure() async throws {
-    let f = try await MixFixture(recordingExtension: "wav", duration: 12) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: voiceSeconds) { url in
         try fixturePolyWAV([voiceA, voiceB]).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -393,7 +397,7 @@ func shrinkKeepsAStereoRecordingMeasuredWrongly() async throws {
         .init(channels: 2, stretches: Array(stretches.prefix(9)), mix: [good], channelWindows: [[good, good]]),
     ]
     for presence in wrong {
-        let f = try await MixFixture(recordingExtension: "wav", duration: 12) { url in
+        let f = try await MixFixture(recordingExtension: "wav", duration: voiceSeconds) { url in
             try fixturePolyWAV([voiceA, voiceB]).write(to: url)
         }
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -411,7 +415,7 @@ func shrinkKeepsAStereoRecordingMeasuredWrongly() async throws {
 @MainActor
 func shrinkResumeKeepsAStereoLeftoverItCannotMeasure() async throws {
     let f = try await StereoResumeFixture(
-        channels: [voiceA, voiceB], seconds: 12)
+        channels: [voiceA, voiceB], seconds: voiceSeconds)
     defer { try? FileManager.default.removeItem(at: f.root) }
     f.model.channelPresenceForShrink = { _, _ in throw CocoaError(.fileReadUnknown) }
 

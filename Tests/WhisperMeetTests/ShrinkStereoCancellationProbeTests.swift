@@ -13,9 +13,16 @@ import Testing
 // calls the Shrink button makes, with the real encoder and decoder.
 
 private let rate = 16_000
+/// How long the voices run: six seconds since the macos-15 suite reached its watchdog (CI fix after run
+/// 38859340988), the measure's cost being in proportion. Three probes keep twelve (`shrinkKeepsEveryCancellation…`):
+/// two of them pin the stretch rule only while their cancelling stretch is a small share of a five-second
+/// window, which the first round's link then misses — shortened, to eight and six seconds, that link caught them
+/// too, and removing the stretch rule no longer failed them (measured). Each probe's verdict under each of the rule's
+/// mutants is otherwise the same at these lengths as at twelve seconds.
+private let voiceSeconds: Double = 6
 
 /// A voice-like sound at 16 kHz: twelve tones, each swelling at its own rate.
-private func voice16(_ tones: [Double], amplitude: Double = 0.03, seconds: Double = 12, detune: Double = 0) -> [Float] {
+private func voice16(_ tones: [Double], amplitude: Double = 0.03, seconds: Double = voiceSeconds, detune: Double = 0) -> [Float] {
     let count = Int(seconds * Double(rate))
     var out = [Float](repeating: 0, count: count)
     for (index, tone) in tones.enumerated() {
@@ -147,17 +154,19 @@ private func shrinkWAVAskingTheHost(_ channels: [[Float]], mask: UInt32) async t
 @Test("Every channel cancellation the reviews of F1001 made deletes nothing now (F1001 round 2)")
 @MainActor
 func shrinkKeepsEveryCancellationTheReviewsMade() async throws {
+    // Twelve seconds for the probes whose cancelling stretch must be a small share of the windows past 0:05.
+    let a12 = voice16(toneA, seconds: 12), b12 = voice16(toneB, seconds: 12)
     // F2-3: a loud chord, the same on both channels, then mid/side 22 dB quieter.
-    var loudThenQuiet = midSide(scaled(a16, 0.08), scaled(b16, 0.08))
+    var loudThenQuiet = midSide(scaled(a12, 0.08), scaled(b12, 0.08))
     let chord = voice16([196, 294, 392, 587, 784, 1_175], amplitude: 0.12, seconds: 4)
     for n in chord.indices { loudThenQuiet[0][n] = chord[n]; loudThenQuiet[1][n] = chord[n] }
     let probes: [(String, [[Float]])] = [
         ("side voice 3 dB down throughout (review 2's near-bound pin)", midSide(a16, scaled(b16, 0.708))),
         ("side voice 6 dB down throughout (review 1's miss)", midSide(a16, scaled(b16, 0.5))),
-        ("side voice alone for 1.0 s", midSide(gated(a16, [(0, 2), (3, 12)]), gated(b16, [(2, 3)]))),
-        ("side voice alone for 0.6 s", midSide(gated(a16, [(0, 2), (2.6, 12)]), gated(b16, [(2, 2.6)]))),
-        ("side voice alone for 2.4 s across 0:05", midSide(gated(a16, [(0, 3.8), (6.2, 12)]), gated(b16, [(3.8, 6.2)]))),
-        ("side voice for 2 s over the middle one", midSide(a16, gated(b16, [(4, 6)]))),
+        ("side voice alone for 1.0 s", midSide(gated(a16, [(0, 2), (3, voiceSeconds)]), gated(b16, [(2, 3)]))),
+        ("side voice alone for 0.6 s", midSide(gated(a16, [(0, 2), (2.6, voiceSeconds)]), gated(b16, [(2, 2.6)]))),
+        ("side voice alone for 2.4 s across 0:05", midSide(gated(a12, [(0, 3.8), (6.2, 12)]), gated(b12, [(3.8, 6.2)]))),
+        ("side voice for 2 s over the middle one", midSide(a12, gated(b12, [(4, 6)]))),
         ("side voice cancelling only from 2 kHz", [mix(mix(a16, bBelow2k16), bAbove2k16), mix(mix(a16, bBelow2k16), bAbove2k16, -1)]),
         ("side voice cancelling only below 1 kHz", [mix(mix(a16, bHigh16), bLow16), mix(mix(a16, bHigh16), bLow16, -1)]),
         ("side voice inverted and 0.25 ms late", [mix(a16, b16), mix(a16, late(b16, 4), -1)]),
@@ -213,7 +222,7 @@ func shrinkKeepsAPartlyDecorrelatedCancellation() async throws {
     let probes: [(String, [[Float]])] = [
         ("side voice 6 dB down, a fifth decorrelated", [mix(a16, scaled(b16, 0.5)), mix(a16, scaled(decorrelated, 0.5), -1)]),
         ("side voice alone for 1 s, a fifth decorrelated",
-         [mix(gated(a16, [(0, 2), (3, 12)]), gated(b16, [(2, 3)])), mix(gated(a16, [(0, 2), (3, 12)]), gated(decorrelated, [(2, 3)]), -1)]),
+         [mix(gated(a16, [(0, 2), (3, voiceSeconds)]), gated(b16, [(2, 3)])), mix(gated(a16, [(0, 2), (3, voiceSeconds)]), gated(decorrelated, [(2, 3)]), -1)]),
     ]
     for (label, channels) in probes {
         let outcome = try await shrinkWAV(channels)
@@ -338,7 +347,7 @@ func shrinkKeepsADownloadWhoseChannelsCancelBesideItsMonoWAV() async throws {
     for ext in ["m4a", "caf"] {
         // The folder an interrupted link import leaves: the download, and ffmpeg's `-ac 1` WAV made from it.
         let downloadChannels = midSide(a16, b16)
-        let f = try await MixFixture(recordingExtension: "wav", duration: 12) { url in
+        let f = try await MixFixture(recordingExtension: "wav", duration: voiceSeconds) { url in
             try pcm16([scaled(mix(downloadChannels[0], downloadChannels[1]), 0.5)]).write(to: url)
         }
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -413,7 +422,7 @@ func shrinkKeepsACAFOrAIFFLaidOutCentreAndLFE() async throws {
     // the copy's own check (a twentieth of the mix), and the original deleted.
     let centreAndLFE = channelLayout(tag: kAudioChannelLayoutTag_UseChannelBitmap, bitmap: 0x4 | 0x8)
     for ext in ["caf", "aif"] {
-        let f = try await MixFixture(recordingExtension: ext, duration: 12) { url in
+        let f = try await MixFixture(recordingExtension: ext, duration: voiceSeconds) { url in
             try writeLaidOut(url, [a16, scaled(b16, 0.158)], layout: centreAndLFE)
         }
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -433,7 +442,7 @@ func shrinkKeepsACAFOrAIFFLaidOutCentreAndLFE() async throws {
 @Test("A copy that kept one channel of two voices is refused end to end, by the copy's check alone (F1001 round 2)")
 @MainActor
 func shrinkRefusesACopyThatKeptOneChannel() async throws {
-    let f = try await MixFixture(recordingExtension: "wav", duration: 12) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: voiceSeconds) { url in
         try pcm16([a16, b16]).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
@@ -467,7 +476,7 @@ func shrinkResumeKeepsALeftoverItCannotDecode() async throws {
                                        workingWAV: root.appendingPathComponent("work.wav"))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
-    model.store.upsert(MeetingRecord(id: id, title: "Client call", duration: 12,
+    model.store.upsert(MeetingRecord(id: id, title: "Client call", duration: voiceSeconds,
                                      recordingPath: "Recordings/\(id.uuidString)/recording.m4a",
                                      status: .completed, transcriptText: "Hi."))
     model.availableBytesForShrink = { _ in .max }
@@ -529,7 +538,7 @@ func shrinkStillShrinksOrdinaryStereo() async throws {
         let outcome = try await shrinkWAV(resampled, rate: wavRate)
         if outcome.kept || !outcome.alert.contains("Shrunk") { refused.append("\(wavRate) Hz: \(outcome.alert)") }
     }
-    let f = try await MixFixture(recordingExtension: "wav", duration: 12) { url in
+    let f = try await MixFixture(recordingExtension: "wav", duration: voiceSeconds) { url in
         try fixtureFloatWAV([a16, b16], rate: rate).write(to: url)
     }
     defer { try? FileManager.default.removeItem(at: f.root) }
