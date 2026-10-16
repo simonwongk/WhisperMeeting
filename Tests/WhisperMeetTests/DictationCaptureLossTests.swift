@@ -383,8 +383,12 @@ func configurationChangeTransitionRows() {
             == Transition(state: .idle, recordsInterruption: false, endsCapture: false))
     #expect(MicDictationRecorder.configurationChangeTransition(from: .starting)
             == Transition(state: .starting, recordsInterruption: true, endsCapture: false))
+    // F721: a live capture is ended into `stopping`, which the handler holds until its teardown
+    // has returned, and a second change during that teardown changes nothing.
     #expect(MicDictationRecorder.configurationChangeTransition(from: .recording)
-            == Transition(state: .idle, recordsInterruption: true, endsCapture: true))
+            == Transition(state: .stopping, recordsInterruption: true, endsCapture: true))
+    #expect(MicDictationRecorder.configurationChangeTransition(from: .stopping)
+            == Transition(state: .stopping, recordsInterruption: false, endsCapture: false))
 }
 
 @Test("start() arms the capture before the probe, the first call that touches the hardware (F404)")
@@ -536,6 +540,94 @@ func aChangeAfterALiveStartEndsTheCapture() throws {
     #expect(throws: MicDictationRecorder.RecorderError.captureInterrupted(.deviceConfigurationChanged)) {
         _ = try recorder.stop()
     }
+}
+
+// MARK: - F722, a Swift error from engine.start(), through the real exit
+
+/// The error a hardware step throws, told apart from every other by its identity.
+private struct HardwareStepFailed: Error, Equatable { let id = UUID() }
+
+@Test("A Swift error from the hardware calls is what start() throws, and the next start goes live (F722)")
+func aSwiftErrorFromTheHardwareStartIsRethrown() throws {
+    // `startExit`'s row for an error `engine.start()` threw was pinned only by the rule and a text
+    // check; a start() that dropped the error, or carried another one out, passed every behaviour
+    // test. The step now throws where `engine.start()` would.
+    let thrown = HardwareStepFailed()
+    let failFirst = Box(true)
+    let recorder = MicDictationRecorder(
+        hardwareFormatProbe: { (sampleRate: 48_000, channels: 1) },
+        notificationCenter: NotificationCenter(),
+        hardwareStartForTesting: {
+            if failFirst.value {
+                failFirst.value = false
+                throw thrown
+            }
+            return true
+        }
+    )
+
+    #expect(throws: thrown) { try recorder.start(onLevel: { _ in }) }
+    #expect(!recorder.isRecording, "a start whose engine failed to start must not read as recording")
+    #expect(recorder.captureStateForTesting == .idle)
+
+    try recorder.start(onLevel: { _ in })
+    #expect(recorder.isRecording, "the failed start left something behind that refused the next one")
+    recorder.cancel()
+}
+
+// MARK: - F721, a press during the handler's own teardown
+
+@Test("A start pressed while a device change is still tearing the last capture down is refused out loud (F721)")
+func aStartDuringTheHandlersTeardownIsRefused() throws {
+    // The handler removes the tap and stops the engine outside the lock, and both are the engine's
+    // singletons. A start() that armed in that window shared bus 0 and the engine with a teardown
+    // still running, and could go live into a capture that hears nothing. Now the handler holds
+    // `stopping` until its teardown returns, and a start() in it throws rather than returning as if
+    // it had begun.
+    let center = NotificationCenter()
+    let recorder = MicDictationRecorder(
+        hardwareFormatProbe: { (sampleRate: 48_000, channels: 1) },
+        notificationCenter: center,
+        hardwareStartForTesting: { true }
+    )
+    try recorder.start(onLevel: { _ in })
+    try #require(recorder.isRecording)
+
+    let nested = Box<String?>(nil)
+    let stateDuringTeardown = Box<MicDictationRecorder.CaptureState?>(nil)
+    let stopDuringTeardown = Box<String?>(nil)
+    recorder.duringConfigurationTeardownForTesting = { [unowned recorder] in
+        stateDuringTeardown.value = recorder.captureStateForTesting
+        do {
+            try recorder.start(onLevel: { _ in })
+            nested.value = "started"
+        } catch {
+            nested.value = String(describing: error)
+        }
+        // A key release in the same window still hears why the capture ended.
+        do {
+            _ = try recorder.stop()
+            stopDuringTeardown.value = "returned a clip"
+        } catch {
+            stopDuringTeardown.value = String(describing: error)
+        }
+    }
+    center.post(name: .AVAudioEngineConfigurationChange, object: recorder.engineForTesting)
+    recorder.duringConfigurationTeardownForTesting = nil
+
+    #expect(stateDuringTeardown.value == .stopping, "the handler's teardown ran outside any held state")
+    #expect(nested.value == String(describing: MicDictationRecorder.RecorderError.captureStillEnding),
+            "a start inside the teardown: \(nested.value ?? "nothing")")
+    #expect(stopDuringTeardown.value
+            == String(describing: MicDictationRecorder.RecorderError.captureInterrupted(.deviceConfigurationChanged)),
+            "a stop inside the teardown: \(stopDuringTeardown.value ?? "nothing")")
+    #expect(!recorder.isRecording)
+    #expect(recorder.captureStateForTesting == .idle, "the handler did not give the recorder back")
+
+    // Once the teardown has returned, the next press starts normally.
+    try recorder.start(onLevel: { _ in })
+    #expect(recorder.isRecording)
+    recorder.cancel()
 }
 
 // MARK: - F405, a teardown must not create the node it tears down
