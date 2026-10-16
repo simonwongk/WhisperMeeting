@@ -146,3 +146,21 @@ func channelPresenceListsTwoChannelLeftovers() {
     #expect(MeetingStoragePlan.twoChannelRecordingsToVerify(disk).map(\.name) == ["recording.wav"],
             "a mono leftover as before, several tracks by F955's audit, an empty file holds nothing")
 }
+
+@Test("Two channels mix as left and right only when plain or marked front left and front right; otherwise Shrink refuses (F1001)")
+func channelMaskDecidesLeftAndRight() {
+    #expect(MeetingStoragePlan.channelsAreLeftRight(formatTag: 1, channels: 2, mask: nil), "a plain PCM WAV")
+    #expect(MeetingStoragePlan.channelsAreLeftRight(formatTag: 3, channels: 2, mask: nil), "a plain float WAV")
+    #expect(MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 2, mask: 0x3))
+    #expect(!MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 2, mask: 0x4 | 0x8), "centre and LFE")
+    #expect(!MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 2, mask: 0), "no positions")
+    #expect(!MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 2, mask: nil), "a mask that was not read")
+    #expect(MeetingStoragePlan.channelsAreLeftRight(formatTag: 0xFFFE, channels: 1, mask: 0x4), "one channel is not this rule's")
+    var disk = MeetingStoragePlan.DiskFacts(
+        recordingName: "recording.wav", recordingExists: true, inOwnFolder: true, hasIntegrityProblem: false,
+        rebuildOffered: false, durationSeconds: 600,
+        entries: [MeetingStoragePlan.FolderEntry(name: "recording.wav", bytes: 100_000_000)], channelCount: 2)
+    #expect(MeetingStoragePlan.unavailability(disk: disk, live: .init()) == nil)
+    disk.channelsNotLeftRight = "recording.wav"
+    #expect(MeetingStoragePlan.unavailability(disk: disk, live: .init()) == .channelsNotLeftRight(name: "recording.wav"))
+}

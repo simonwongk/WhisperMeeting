@@ -642,7 +642,7 @@ extension AppModel {
                     otherTracks[other.name] = tracks
                 }
             }
-            let facts = MeetingStoragePlan.DiskFacts(
+            var facts = MeetingStoragePlan.DiskFacts(
                 recordingName: name, recordingExists: exists,
                 inOwnFolder: folder != nil && recordingURL.deletingLastPathComponent().standardizedFileURL.path
                     == folder?.standardizedFileURL.path,
@@ -650,6 +650,15 @@ extension AppModel {
                 durationSeconds: length, entries: listed, audioTrackCount: tracks,
                 otherRecordingSeconds: otherSeconds, channelCount: channels, audioTracks: audioTracks,
                 otherRecordingTracks: otherTracks)
+            // F1001: a two-channel WAV whose channels are marked other than left and right, which the encode's
+            // mix follows — the recording, or one Shrink would remove.
+            let candidates = (exists ? [name] : []) + MeetingStoragePlan.otherRecordings(in: listed, recordingName: name).map(\.name)
+            facts.channelsNotLeftRight = candidates.first { candidate in
+                let url = candidate == name ? recordingURL : directory.appendingPathComponent(candidate)
+                guard let header = WAVInspection.header(at: url) else { return false }
+                return !MeetingStoragePlan.channelsAreLeftRight(formatTag: header.formatTag, channels: header.channels,
+                                                                mask: header.channelMask)
+            }
             return (facts, couldNotMeasure)
         }.value
         downloadsShrinkCouldNotMeasure.formUnion(couldNotMeasure)

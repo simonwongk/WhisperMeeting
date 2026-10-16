@@ -7,7 +7,7 @@ import Testing
 // F1001, round 2 — the user's rule (2026-10-15): "Refuse any with cancellation". Both reviews of the first round
 // deleted originals whose channels cancel: a side voice 1–6 dB under the middle one, equal-level speech talking
 // over each other, a side voice alone for about a second, a cancellation confined to part of the spectrum, a quiet
-// cancelling stretch after a loud one (F2-3). Every one of them, rebuilt here from synthetic voices (CI-safe; the speech ones need the
+// cancelling stretch after a loud one (F2-3), and a WAV marked centre + LFE. Every one of them, rebuilt here from synthetic voices (CI-safe; the speech ones need the
 // bench clips and are gated), must keep its original; and ordinary stereo must still shrink. Driven through the
 // calls the Shrink button makes, with the real encoder and decoder.
 
@@ -133,6 +133,21 @@ func shrinkKeepsEveryCancellationTheReviewsMade() async throws {
         #expect(outcome.alert.contains("cancel each other"), "\(label): \(outcome.alert)")
     }
     #expect(deleted.isEmpty, "\(deleted)")
+}
+
+@Test("A WAV whose two channels are marked centre and LFE, or anything but left and right, is kept (F1001 round 2)")
+@MainActor
+func shrinkKeepsAWAVWhoseChannelsAreNotLeftAndRight() async throws {
+    // Review 1: afconvert's mix follows the mask and drops the LFE channel, here a voice 12 dB down.
+    let quietB = scaled(b16, 0.25)
+    for (name, mask) in [("centre and LFE", UInt32(0x4 | 0x8)), ("no positions", UInt32(0)), ("back left and right", UInt32(0x10 | 0x20))] {
+        let outcome = try await shrinkWAV([a16, quietB], mask: mask)
+        #expect(outcome.kept, "\(name): \(outcome.alert)")
+        #expect(outcome.alert.contains("marks its two channels as something other than left and right"), "\(name): \(outcome.alert)")
+    }
+    // Marked front left and front right, it shrinks as a plain WAV does.
+    let plain = try await shrinkWAV([a16, quietB], mask: 0x3)
+    #expect(!plain.kept && plain.alert.contains("Shrunk"), "\(plain.alert)")
 }
 
 // MARK: - The copy's own link, and an unreadable leftover (reviews' mutants M15, M18)

@@ -166,6 +166,17 @@ public enum MeetingStoragePlan {
     /// (F955): those with several audio tracks or more than two channels, which a mix holds and a copy
     /// made before F942 did not — that build kept the first track or channel. Their length alone, which
     /// F911 compares, cannot tell the two apart.
+    /// Whether a WAV's two channels mix into one as left and right (F1001): a plain format with no positions,
+    /// or `WAVE_FORMAT_EXTENSIBLE` marked front left and front right (0x3). afconvert's mono mix follows any
+    /// other marking — of centre and LFE it drops the LFE channel, and the copy's checks see a channel of under
+    /// a twentieth of the mix go only by chance (review 1 of F1001) — so anything else is kept, fail-closed:
+    /// no positions at all (0), back left and right, and every other pair included. Other than two channels is
+    /// not this rule's question.
+    public static func channelsAreLeftRight(formatTag: UInt16, channels: UInt32, mask: UInt32?) -> Bool {
+        guard channels == 2, formatTag == 0xFFFE else { return true }
+        return mask == 0x3
+    }
+
     public static func otherRecordingsToVerify(_ disk: DiskFacts) -> [FolderEntry] {
         otherRecordings(in: disk.entries, recordingName: disk.recordingName).filter { other in
             guard !other.isEmpty, let tracks = disk.otherRecordingTracks[other.name] else { return false }
@@ -326,6 +337,10 @@ public enum MeetingStoragePlan {
         /// `otherRecordingSeconds`, where it could be read (F955). A name missing here was not read, and is
         /// judged by its length alone, as before.
         public var otherRecordingTracks: [String: [RecordingMixPlan.Track]]
+        /// The first of the recording and the other `recording.<ext>` files that is a two-channel WAV whose
+        /// channels are marked as something other than front left and front right (`channelsAreLeftRight`);
+        /// nil when none is (F1001).
+        public var channelsNotLeftRight: String? = nil
 
         public init(recordingName: String, recordingExists: Bool, inOwnFolder: Bool, hasIntegrityProblem: Bool,
                     rebuildOffered: Bool, durationSeconds: TimeInterval, entries: [FolderEntry],
@@ -389,6 +404,10 @@ public enum MeetingStoragePlan {
         /// never mixed, or could not be read, or — outside a resume, which checks the copy against it
         /// before removing it — nothing compares it with the copy at all.
         case otherRecordingHasMoreTracks(name: String, tracks: Int, channels: Int)
+        /// A two-channel WAV — the recording, or another `recording.<ext>` Shrink would delete — marks its channels
+        /// as something other than front left and front right (`channelsAreLeftRight`), and the encode's mix
+        /// follows the marking and can drop a channel (F1001).
+        case channelsNotLeftRight(name: String)
         case cannotMeasureLength
         case alreadyShrunk
         case nothingToGain
@@ -428,6 +447,8 @@ public enum MeetingStoragePlan {
             case let .otherRecordingHasMoreTracks(name, tracks, channels):
                 let holds = tracks > 1 ? "\(tracks) audio tracks" : "\(channels) channels"
                 return "This meeting's folder also holds “\(name)”, which has \(holds), and the shrunk copy isn't shown to hold them all. Shrinking would delete it, so it isn't shrunk."
+            case let .channelsNotLeftRight(name):
+                return "“\(name)” marks its two channels as something other than left and right. The compression mixes them by those marks and can leave one out, so it is kept as it is."
             case .cannotMeasureLength:
                 return "This recording's length can't be read, so a compressed copy couldn't be checked against it."
             case .alreadyShrunk:
@@ -463,6 +484,8 @@ public enum MeetingStoragePlan {
         if let other = otherRecordingAtRisk(disk) {
             return .otherRecordingMayHoldMore(name: other.name, seconds: disk.otherRecordingSeconds[other.name])
         }
+        // F1001: a two-channel WAV whose channels are not marked left and right, which the encode's mix follows.
+        if let marked = disk.channelsNotLeftRight { return .channelsNotLeftRight(name: marked) }
         // F955: and its tracks and channels, which its length cannot show. A leftover a mix must hold is
         // removed by a resume only after the copy is checked against it (`otherRecordingsToVerify`), and
         // only while mixing Shrink is on (F980); anything else of that kind is kept.
