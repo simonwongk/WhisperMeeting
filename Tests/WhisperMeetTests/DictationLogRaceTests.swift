@@ -145,6 +145,37 @@ func aWaitingDictationSurvivesTheNextLostRace() throws {
     #expect(onDisk(root) == ["after the clear"], "a saved dictation was carried back over the other copy's Clear All: \(onDisk(root))")
 }
 
+/// F1017 — Clear All whose first save fails for an ordinary reason (no other copy involved) said
+/// "Dictations were not cleared …" while the list in memory was already empty, so the window showed
+/// an empty history the file still held, and the next dictation's save finished the erase without
+/// `forgetHistory`. A refused Clear All now leaves the list as the file has it.
+@MainActor
+@Test("A Clear All whose first save fails leaves the list as the file still has it (F1017)")
+func aRefusedClearAllLeavesTheListAsTheFileHasIt() throws {
+    let root = try libraryRoot("refused-clear")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let here = DictationLogStore(directory: root)
+    here.record(text: "first", outcome: .pasted)
+    here.record(text: "second", outcome: .pasted)
+    try #require(here.saveErrorMessage == nil)
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+    let cleared = here.clear()
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+
+    try #require(!cleared, "the read-only folder did not refuse the save")
+    #expect(here.historyEraseFailureMessage != nil)
+    #expect(here.log.entries.map(\.text) == onDisk(root), "the list shows \(here.log.entries.map(\.text)), the file holds \(onDisk(root))")
+    #expect(onDisk(root) == ["second", "first"])
+
+    // The next dictation adds to the history; it does not finish an erase the person was told failed.
+    here.record(text: "third", outcome: .pasted)
+    #expect(onDisk(root) == ["third", "second", "first"], "\(onDisk(root))")
+}
+
 /// The Wave 8 lane C review's finding 7: the waiting dictation is written by the NEXT dictation's
 /// first-try save (no race), so that save — not only the lost race's retry — must stop carrying it.
 /// Otherwise the next lost race brings it back over another copy's Clear All.

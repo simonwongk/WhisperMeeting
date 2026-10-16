@@ -168,9 +168,15 @@ import WhisperCore
         // A save that loses to another copy shows what that copy saved and reports the failure
         // below (F905): the history has a dictation the person has not seen, so the erase is theirs
         // to ask for again — and the token is fresh, so asking again works.
-        persist({ $0.cleared() }, afterALostRace: .showWhatIsOnDisk)
+        let shown = log
+        let onlyInMemory = persist({ $0.cleared() }, afterALostRace: .showWhatIsOnDisk)
         guard saveErrorMessage == nil else {
-            // Nothing was cleared. Not a second save: with the token fresh after a lost race it
+            // Nothing was cleared, so the list goes back to what the file holds (F1017): an
+            // ordinary failure used to leave the cleared value in memory, so the window showed an
+            // empty history under "not cleared", and the next dictation's save finished the erase
+            // without `forgetHistory`. (A lost race already shows the file's, F905.)
+            if onlyInMemory { log = shown }
+            // Not a second save: with the token fresh after a lost race it
             // would land, and erase the dictation the other copy just saved (F905).
             historyEraseFailureMessage =
                 "Dictations were not cleared, because the history could not be saved. Try Clear All again."
@@ -217,7 +223,11 @@ import WhisperCore
     /// on disk — and then does what `afterALostRace` says. Before this the lost race was only
     /// reported: the token stayed stale, so every later dictation failed the same compare-and-swap
     /// until a relaunch, and lived only in memory. One retry: a second loss is said.
-    private func persist(_ change: (DictationLog) -> DictationLog, afterALostRace: LostRaceResponse) {
+    ///
+    /// Returns true when the change is in `log` but not on disk and no re-read replaced it — an
+    /// ordinary save failure, or a lost race whose re-read itself failed (F1017).
+    @discardableResult
+    private func persist(_ change: (DictationLog) -> DictationLog, afterALostRace: LostRaceResponse) -> Bool {
         log = change(log)
         do {
             let outcome = try store.save(log, expecting: token)
@@ -225,13 +235,14 @@ import WhisperCore
             saveErrorMessage = nil
             unsavedEntryIDs.removeAll()
             noteHistory(after: outcome)
+            return false
         } catch {
             // Deliberately does NOT touch `health`, including on a lost race (F190). `health` is the
             // *load* verdict: a write that failed says nothing about whether the bytes on disk were
             // readable, and conflating them would turn a transient save failure into a permanent
             // read-only library.
             saveErrorMessage = error.localizedDescription
-            guard WriteConflictReport(error).isRace else { return }
+            guard WriteConflictReport(error).isRace else { return true }
             // The re-read IS a load, so its verdict is `health`'s to keep: a history the other copy
             // left undecodable is shown read-only, and the change waits in memory as any refused one.
             // What this copy recorded earlier and has not saved, oldest first, taken before the
@@ -243,18 +254,18 @@ import WhisperCore
                 reread = try store.load()
             } catch {
                 health = .unavailable(error.localizedDescription)
-                return
+                return true
             }
             if let reread {
                 health = reread.health
                 token = reread.token
                 log = reread.value
-                guard health.allowsMutation else { return }
+                guard health.allowsMutation else { return false }
             } else {
                 token = .absent
                 log = DictationLog()
             }
-            guard afterALostRace == .makeAgain else { return }
+            guard afterALostRace == .makeAgain else { return false }
             let onDisk = Set(log.entries.map(\.id))
             for entry in waiting where !onDisk.contains(entry.id) {
                 log = log.adding(entry)
@@ -266,8 +277,10 @@ import WhisperCore
                 saveErrorMessage = nil
                 unsavedEntryIDs.removeAll()
                 noteHistory(after: outcome)
+                return false
             } catch {
                 saveErrorMessage = error.localizedDescription
+                return true
             }
         }
     }
