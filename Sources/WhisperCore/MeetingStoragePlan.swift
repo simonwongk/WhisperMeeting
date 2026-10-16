@@ -185,10 +185,11 @@ public enum MeetingStoragePlan {
         }
     }
 
-    /// The other `recording.<ext>` files with one track of two channels, which a resume checks against the
-    /// copy before it removes them, as an encode checks such a recording (F1001): the encode's mono mix sums
-    /// the channels, so a voice in opposite polarity on the two is not in the copy. A mono leftover is removed
-    /// as before.
+    /// The other `recording.<ext>` files with one track of two channels, which Shrink checks against the copy
+    /// before it removes them, as it checks such a recording (F1001): a resume's leftover, and outside a
+    /// resume a link import's download beside the mono WAV extracted from it (review 2, F2-1). The encode's
+    /// mono mix sums the channels, so a voice in opposite polarity on the two is not in the copy. A mono one
+    /// is removed as before.
     public static func twoChannelRecordingsToVerify(_ disk: DiskFacts) -> [FolderEntry] {
         otherRecordings(in: disk.entries, recordingName: disk.recordingName).filter { other in
             guard !other.isEmpty, let tracks = disk.otherRecordingTracks[other.name] else { return false }

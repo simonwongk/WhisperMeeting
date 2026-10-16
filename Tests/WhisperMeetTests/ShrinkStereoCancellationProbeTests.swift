@@ -7,7 +7,8 @@ import Testing
 // F1001, round 2 — the user's rule (2026-10-15): "Refuse any with cancellation". Both reviews of the first round
 // deleted originals whose channels cancel: a side voice 1–6 dB under the middle one, equal-level speech talking
 // over each other, a side voice alone for about a second, a cancellation confined to part of the spectrum, a quiet
-// cancelling stretch after a loud one (F2-3), and a WAV marked centre + LFE. Every one of them, rebuilt here from synthetic voices (CI-safe; the speech ones need the
+// cancelling stretch after a loud one (F2-3), a WAV marked centre + LFE, and a link import's stereo download beside
+// its mono WAV (F2-1). Every one of them, rebuilt here from synthetic voices (CI-safe; the speech ones need the
 // bench clips and are gated), must keep its original; and ordinary stereo must still shrink. Driven through the
 // calls the Shrink button makes, with the real encoder and decoder.
 
@@ -148,6 +149,44 @@ func shrinkKeepsAWAVWhoseChannelsAreNotLeftAndRight() async throws {
     // Marked front left and front right, it shrinks as a plain WAV does.
     let plain = try await shrinkWAV([a16, quietB], mask: 0x3)
     #expect(!plain.kept && plain.alert.contains("Shrunk"), "\(plain.alert)")
+}
+
+@Test("A link import's stereo download beside its mono WAV is not deleted when its channels cancel (F1001 round 2, F2-1)")
+@MainActor
+func shrinkKeepsADownloadWhoseChannelsCancelBesideItsMonoWAV() async throws {
+    for ext in ["m4a", "caf"] {
+        // The folder an interrupted link import leaves: the download, and ffmpeg's `-ac 1` WAV made from it.
+        let downloadChannels = midSide(a16, b16)
+        let f = try await MixFixture(recordingExtension: "wav", duration: 12) { url in
+            try pcm16([scaled(mix(downloadChannels[0], downloadChannels[1]), 0.5)]).write(to: url)
+        }
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let download = f.folder.appendingPathComponent("recording.\(ext)")
+        if ext == "caf" {
+            let source = f.root.appendingPathComponent("download.wav")
+            try pcm16(downloadChannels).write(to: source)
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/afconvert")
+            process.arguments = ["-f", "caff", "-d", "LEI16", source.path, download.path]
+            try process.run(); process.waitUntilExit()
+            try #require(process.terminationStatus == 0)
+        } else {
+            let up: [[Float]] = downloadChannels.map { channel in
+                var out = [Float](repeating: 0, count: channel.count * 3)
+                for n in out.indices { out[n] = channel[n / 3] }
+                return out
+            }
+            try await writeFixtureRawTracks(to: download, [up])
+        }
+        let before = try Data(contentsOf: download)
+
+        await f.shrink()
+
+        let alert = f.model.alertMessage ?? "nil"
+        #expect((try? Data(contentsOf: download)) == before, ".\(ext): \(alert)")
+        #expect(f.exists("recording.wav"), ".\(ext): \(alert)")
+        #expect(alert.contains("also holds “recording.\(ext)”, which shrinking would delete"), ".\(ext): \(alert)")
+    }
 }
 
 // MARK: - The copy's own link, and an unreadable leftover (reviews' mutants M15, M18)

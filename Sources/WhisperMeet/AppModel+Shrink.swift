@@ -205,6 +205,7 @@ extension AppModel {
             let encode = encodeForShrink, decode = decodeForShrink, mix = mixForShrink, free = availableBytesForShrink
             let audit = auditForShrink, presence = channelPresenceForShrink
             let twoChannels = disk.channelCount == 2
+            let besideRecording = MeetingStoragePlan.twoChannelRecordingsToVerify(disk)
             let flush = flushForShrink
             let declaredLength = disk.durationSeconds
             let needed = MeetingStoragePlan.totalBytes([
@@ -279,6 +280,22 @@ extension AppModel {
                         if twoChannels || original.channelWindowLevels.count == 2 {
                             try await Self.checkChannelsInCopy(original: original, recording: recordingURL, copy: tempM4A,
                                                                measure: presence, subject: nil)
+                        }
+                    }
+                    // F1001 (review 2, F2-1): a two-channel `recording.<ext>` beside the recording — a link import's
+                    // download beside the mono WAV ffmpeg extracted from it — is removed, or replaced, with the
+                    // original: so the copy is checked against it the same way, and if it is not shown, nothing is.
+                    for other in besideRecording {
+                        let url = folder.appendingPathComponent(other.name)
+                        let decoded: DecodedAudio.Decoded
+                        do { decoded = try await decode(url) } catch { throw ShrinkFailure.otherUnchecked(name: other.name) }
+                        do {
+                            try await Self.checkChannelsInCopy(original: decoded, recording: url, copy: tempM4A,
+                                                               measure: presence, subject: other.name)
+                        } catch let ShrinkFailure.leftoverChannelNotInCopy(name, finding) {
+                            throw ShrinkFailure.otherChannelNotInCopy(name: name, finding: finding)
+                        } catch {
+                            throw ShrinkFailure.otherUnchecked(name: other.name)
                         }
                     }
                     // On stable storage before anything is committed or removed (final review).
@@ -426,7 +443,7 @@ extension AppModel {
     /// Throws unless the two-channel `recording`'s channels are shown not to cancel each other when mixed into
     /// one, and the mono `copy` to hold their mix (F1001) — measured by `measure`, judged by
     /// `RecordingMixPlan.firstChannelNotInCopy` against the recording's own decode, `original`. `subject` is the
-    /// name of a resume's leftover, or nil for an encode's recording.
+    /// name of a resume's leftover or of a file beside the recording, or nil for an encode's recording.
     /// Fail-closed: a measure that cannot be made, or does not have the decode's channels, throws.
     nonisolated static func checkChannelsInCopy(
         original: DecodedAudio.Decoded, recording: URL, copy: URL,
@@ -472,9 +489,13 @@ extension AppModel {
         case channelNotInCopy(RecordingMixPlan.ChannelPresenceFinding)
         /// The same, of a resume's two-channel leftover (F1001).
         case leftoverChannelNotInCopy(name: String, finding: RecordingMixPlan.ChannelPresenceFinding)
+        /// The same, of a two-channel `recording.<ext>` beside the recording that Shrink would remove (F1001, F2-1).
+        case otherChannelNotInCopy(name: String, finding: RecordingMixPlan.ChannelPresenceFinding)
+        /// Such a file, or the copy, could not be read to compare them (F1001, F2-1).
+        case otherUnchecked(name: String)
 
-        /// What a channel finding says, of `owner`'s channels — "the recording's", or "its" for a leftover — and
-        /// the copy, without a capital or a full stop.
+        /// What a channel finding says, of `owner`'s channels — "the recording's", or "its" for a leftover or a
+        /// download — and the copy, without a capital or a full stop.
         static func sentence(_ finding: RecordingMixPlan.ChannelPresenceFinding, owner: String) -> String {
             let window = { (index: Int) in TranscriptFormatter.clock(Double(index) * MeetingStoragePlan.levelWindowSeconds) }
             switch finding {
@@ -560,6 +581,10 @@ extension AppModel {
                 return String(text.prefix(1)).uppercased() + String(text.dropFirst()) + ending
             case let .leftoverChannelNotInCopy(name, finding):
                 return "“\(name)”, which the compressed copy replaced, was kept: " + Self.sentence(finding, owner: "its") + "."
+            case let .otherChannelNotInCopy(name, finding):
+                return "This meeting's folder also holds “\(name)”, which shrinking would delete: " + Self.sentence(finding, owner: "its") + "."
+            case let .otherUnchecked(name):
+                return "This meeting's folder also holds “\(name)”, which shrinking would delete, and it could not be checked against the compressed copy."
             }
         }
     }
