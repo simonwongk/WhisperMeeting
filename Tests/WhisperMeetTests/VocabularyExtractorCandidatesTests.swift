@@ -252,3 +252,29 @@ func allCapsAcronymStartingAPhraseIsKept() {
     #expect(terms.contains("IT Operations"))
     #expect(terms.contains("US Treasury Desk"))
 }
+
+@Test("Sentence-opening question words, quantifiers and auxiliaries are not glued to a term either; All Hands and Will Smith stay whole (F787)")
+func questionWordsQuantifiersAndAuxiliariesAreNotGlued() {
+    // F623's list covered articles, possessives and demonstratives; the same defect remained for
+    // "Which", "Every", "Is"… on both paths. The list is extended rather than replaced by the first
+    // word's `.lexicalClass`: measured on these lines (the F787 closure), the tagger calls "All"
+    // a determiner and "Will" a verb, so it would cut "All Hands" and "Will Smith".
+    let openers = [
+        "Which", "What", "Whose", "Every", "Each", "Some", "Any", "No", "Both", "Either", "Neither",
+        "Is", "Are", "Was", "Were", "Does", "Did", "Has", "Have", "Had",
+    ]
+    for includeLineHeuristic in [false, true] {
+        for opener in openers {
+            let terms = Set(VocabularyExtractor.candidates(
+                in: "\(opener) Kestrel Gateway build failed.", includeLineHeuristic: includeLineHeuristic
+            ))
+            #expect(!terms.contains("\(opener) Kestrel Gateway"), "\(opener), includeLineHeuristic: \(includeLineHeuristic)")
+            #expect(terms.contains("Kestrel Gateway"), "\(opener), includeLineHeuristic: \(includeLineHeuristic)")
+        }
+        let kept = Set(VocabularyExtractor.candidates(
+            in: "We met at All Hands on Friday. Will Smith called back.", includeLineHeuristic: includeLineHeuristic
+        ))
+        #expect(kept.contains("All Hands"), "includeLineHeuristic: \(includeLineHeuristic)")
+        #expect(kept.contains("Will Smith"), "includeLineHeuristic: \(includeLineHeuristic)")
+    }
+}

@@ -418,16 +418,22 @@ enum VocabularyExtractor {
     }
 
     /// Function words that open a sentence capitalized and so read, to the capitalized-phrase
-    /// rule, as the first word of a name: "Our Kestrel service…" gave "Our Kestrel" (F623).
-    /// Articles, demonstratives, possessive determiners, personal pronouns and conjunctions: closed
-    /// grammatical classes, so this is a closed set in the `calendarWords` sense, not a
-    /// "common words" list. Single letters ("A", "I") are absent because the phrase rule's first
-    /// word needs two. Prepositions are deliberately left out, because they open real terms
-    /// ("On Call", "To Do") about as often as they open a sentence.
+    /// rule, as the first word of a name: "Our Kestrel service…" gave "Our Kestrel" (F623), and
+    /// "Which Kestrel build…", "Every Grafana panel…", "Is Kestrel Gateway up?" the same (F787).
+    /// Articles, demonstratives, possessive determiners, personal pronouns, conjunctions, question
+    /// words, quantifiers and the auxiliaries that open a question: closed grammatical classes, so
+    /// this is a closed set in the `calendarWords` sense, not a "common words" list. Single letters
+    /// ("A", "I") are absent because the phrase rule's first word needs two. Prepositions are
+    /// deliberately left out, because they open real terms ("On Call", "To Do") about as often as
+    /// they open a sentence; so are "all" ("All Hands" is a meeting) and the modals "will", "can",
+    /// "may" and "must", which are also names and nouns ("Will Smith"), and "do" ("Do Not Disturb").
     ///
-    /// Chosen over the first token's `.lexicalClass` tag, which gave the same output on the F593
-    /// fixtures and this ticket's examples (measured for F623), because a list does not inherit
-    /// the tagger's local-versus-CI model risk that F593 recorded.
+    /// Chosen over the first token's `.lexicalClass` tag. F623 measured the two as giving the same
+    /// output, but on fixtures that opened only with articles, possessives and demonstratives (Our,
+    /// The, This). F787 measured the classes it adds (gates/F787-lexicalclass.log in its closure):
+    /// the tagger agrees on most of them — and also calls "All" a determiner and "Will" a verb, so a
+    /// tag rule would cut "All Hands" and "Will Smith", which this list keeps. A list also does not
+    /// inherit the tagger's local-versus-CI model risk that F593 recorded.
     private static let leadingFunctionWords: Set<String> = [
         "the", "an",
         "this", "that", "these", "those",
@@ -435,6 +441,9 @@ enum VocabularyExtractor {
         "we", "you", "he", "she", "it", "they", "me", "us", "him", "them",
         "and", "but", "or", "nor", "so", "yet",
         "if", "when", "while", "because", "although", "though", "since", "unless",
+        "which", "what", "whose",
+        "every", "each", "some", "any", "no", "both", "either", "neither",
+        "is", "are", "was", "were", "does", "did", "has", "have", "had",
     ]
 
     /// Two to four capitalized words in a row ("Priya Raman", "New York"), on both paths. A leading
