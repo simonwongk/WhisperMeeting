@@ -176,3 +176,23 @@ func aProtectedTermCorrectionIsNotALoss() {
         "这个 Kubernetes 集群已经修复了。", input: input, protectedTerms: ["Kubernetes"]
     ) == nil)
 }
+
+@Test("A vocabulary term excuses only the word in its place, not a word translated elsewhere (F852)")
+func aVocabularyTermExcusesOnlyTheWordInItsPlace() {
+    // The Wave 3 lane K review's example: "Kubernetes" was never said, and the refiner both added it
+    // and translated "fix". F637's count let the new term stand in for the translated word.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "这个 Kubernetes 集群已经修复了。", input: "这个集群已经 fix 了", protectedTerms: ["Kubernetes"]
+    ) == nil)
+    // The correction F637 allows: the term where the misheard word was, at either end of the text.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "Kubernetes 集群已经 fix 了。", input: "Kubernetis 集群已经 fix 了", protectedTerms: ["Kubernetes"]
+    ) == "Kubernetes 集群已经 fix 了。")
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "把这个部署到 Kubernetes。", input: "把这个部署到 Kubernetis", protectedTerms: ["Kubernetes"]
+    ) == "把这个部署到 Kubernetes。")
+    // Two words for one term is still one word lost (F637's one-for-one count, kept).
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "把这个部署到 Kubernetes。", input: "把这个部署到 Cooper netties", protectedTerms: ["Kubernetes"]
+    ) == nil)
+}

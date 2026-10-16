@@ -134,7 +134,11 @@ public enum DictationRefinePolicy {
     /// One exception, which `ProtectedTerms` recognises (F245's rule): a missing token is excused by
     /// a vocabulary term the output gained and the source lacked — a refiner correcting a misheard
     /// word to the user's own term. A term excuses only as many tokens as it newly brings, so it
-    /// can stand in for the word it replaced and not for a second word translated beside it.
+    /// can stand in for the word it replaced and not for a second word translated beside it. And
+    /// only in that word's place (F852): one of the term's places in the output must keep a token
+    /// that stood beside a missing word in the source, before it or after it. A neighbour is a
+    /// rough stand-in for alignment — a common token such as 了 can match twice — but a term the
+    /// refiner added somewhere else entirely no longer excuses a word it translated.
     ///
     /// Erring towards refusal costs nothing: the raw transcript ships, as it does whenever
     /// refinement is off or slow. Known refusals of an edit that kept the word: a Latin word joined
@@ -159,9 +163,64 @@ public enum DictationRefinePolicy {
         let gainedTerms = protectedTerms.filter {
             ProtectedTerms.contains(output, term: $0) && !ProtectedTerms.contains(source, term: $0)
         }
-        let termTokens = Set(gainedTerms.flatMap { embeddedTokens(of: $0, script: minority).keys })
+        // F852: a term excuses a missing word only where it stands in for one — some place the term
+        // occupies in the output keeps a neighbour of some place a missing word occupied in the
+        // source. Before this a term anywhere in the output excused a word translated anywhere
+        // else ("这个集群已经 fix 了" → "这个 Kubernetes 集群已经修复了。").
+        let missingWords = Set(said.keys.filter { said[$0, default: 0] > kept[$0, default: 0] })
+        let sourceSequence = tokenSequence(of: source)
+        let outputSequence = tokenSequence(of: output)
+        let missingPlaces = places(in: sourceSequence) { missingWords.contains(sourceSequence[$0]) ? 1 : nil }
+        let inPlace = gainedTerms.filter { term in
+            let termSequence = tokenSequence(of: term)
+            guard !termSequence.isEmpty else { return false }
+            let termPlaces = places(in: outputSequence) { start in
+                Array(outputSequence[start...].prefix(termSequence.count)) == termSequence
+                    ? termSequence.count : nil
+            }
+            return termPlaces.contains { place in
+                missingPlaces.contains { $0.before == place.before || $0.after == place.after }
+            }
+        }
+        let termTokens = Set(inPlace.flatMap { embeddedTokens(of: $0, script: minority).keys })
         let corrections = termTokens.reduce(0) { $0 + max(0, kept[$1, default: 0] - said[$1, default: 0]) }
         return missing > corrections
+    }
+
+    /// Every token of `text` in order, both scripts (F852): one per CJK ideograph, one per run of
+    /// other alphanumerics (lowercased, NFKC), as `embeddedTokens` reads them, digits included.
+    private static func tokenSequence(of text: String) -> [String] {
+        var tokens: [String] = []
+        var run = String.UnicodeScalarView()
+        func endRun() {
+            if !run.isEmpty { tokens.append(String(run).lowercased()) }
+            run = String.UnicodeScalarView()
+        }
+        for scalar in text.precomposedStringWithCompatibilityMapping.unicodeScalars {
+            if isCJKIdeograph(scalar) {
+                endRun()
+                tokens.append(String(scalar))
+            } else if CharacterSet.alphanumerics.contains(scalar) {
+                run.append(scalar)
+            } else {
+                endRun()
+            }
+        }
+        endRun()
+        return tokens
+    }
+
+    /// The tokens either side of each place in `sequence` where `length(at:)` finds something,
+    /// `nil` at an end of the text (F852).
+    private static func places(
+        in sequence: [String], length: (Int) -> Int?
+    ) -> [(before: String?, after: String?)] {
+        sequence.indices.compactMap { start in
+            guard let count = length(start), count > 0 else { return nil }
+            let end = start + count
+            return (before: start > 0 ? sequence[start - 1] : nil,
+                    after: end < sequence.count ? sequence[end] : nil)
+        }
     }
 
     private static func isCJKIdeograph(_ scalar: Unicode.Scalar) -> Bool {
