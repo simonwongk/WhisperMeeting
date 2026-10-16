@@ -35,7 +35,11 @@ public enum TransliteratedTermCorrection {
             .sorted { $0.count != $1.count ? $0.count > $1.count : $0 < $1 }
         for term in candidates {
             let characters = Array(term)
-            guard characters.count >= 2 else { continue }
+            // At least one of the term's characters stays a character in any span this replaces,
+            // so a term none of whose characters is in the text is skipped before any reading or
+            // pattern is built — a vocabulary of hundreds of terms costs a scan, not hundreds of
+            // regular expressions.
+            guard characters.count >= 2, characters.contains(where: { result.contains($0) }) else { continue }
             let readings = characters.map { MandarinSound.reading($0, cache: &cache) }
             guard readings.allSatisfy({ $0 != nil }) else { continue }
             let syllables = readings.compactMap { $0 }
