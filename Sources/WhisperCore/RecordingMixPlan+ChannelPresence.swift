@@ -27,6 +27,11 @@ extension RecordingMixPlan {
         /// channels' mix does not hold — F1001's first-round link, kept beside `stretches` (round 4,
         /// `mostChannelMissingShare`).
         public var channelWindows: [[Measure]]
+        /// The brief rule's windows (F1009): of the windows of `briefWindowFrames` frames every `briefWindowStep`, those
+        /// holding a bin the rule would count, in order, judged as a stretch is — each band's energy, and the part in bins
+        /// opposite in polarity that no broadband delay explains (`briefCancels`). Beside `stretches`, for a sound too
+        /// brief to be three frames of one; a window with nothing to count cannot refuse and is left out.
+        public var briefStretches: [Stretch]
 
         public struct Measure: Sendable, Equatable {
             public var energy: Double
@@ -55,11 +60,13 @@ extension RecordingMixPlan {
             }
         }
 
-        public init(channels: Int, stretches: [Stretch], mix: [Measure], channelWindows: [[Measure]]) {
+        public init(channels: Int, stretches: [Stretch], mix: [Measure], channelWindows: [[Measure]],
+                    briefStretches: [Stretch] = []) {
             self.channels = channels
             self.stretches = stretches
             self.mix = mix
             self.channelWindows = channelWindows
+            self.briefStretches = briefStretches
         }
     }
 
@@ -121,7 +128,9 @@ extension RecordingMixPlan {
     /// that a listener might call ordinary: two talkers before a pair of microphones 0.75 to 1.5 ms apart (five
     /// of the six such fixtures, echoing or not, read 0.26 to 0.70), and a Haas widening of 10–20 ms (0.18 to
     /// 0.49) — both do lose sound to the mix's comb filter. What this and the first round's link beside it
-    /// (`mostChannelMissingShare`) still miss, measured, is listed in docs/MEETING_STORAGE_DESIGN.md, step 4.
+    /// (`mostChannelMissingShare`) still miss, measured, is listed in docs/MEETING_STORAGE_DESIGN.md, step 4. The
+    /// same bound judges the phase rule's amount in a stretch and the brief rule's in a window (F1009), and an
+    /// app-level probe between a tenth and a fifth pins it end to end (`shrinkPinsTheStretchRulesBound`, F1014).
     public static let mostCancelledShare = 0.1
 
     /// Whether a bin whose channels' cross-spectrum over a stretch, at its best alignment, has real part
@@ -132,6 +141,106 @@ extension RecordingMixPlan {
         guard alignedReal.isFinite, coherence.isFinite, frames.isFinite, alignedReal < 0,
               coherence >= cancellationMinimumCoherence, frames >= cancellationMinimumFrames else { return 0 }
         return -alignedReal
+    }
+
+    // MARK: Beside link 1 — opposite polarity no broadband delay explains (F1009)
+
+    /// The stretch rule's delay allowance takes the strongest peaks of the stretch's cross-correlation, and an
+    /// inverted narrowband sound makes its own peak there, at half its period — the same signal, which the mix
+    /// cancels — so it excused itself (F1009: a tone burst beside two spaced talkers, a 1 kHz tone alone). And any
+    /// delay excused every bin less than a quarter-turn from it, so a voice opposite on the two channels beside a
+    /// spaced talker was half excused. Two rules sit beside the stretch rule, each counting a bin's real part when it
+    /// is opposite (`-Re(L·conj R)`, what the mix loses), and each excusing it only by a *broadband* delay
+    /// (`delayEvidence…`), so only sound that really arrives late at one microphone, across the spectrum, can excuse
+    /// anything: the phase rule over each stretch (`phaseRule…`) and the brief rule over a few frames (`brief…`).
+    /// Measured offline over 50 positives and 311 controls (`gates/F1009-x16*.txt`, Wave 8 lane A).
+
+    /// The delays a stretch's sound arrives with, for these rules: the peaks of its cross-spectrum weighted by phase
+    /// alone (GCC-PHAT — each bin a unit phasor times the square root of its coherence), so a loud narrowband sound
+    /// counts no more than its few bins; only over bins holding at least this share of the stretch's mean bin energy,
+    /// which leaves out the leakage around a sparse spectrum's peaks.
+    public static let delayEvidenceShare = 0.1
+
+    /// A peak of that correlation is a delay when it reaches this (the stretch's, for the phase rule: the strongest
+    /// `delayEvidenceCount`) …
+    public static let delayEvidenceThreshold = 0.2
+
+    /// See `delayEvidenceThreshold`.
+    public static let delayEvidenceCount = 3
+
+    /// … and when at least `delayEvidenceBands` bands of `cancellationBands`, each with at least
+    /// `delayEvidenceBandBins` bins in the search, reach `delayEvidenceBandThreshold` there by themselves: broadband,
+    /// not one sound's half period.
+    public static let delayEvidenceBands = 2
+
+    /// See `delayEvidenceBands`.
+    public static let delayEvidenceBandThreshold = 0.3
+
+    /// See `delayEvidenceBands`.
+    public static let delayEvidenceBandBins = 3
+
+    /// The phase rule: a bin counts only where its channels are this coherent over the stretch — a near-certain
+    /// single phase. A room's echo bends a spaced talker's phase by tens of degrees in a bin, at coherence up to
+    /// about 0.98, and at 0.98 the rule refused four of the 227 robustness controls; at 0.99, none.
+    public static let phaseRuleCoherence = 0.99
+
+    /// … and is explained by a delay when its phase is within this many degrees of the delay's.
+    public static let phaseRuleTolerance = 30.0
+
+    /// The brief rule's windows: this many frames (`cancellationFrameSeconds`, half-overlapping: 128 ms) …
+    public static let briefWindowFrames = 3
+
+    /// … starting every this many frames, so a window lies inside a sound of about a tenth of a second wherever it
+    /// falls, a stretch's edge included.
+    public static let briefWindowStep = 2
+
+    /// The brief rule counts a bin only where its channels are this coherent over the window …
+    public static let briefCoherence = 0.98
+
+    /// … its energy spread over at least this many frames …
+    public static let briefMinimumFrames = 1.5
+
+    /// … and its phase within this many degrees of opposite …
+    public static let briefOpposition = 20.0
+
+    /// … and further than this many degrees from every broadband delay's phase: those of the stretches the window
+    /// overlaps, at `delayEvidenceThreshold` and at `briefDelayThreshold`, and its own at `briefOwnDelayThreshold`.
+    /// Wide, because a room's echo bends a spaced talker's phase; at 60 the robustness controls lost one.
+    public static let briefDelayTolerance = 75.0
+
+    /// A stretch's weaker delays, for the brief rule: peaks down to this, the strongest `briefDelayCount`.
+    public static let briefDelayThreshold = 0.1
+
+    /// See `briefDelayThreshold`.
+    public static let briefDelayCount = 4
+
+    /// A window's own delays, for the brief rule: only clear ones.
+    public static let briefOwnDelayThreshold = 0.5
+
+    /// Whether a bin whose cross-spectrum has `alignedReal` = Re(S·e^(−iωd)) at a delay's phase, and magnitude
+    /// `magnitude`, lies within `toleranceDegrees` of that phase.
+    public static func delayExplains(alignedReal: Double, magnitude: Double, toleranceDegrees: Double) -> Bool {
+        guard alignedReal.isFinite, magnitude.isFinite else { return false }
+        return alignedReal >= cos(toleranceDegrees * Double.pi / 180) * magnitude
+    }
+
+    /// The phase rule's amount for a bin over a stretch: `-real` (what the mix loses there) when the bin is opposite
+    /// (`real` < 0), at least `phaseRuleCoherence` coherent, spread over `cancellationMinimumFrames`, and `explained`
+    /// by no broadband delay; else 0. Not a number cancels nothing here, as `cancels`.
+    public static func phaseRuleCancels(real: Double, coherence: Double, frames: Double, explained: Bool) -> Double {
+        guard real.isFinite, coherence.isFinite, frames.isFinite, real < 0, !explained,
+              coherence >= phaseRuleCoherence, frames >= cancellationMinimumFrames else { return 0 }
+        return -real
+    }
+
+    /// The brief rule's amount for a bin over a window: `-real` when the bin is within `briefOpposition` of opposite,
+    /// at least `briefCoherence` coherent, spread over `briefMinimumFrames`, and `explained` by no broadband delay
+    /// within `briefDelayTolerance`; else 0.
+    public static func briefCancels(real: Double, magnitude: Double, coherence: Double, frames: Double, explained: Bool) -> Double {
+        guard real.isFinite, magnitude.isFinite, coherence.isFinite, frames.isFinite, !explained,
+              coherence >= briefCoherence, frames >= briefMinimumFrames,
+              real <= -cos(briefOpposition * Double.pi / 180) * magnitude, real < 0 else { return 0 }
+        return -real
     }
 
     // MARK: Beside link 1 — the first round's channel against the mix
@@ -205,7 +314,9 @@ extension RecordingMixPlan {
     /// - every window in which either channel's own decode is above `MeetingStoragePlan.silenceLevel` has
     ///   stretches measured in it;
     /// - in every stretch above `silenceLevel`, judged against its own energy and no one else's, no band holding
-    ///   at least `judgedBandShare` of it has more than `mostCancelledShare` cancelling;
+    ///   at least `judgedBandShare` of it has more than `mostCancelledShare` cancelling — the stretch rule's amount
+    ///   and the phase rule's, whichever is larger in each bin (F1009);
+    /// - the same of every brief window (`briefStretches`, F1009);
     /// - beside that, in every window in which a channel sounds (`audibleShare` of its own level), no more than
     ///   `mostChannelMissingShare` of that channel is missing from the mix (the first round's link, round 4);
     /// - and in every window in which a channel sounds (`audibleShare` of its own level), no more than
@@ -236,6 +347,20 @@ extension RecordingMixPlan {
         }
         // The channels do not cancel, stretch by stretch, band by band.
         for stretch in presence.stretches {
+            guard stretch.start.isFinite, stretch.level.isFinite, stretch.bands.count == cancellationBands.count - 1,
+                  stretch.bands.allSatisfy(valid) else {
+                return .unmeasured(window: stretch.start.isFinite ? Swift.max(0, windowOf(stretch.start)) : 0, channel: nil)
+            }
+            guard stretch.level >= MeetingStoragePlan.silenceLevel else { continue }
+            let total = stretch.bands.reduce(0) { $0 + $1.energy }
+            for (band, measure) in stretch.bands.enumerated() where measure.energy > 0 && measure.energy >= judgedBandShare * total {
+                if !(measure.missing <= measure.energy * mostCancelledShare) {
+                    return .cancels(seconds: stretch.start, band: band)
+                }
+            }
+        }
+        // And the brief rule's windows, judged as a stretch is (F1009).
+        for stretch in presence.briefStretches {
             guard stretch.start.isFinite, stretch.level.isFinite, stretch.bands.count == cancellationBands.count - 1,
                   stretch.bands.allSatisfy(valid) else {
                 return .unmeasured(window: stretch.start.isFinite ? Swift.max(0, windowOf(stretch.start)) : 0, channel: nil)

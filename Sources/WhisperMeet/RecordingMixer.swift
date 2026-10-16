@@ -469,7 +469,7 @@ enum RecordingMixer {
         cancellation.finish()
         copyLink.finish(copyEnd: copyEnd)
         return RecordingMixPlan.ChannelPresence(channels: 2, stretches: cancellation.stretches, mix: copyLink.windows,
-                                                channelWindows: copyLink.channelWindows)
+                                                channelWindows: copyLink.channelWindows, briefStretches: cancellation.briefStretches)
     }
 
     /// A real-to-complex transform of `size` samples through a Hann window, for the presence links.
@@ -507,7 +507,8 @@ enum RecordingMixer {
     }
 
     /// Link 1 of `channelPresence`: whether the two channels cancel when they are mixed into one, per stretch
-    /// and band (F1001, round 2).
+    /// and band (F1001, round 2) — the stretch rule, and beside it the phase rule over each stretch and the brief rule
+    /// over windows of a few frames, which only a broadband delay can excuse (F1009).
     private final class CancellationLink {
         private let left: Spectrum, right: Spectrum
         private let size: Int, hop: Int
@@ -525,6 +526,29 @@ enum RecordingMixer {
         private var leftLane: [Float] = [], rightLane: [Float] = []
         private var bufferStart = 0, next = 0, received = 0
         private(set) var stretches: [RecordingMixPlan.ChannelPresence.Stretch] = []
+
+        /// One measured frame, kept for the brief rule's windows (F1009): per bin L·conj(R) and both energies, and the
+        /// squares and sample count of the hop it owns.
+        private struct Frame {
+            var crossReal: [Double], crossImaginary: [Double], leftEnergy: [Double], rightEnergy: [Double]
+            var squares: Double, samples: Double
+        }
+        /// The last `briefWindowFrames` frames.
+        private var recent: [Frame] = []
+        private var frameCount = 0
+        /// A brief window measured but not yet judged: it needs the delays of every stretch it overlaps.
+        private struct PendingWindow {
+            let firstFrame: Int, lastFrame: Int
+            let level: Double
+            let energies: [Double]
+            /// The bins the brief rule would count, and the window's own delays.
+            let candidates: [(bin: Int, real: Double, imaginary: Double, magnitude: Double)]
+            let ownDelays: [Int]
+        }
+        private var pending: [PendingWindow] = []
+        /// Per closed stretch, the delays the brief rule may excuse a bin by.
+        private var briefDelays: [[Int]] = []
+        private(set) var briefStretches: [RecordingMixPlan.ChannelPresence.Stretch] = []
 
         init() throws {
             let size = Int(saturating: (RecordingMixPlan.cancellationFrameSeconds * Double(RecordingMixer.sampleRate)).rounded())
@@ -571,6 +595,16 @@ enum RecordingMixer {
             rightLane.append(contentsOf: repeatElement(0, count: size))
             measureReady(upTo: bufferStart + leftLane.count)
             closeStretch()
+            // The windows starting in the last frames, shorter than the others.
+            var start = frameCount - recent.count
+            while start < frameCount {
+                if start % RecordingMixPlan.briefWindowStep == 0, frameCount - start < RecordingMixPlan.briefWindowFrames {
+                    measureWindow(Array(recent.suffix(frameCount - start)), firstFrame: start)
+                }
+                start += 1
+            }
+            judgePending(closedFrames: Int.max)
+            briefStretches.sort { $0.start < $1.start }
         }
 
         private func measureReady(upTo available: Int) {
@@ -589,24 +623,160 @@ enum RecordingMixer {
             let offset = next - bufferStart
             left.transform(leftLane, from: offset)
             right.transform(rightLane, from: offset)
+            var frame = Frame(crossReal: [Double](repeating: 0, count: bins), crossImaginary: [Double](repeating: 0, count: bins),
+                              leftEnergy: [Double](repeating: 0, count: bins), rightEnergy: [Double](repeating: 0, count: bins),
+                              squares: 0, samples: 0)
             for bin in 0..<bins {
                 let k = lowBin + bin
                 let a = Double(left.real[k]), b = Double(left.imaginary[k])
                 let c = Double(right.real[k]), d = Double(right.imaginary[k])
-                crossReal[bin] += a * c + b * d
-                crossImaginary[bin] += b * c - a * d
+                let real = a * c + b * d, imaginary = b * c - a * d
+                crossReal[bin] += real
+                crossImaginary[bin] += imaginary
                 let pl = a * a + b * b, pr = c * c + d * d
                 leftEnergy[bin] += pl; rightEnergy[bin] += pr
                 products[bin] += (pl * pr).squareRoot(); productSquares[bin] += pl * pr
+                frame.crossReal[bin] = real; frame.crossImaginary[bin] = imaginary
+                frame.leftEnergy[bin] = pl; frame.rightEnergy[bin] = pr
             }
             // The level: each frame owns the hop it starts, inside the recording.
             for index in offset..<Swift.min(offset + hop, received - bufferStart) {
                 let l = Double(leftLane[index]), r = Double(rightLane[index])
                 squares += l * l + r * r
                 samples += 2
+                frame.squares += l * l + r * r
+                frame.samples += 2
             }
             frames += 1
+            // The brief rule's window ending with this frame, when one starts where the step puts it.
+            recent.append(frame)
+            if recent.count > RecordingMixPlan.briefWindowFrames { recent.removeFirst() }
+            frameCount += 1
+            let windowStart = frameCount - RecordingMixPlan.briefWindowFrames
+            if windowStart >= 0, windowStart % RecordingMixPlan.briefWindowStep == 0 { measureWindow(recent, firstFrame: windowStart) }
             if frames == RecordingMixPlan.cancellationGroupFrames { closeStretch() }
+        }
+
+        /// The broadband delays in sums over some frames (F1009): the peaks of the cross-spectrum weighted by phase
+        /// alone, each bin a unit phasor times the square root of its coherence, over bins holding at least
+        /// `delayEvidenceShare` of the mean bin energy; a peak at least `threshold` (the strongest `count`), reached
+        /// by itself in at least `delayEvidenceBands` bands. Lag indices, never the zero lag.
+        private func delays(crossReal: [Double], crossImaginary: [Double], leftEnergy: [Double], rightEnergy: [Double],
+                            asks: [(threshold: Double, count: Int)]) -> [[Int]] {
+            var mean = 0.0
+            for bin in 0..<bins { mean += (leftEnergy[bin] + rightEnergy[bin]) / 2 }
+            mean /= Double(Swift.max(1, bins))
+            var unit = [Double](repeating: 0, count: bins)
+            var weight = 0.0
+            var bandWeight = [Double](repeating: 0, count: bandCount), bandBins = [Int](repeating: 0, count: bandCount)
+            for bin in 0..<bins {
+                let energies = leftEnergy[bin] * rightEnergy[bin]
+                guard energies > 0, energies.isFinite,
+                      (leftEnergy[bin] + rightEnergy[bin]) / 2 >= RecordingMixPlan.delayEvidenceShare * mean else { continue }
+                unit[bin] = 1 / energies.squareRoot()
+                let magnitude = (crossReal[bin] * crossReal[bin] + crossImaginary[bin] * crossImaginary[bin]).squareRoot()
+                weight += magnitude * unit[bin]
+                bandWeight[bandOf[bin]] += magnitude * unit[bin]; bandBins[bandOf[bin]] += 1
+            }
+            guard weight > 0, weight.isFinite else { return asks.map { _ in [] } }
+            let zero = lags.firstIndex(of: 0) ?? 0
+            var bandCorrelation = [[Double]](repeating: [Double](repeating: 0, count: lags.count), count: bandCount)
+            var correlation = [Double](repeating: 0, count: lags.count)
+            for index in lags.indices {
+                let base = index * bins
+                for bin in 0..<bins where unit[bin] > 0 {
+                    bandCorrelation[bandOf[bin]][index] += (crossReal[bin] * cosines[base + bin] + crossImaginary[bin] * sines[base + bin]) * unit[bin]
+                }
+                correlation[index] = bandCorrelation.reduce(0) { $0 + $1[index] } / weight
+            }
+            return asks.map { ask in
+                var peaks: [(index: Int, value: Double)] = []
+                for index in lags.indices where index != zero && correlation[index] >= ask.threshold
+                    && (index == 0 || correlation[index] >= correlation[index - 1])
+                    && (index == lags.count - 1 || correlation[index] >= correlation[index + 1]) {
+                    peaks.append((index, correlation[index]))
+                }
+                return peaks.sorted { $0.value > $1.value }.prefix(ask.count).map(\.index).filter { index in
+                    var support = 0
+                    for band in 0..<bandCount where bandBins[band] >= RecordingMixPlan.delayEvidenceBandBins && bandWeight[band] > 0 {
+                        if bandCorrelation[band][index] / bandWeight[band] >= RecordingMixPlan.delayEvidenceBandThreshold { support += 1 }
+                    }
+                    return support >= RecordingMixPlan.delayEvidenceBands
+                }
+            }
+        }
+
+        /// Whether any of `delays` explains the bin's phase within `tolerance` degrees.
+        private func explained(_ bin: Int, real: Double, imaginary: Double, magnitude: Double, by delays: [Int], tolerance: Double) -> Bool {
+            delays.contains { index in
+                RecordingMixPlan.delayExplains(alignedReal: real * cosines[index * bins + bin] + imaginary * sines[index * bins + bin],
+                                               magnitude: magnitude, toleranceDegrees: tolerance)
+            }
+        }
+
+        /// Sums `window`'s frames and keeps the bins the brief rule would count; only when there are any, the window's
+        /// band energies, level and own clear delays, for judging once the stretches it overlaps have their delays. A
+        /// window with none cannot refuse and is not kept (`briefStretches` holds only windows with something to judge).
+        private func measureWindow(_ window: [Frame], firstFrame: Int) {
+            let zeros = [Double](repeating: 0, count: bins)
+            var real = zeros, imaginary = zeros, leftSum = zeros, rightSum = zeros
+            for frame in window {
+                for bin in 0..<bins {
+                    real[bin] += frame.crossReal[bin]; imaginary[bin] += frame.crossImaginary[bin]
+                    leftSum[bin] += frame.leftEnergy[bin]; rightSum[bin] += frame.rightEnergy[bin]
+                }
+            }
+            var candidates: [(bin: Int, real: Double, imaginary: Double, magnitude: Double)] = []
+            for bin in 0..<bins where real[bin] < 0 {
+                let both = leftSum[bin] * rightSum[bin]
+                guard both > 0, both.isFinite else { continue }
+                let magnitude = (real[bin] * real[bin] + imaginary[bin] * imaginary[bin]).squareRoot()
+                let coherence = magnitude * magnitude / both
+                // The spread only for a bin coherent and opposite enough to count.
+                guard coherence >= RecordingMixPlan.briefCoherence else { continue }
+                var products = 0.0, productSquares = 0.0
+                for frame in window {
+                    let product = frame.leftEnergy[bin] * frame.rightEnergy[bin]
+                    products += product.squareRoot(); productSquares += product
+                }
+                let spread = productSquares > 0 ? products * products / productSquares : 0
+                if RecordingMixPlan.briefCancels(real: real[bin], magnitude: magnitude, coherence: coherence, frames: spread, explained: false) > 0 {
+                    candidates.append((bin, real[bin], imaginary[bin], magnitude))
+                }
+            }
+            // A window with nothing the rule would count cannot refuse: nothing more to keep of it.
+            guard !candidates.isEmpty else { return }
+            var energies = [Double](repeating: 0, count: bandCount)
+            for bin in 0..<bins { energies[bandOf[bin]] += (leftSum[bin] + rightSum[bin]) / 2 }
+            var windowSquares = 0.0, windowSamples = 0.0
+            for frame in window { windowSquares += frame.squares; windowSamples += frame.samples }
+            let own = delays(crossReal: real, crossImaginary: imaginary, leftEnergy: leftSum, rightEnergy: rightSum,
+                             asks: [(RecordingMixPlan.briefOwnDelayThreshold, RecordingMixPlan.delayEvidenceCount)])[0]
+            pending.append(PendingWindow(firstFrame: firstFrame, lastFrame: firstFrame + window.count - 1,
+                                         level: windowSamples > 0 ? (windowSquares / windowSamples).squareRoot() : 0,
+                                         energies: energies, candidates: candidates, ownDelays: own))
+        }
+
+        /// Judges every pending window whose frames all lie in the first `closedFrames` frames, whose stretches' delays
+        /// are known.
+        private func judgePending(closedFrames: Int) {
+            let group = RecordingMixPlan.cancellationGroupFrames
+            var still: [PendingWindow] = []
+            for window in pending {
+                guard window.lastFrame < closedFrames else { still.append(window); continue }
+                var excusing = window.ownDelays
+                for stretch in (window.firstFrame / group)...(window.lastFrame / group) where stretch < briefDelays.count {
+                    excusing += briefDelays[stretch]
+                }
+                var bands = window.energies.map { RecordingMixPlan.ChannelPresence.Measure(energy: $0, missing: 0) }
+                for bin in window.candidates where !explained(bin.bin, real: bin.real, imaginary: bin.imaginary, magnitude: bin.magnitude,
+                                                              by: excusing, tolerance: RecordingMixPlan.briefDelayTolerance) {
+                    bands[bandOf[bin.bin]].missing += -bin.real
+                }
+                let start = Double(window.firstFrame * hop) / Double(RecordingMixer.sampleRate)
+                briefStretches.append(.init(start: start, level: window.level, bands: bands))
+            }
+            pending = still
         }
 
         private func closeStretch() {
@@ -637,6 +807,12 @@ enum RecordingMixer {
                 peaks.append((index, correlation[index]))
             }
             let alignments = [zero] + peaks.sorted { $0.value > $1.value }.prefix(RecordingMixPlan.alignmentCandidates).map(\.index)
+            // F1009: the broadband delays, for the phase rule and, with the weaker ones, for the brief rule.
+            let found = delays(crossReal: crossReal, crossImaginary: crossImaginary, leftEnergy: leftEnergy, rightEnergy: rightEnergy,
+                               asks: [(RecordingMixPlan.delayEvidenceThreshold, RecordingMixPlan.delayEvidenceCount),
+                                      (RecordingMixPlan.briefDelayThreshold, RecordingMixPlan.briefDelayCount)])
+            let broadband = found[0]
+            briefDelays.append(Array(Set(found[0] + found[1])).sorted())
             var bands = [RecordingMixPlan.ChannelPresence.Measure](repeating: .init(energy: 0, missing: 0), count: bandCount)
             for bin in 0..<bins {
                 var best = -Double.infinity
@@ -648,10 +824,19 @@ enum RecordingMixer {
                 let spread = productSquares[bin] > 0 ? products[bin] * products[bin] / productSquares[bin] : 0
                 let band = bandOf[bin]
                 bands[band].energy += (leftEnergy[bin] + rightEnergy[bin]) / 2
-                bands[band].missing += RecordingMixPlan.cancels(alignedReal: best, coherence: coherence, frames: spread)
+                let stretchRule = RecordingMixPlan.cancels(alignedReal: best, coherence: coherence, frames: spread)
+                // The phase rule beside it (F1009): the larger of the two counts, so it refuses nothing the stretch rule let through
+                // that is not opposite, and everything the stretch rule refused it still refuses.
+                let magnitude = (crossReal[bin] * crossReal[bin] + crossImaginary[bin] * crossImaginary[bin]).squareRoot()
+                let phaseRule = RecordingMixPlan.phaseRuleCancels(
+                    real: crossReal[bin], coherence: coherence, frames: spread,
+                    explained: explained(bin, real: crossReal[bin], imaginary: crossImaginary[bin], magnitude: magnitude,
+                                         by: broadband, tolerance: RecordingMixPlan.phaseRuleTolerance))
+                bands[band].missing += Swift.max(stretchRule, phaseRule)
             }
             let start = Double(stretches.count * RecordingMixPlan.cancellationGroupFrames * hop) / Double(RecordingMixer.sampleRate)
             stretches.append(.init(start: start, level: samples > 0 ? (squares / samples).squareRoot() : 0, bands: bands))
+            judgePending(closedFrames: stretches.count * RecordingMixPlan.cancellationGroupFrames)
         }
     }
 
@@ -824,9 +1009,13 @@ enum RecordingMixer {
                 AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
                 AVSampleRateKey: sampleRate, AVNumberOfChannelsKey: count,
             ]
-            if count > 2 {
+            if count >= 2 {
                 // Discrete, so each channel stays apart through the conversion: asked for fewer, or
                 // for positions, AVFoundation would downmix, and of a WAV with no layout keep channel 1.
+                // At two channels too (F1013): asked for two with no layout, AVFoundation maps the file's
+                // positions onto an implied stereo pair, and on macOS 15 that read failed for a WAV laid out
+                // as the side pair, the centre pair or front left beside centre (CI run 38869997851), so
+                // Shrink kept those as unreadable. In order, nothing is mapped: channel n is the file's nth.
                 var layout = AudioChannelLayout()
                 layout.mChannelLayoutTag = kAudioChannelLayoutTag_DiscreteInOrder | UInt32(count)
                 settings[AVChannelLayoutKey] = Data(bytes: &layout, count: MemoryLayout<AudioChannelLayout>.size)

@@ -259,6 +259,8 @@ func shrinkJudgesAWAVByWhatTheCompressionKeepsOfItsMask() async throws {
             #expect(outcome.alert.contains("Shrunk"), "\(name): removed, but \(outcome.alert)")
             #expect(heldA > ownA / 4 && heldB > ownB / 4,
                     "\(name): removed, but the copy holds A \(heldA) of \(ownA) and B \(heldB) of \(ownB)")
+            // Printed too, so a run on another macOS names what its readers did with every mask (F1013).
+            print("F1001 host: \(name) shrunk, the copy holding A \(heldA) of \(ownA) and B \(heldB) of \(ownB)")
         } else if let reader = outcome.unreadable {
             print("F1001 host: \(name) kept, as this host's \(reader)")
             #expect(outcome.alert.contains(unreadable), "\(name): \(reader), but \(outcome.alert)")
@@ -592,6 +594,24 @@ func shrinkJudgesBenchSpeech() async throws {
     let middle: [Float] = lead + [Float](repeating: 0, count: interjection.count) + tail
     let side: [Float] = [Float](repeating: 0, count: lead.count) + interjection + [Float](repeating: 0, count: tail.count)
     positives.append(("a 1.2 s side interjection", midSide(middle, side)))
+    // F1009: a spoken interjection of 0.12 s, inside a stretch and across a stretch's edge (4.096 s); and a side voice
+    // 6 dB down beside a talker on microphones 1 ms apart, which the stretch rule's delay allowance half excused.
+    // The loudest 0.12 s of en4, as review 1 of round 2 took it.
+    let en4: [Float] = try #require(try benchClip("en4"))
+    var loudest = 0, loudestEnergy = 0.0
+    for start in stride(from: 0, to: en4.count - 4_800, by: 160) {
+        let energy = en4[start..<(start + 4_800)].reduce(0.0) { $0 + Double($1) * Double($1) }
+        if energy > loudestEnergy { loudestEnergy = energy; loudest = start }
+    }
+    let word: [Float] = Array(en4[loudest..<(loudest + 1_920)]).map { $0 * 0.5 }
+    for (label, start) in [("inside a stretch", 35_904), ("across a stretch's edge", 64_576)] {
+        var middle2 = x, side2 = [Float](repeating: 0, count: x.count)
+        for n in word.indices { middle2[start + n] = 0; side2[start + n] = word[n] }
+        positives.append(("a 0.12 s side interjection, \(label) (F1009)", midSide(middle2, side2)))
+    }
+    positives.append(("a talker on microphones 1 ms apart, a side voice 6 dB down (F1009)",
+                      [mix(x, scaled(y, 0.5)), mix(late(x, 16), scaled(y, 0.5), -1)]))
+    negatives.append(("a talker on microphones 1 ms apart (F1009)", [x, late(x, 16)]))
     negatives.append(("panned, both talkers on both sides", [mix(scaled(x, 0.7), scaled(y, 0.3)), mix(scaled(x, 0.3), scaled(y, 0.7))]))
     negatives.append(("a phone's spacing, two talkers", [mix(x, late(y, 7)), mix(late(x, 7), y)]))
     negatives.append(("one talker centre, one hard left", [mix(x, y), x]))
@@ -607,4 +627,94 @@ func shrinkJudgesBenchSpeech() async throws {
     }
     print("F1001 round 2 speech: \(positives.count) cancelling, \(negatives.count) ordinary, \(wrong.count) wrong")
     #expect(wrong.isEmpty, "\(wrong)")
+}
+
+// MARK: - F1009: opposite polarity that only a broadband delay may excuse, and solos under a fifth of a second
+
+private let c16 = voice16([283, 487, 661, 797, 1_051, 1_237, 1_523, 1_901, 2_243, 3_163, 3_701, 4_409])
+/// Voice A and voice C before a pair of microphones: A 0.6 ms later on the right, C 1.3 ms later on the left.
+private let spacedTalkers: [[Float]] = [mix(a16, late(c16, 21)), mix(late(a16, 10), c16)]
+
+/// Every case F1009 names that F1001's rules deleted with the cancelled sound gone from the copy. The stretch rule's
+/// delay allowance excused a narrowband sound by the peak its own inversion makes (half its period), and any delay
+/// excused the bins a quarter-turn from it; a solo under about a fifth of a second was under its three frames' spread.
+private func f1009Probes() -> [(String, [[Float]])] {
+    let burst = gated(voice16([953], amplitude: 0.05), [(3, 4)])
+    var tone = [Float](repeating: 0, count: a16.count)
+    let level = (a16.reduce(0) { $0 + Double($1) * Double($1) } / Double(a16.count)).squareRoot()
+    // 6 dB under voice A, so the first round's link (a channel's share of a five-second window) does not catch it.
+    for n in tone.indices { tone[n] = Float(level * 2.squareRoot() / 2 * sin(2 * Double.pi * 1_000 * Double(n) / Double(rate))) }
+    let hop = 0.512
+    func solo(_ seconds: Double, at start: Double, over: Bool) -> [[Float]] {
+        let b = gated(b16, [(start, start + seconds)])
+        return midSide(over ? a16 : gated(a16, [(0, start), (start + seconds, voiceSeconds)]), b)
+    }
+    return [
+        ("a 953 Hz tone burst of a second, inverted, beside two spaced talkers",
+         [mix(spacedTalkers[0], burst), mix(spacedTalkers[1], burst, -1)]),
+        ("voice B 6 dB down, inverted, beside two spaced talkers",
+         [mix(spacedTalkers[0], scaled(b16, 0.5)), mix(spacedTalkers[1], scaled(b16, 0.5), -1)]),
+        ("a steady 1 kHz tone 6 dB under voice A, inverted alone for 2 s between it",
+         midSide(gated(a16, [(0, 2), (4, voiceSeconds)]), gated(tone, [(2, 4)]))),
+        ("voice B alone for 0.12 s inside a stretch", solo(0.12, at: 4 * hop + 0.196, over: false)),
+        ("voice B alone for 0.12 s across a stretch's edge", solo(0.12, at: 8 * hop - 0.06, over: false)),
+        ("voice B for 0.08 s over voice A", solo(0.08, at: 4 * hop + 0.216, over: true)),
+    ]
+}
+
+@Test("A cancellation only a narrowband sound's own delay excused, or one beside spaced talkers, is kept (F1009)")
+@MainActor
+func shrinkKeepsWhatOnlyANarrowbandDelayExcused() async throws {
+    var deleted: [String] = []
+    for (label, channels) in f1009Probes().prefix(3) {
+        let outcome = try await shrinkWAV(channels)
+        if !outcome.kept { deleted.append("\(label): \(outcome.alert)") }
+        print("F1009 probe \(outcome.kept ? "KEPT   " : "DELETED") | \(label) | \(outcome.alert.prefix(140))")
+    }
+    #expect(deleted.isEmpty, "\(deleted)")
+}
+
+@Test("A side voice alone for under a fifth of a second is kept (F1009)")
+@MainActor
+func shrinkKeepsABriefSideVoice() async throws {
+    var deleted: [String] = []
+    for (label, channels) in f1009Probes().dropFirst(3) {
+        let outcome = try await shrinkWAV(channels)
+        if !outcome.kept { deleted.append("\(label): \(outcome.alert)") }
+        print("F1009 probe \(outcome.kept ? "KEPT   " : "DELETED") | \(label) | \(outcome.alert.prefix(140))")
+    }
+    #expect(deleted.isEmpty, "\(deleted)")
+}
+
+@Test("The talkers and tones F1009's probes are made of still shrink without the inverted sound (F1009 control)")
+@MainActor
+func shrinkStillShrinksSpacedTalkersAndTones() async throws {
+    var tone = [Float](repeating: 0, count: a16.count)
+    for n in tone.indices { tone[n] = Float(0.02 * sin(2 * Double.pi * 1_000 * Double(n) / Double(rate))) }
+    let controls: [(String, [[Float]])] = [
+        ("two spaced talkers", spacedTalkers),
+        ("two spaced talkers, voice B 6 dB down on both channels alike",
+         [mix(spacedTalkers[0], scaled(b16, 0.5)), mix(spacedTalkers[1], scaled(b16, 0.5))]),
+        ("voice A with a steady 1 kHz tone in phase on both channels", [mix(a16, tone), mix(a16, tone)]),
+    ]
+    var refused: [String] = []
+    for (label, channels) in controls {
+        let outcome = try await shrinkWAV(channels)
+        if outcome.kept || !outcome.alert.contains("Shrunk") { refused.append("\(label): \(outcome.alert)") }
+    }
+    #expect(refused.isEmpty, "\(refused)")
+}
+
+// MARK: - F1014: the stretch rule's bound, end to end
+
+@Test("A side voice whose stretches cancel between a tenth and a fifth is kept, which pins mostCancelledShare (F1014)")
+@MainActor
+func shrinkPinsTheStretchRulesBound() async throws {
+    // Voice B 8 dB under voice A, mid/side: the stretch rule reads about 0.17 and the brief rule about 0.14, both
+    // between the bound (0.1) and a mutant's 0.2, while the first round's link (about a seventh, against a quarter)
+    // and the copy's let it through. Raised to 0.2, `mostCancelledShare` deletes it.
+    let channels = midSide(a16, scaled(b16, 0.398))
+    let outcome = try await shrinkWAV(channels)
+    #expect(outcome.kept, "\(outcome.alert)")
+    #expect(outcome.alert.contains("cancel each other"), "kept by the stretch rule's bound: \(outcome.alert)")
 }

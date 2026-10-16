@@ -54,6 +54,70 @@ func channelPresenceConstantsArePinned() {
     #expect(RecordingMixPlan.presenceShare == 0.25)
     #expect(RecordingMixPlan.presenceGroupFrames == 4)
     #expect(RecordingMixPlan.presenceBand == 80...4_000)
+    // F1009's phase and brief rules, measured offline over 50 positives and 311 controls (Wave 8 lane A,
+    // gates/F1009-x16*.txt): at a long-stretch coherence of 0.98, or a brief delay tolerance of 60°, controls were lost.
+    #expect(RecordingMixPlan.delayEvidenceShare == 0.1)
+    #expect(RecordingMixPlan.delayEvidenceThreshold == 0.2)
+    #expect(RecordingMixPlan.delayEvidenceCount == 3)
+    #expect(RecordingMixPlan.delayEvidenceBands == 2)
+    #expect(RecordingMixPlan.delayEvidenceBandThreshold == 0.3)
+    #expect(RecordingMixPlan.delayEvidenceBandBins == 3)
+    #expect(RecordingMixPlan.phaseRuleCoherence == 0.99)
+    #expect(RecordingMixPlan.phaseRuleTolerance == 30)
+    #expect(RecordingMixPlan.briefWindowFrames == 3)
+    #expect(RecordingMixPlan.briefWindowStep == 2)
+    #expect(RecordingMixPlan.briefCoherence == 0.98)
+    #expect(RecordingMixPlan.briefMinimumFrames == 1.5)
+    #expect(RecordingMixPlan.briefOpposition == 20)
+    #expect(RecordingMixPlan.briefDelayTolerance == 75)
+    #expect(RecordingMixPlan.briefDelayThreshold == 0.1)
+    #expect(RecordingMixPlan.briefDelayCount == 4)
+    #expect(RecordingMixPlan.briefOwnDelayThreshold == 0.5)
+}
+
+@Test("The phase and brief rules count an opposite bin only when no broadband delay explains it (F1009)")
+func phaseAndBriefRulesCountOnlyUnexplainedOpposition() {
+    // A delay explains a bin within its tolerance of the delay's phase: Re(S·e^(−iωd)) against |S|·cos(tolerance).
+    #expect(RecordingMixPlan.delayExplains(alignedReal: 1, magnitude: 1, toleranceDegrees: 30))
+    #expect(RecordingMixPlan.delayExplains(alignedReal: 0.87, magnitude: 1, toleranceDegrees: 30))
+    #expect(!RecordingMixPlan.delayExplains(alignedReal: 0.86, magnitude: 1, toleranceDegrees: 30))
+    #expect(!RecordingMixPlan.delayExplains(alignedReal: .nan, magnitude: 1, toleranceDegrees: 75))
+    // The phase rule: opposite, near-certain, three frames, unexplained.
+    #expect(RecordingMixPlan.phaseRuleCancels(real: -2, coherence: 0.99, frames: 3, explained: false) == 2)
+    #expect(RecordingMixPlan.phaseRuleCancels(real: -2, coherence: 0.989, frames: 16, explained: false) == 0, "an echo's bend")
+    #expect(RecordingMixPlan.phaseRuleCancels(real: -2, coherence: 1, frames: 2.9, explained: false) == 0)
+    #expect(RecordingMixPlan.phaseRuleCancels(real: -2, coherence: 1, frames: 16, explained: true) == 0, "a spaced talker")
+    #expect(RecordingMixPlan.phaseRuleCancels(real: 2, coherence: 1, frames: 16, explained: false) == 0, "in phase adds")
+    #expect(RecordingMixPlan.phaseRuleCancels(real: .nan, coherence: 1, frames: 16, explained: false) == 0)
+    // The brief rule: within 20° of opposite, 0.98 coherent, a frame and a half, unexplained.
+    #expect(RecordingMixPlan.briefCancels(real: -2, magnitude: 2, coherence: 0.98, frames: 1.5, explained: false) == 2)
+    #expect(RecordingMixPlan.briefCancels(real: -1.87, magnitude: 2, coherence: 1, frames: 3, explained: false) == 0, "21° off")
+    #expect(RecordingMixPlan.briefCancels(real: -2, magnitude: 2, coherence: 0.97, frames: 3, explained: false) == 0)
+    #expect(RecordingMixPlan.briefCancels(real: -2, magnitude: 2, coherence: 1, frames: 1.4, explained: false) == 0)
+    #expect(RecordingMixPlan.briefCancels(real: -2, magnitude: 2, coherence: 1, frames: 3, explained: true) == 0)
+}
+
+@Test("A brief window that cancels refuses like a stretch, and one not a number is unmeasured (F1009)")
+func briefStretchesAreJudgedAsStretchesAre() {
+    typealias Measure = RecordingMixPlan.ChannelPresence.Measure
+    let quiet = Measure(energy: 1, missing: 0)
+    let stretches: [RecordingMixPlan.ChannelPresence.Stretch] = stride(from: 0.0, to: 6, by: 0.512).map {
+        .init(start: $0, level: 0.1, bands: [Measure](repeating: quiet, count: RecordingMixPlan.cancellationBands.count - 1))
+    }
+    let native: [[Double]] = [[0.1, 0.1], [0.1, 0.1]]
+    func presence(_ brief: [RecordingMixPlan.ChannelPresence.Stretch]) -> RecordingMixPlan.ChannelPresence {
+        .init(channels: 2, stretches: stretches, mix: [quiet, quiet], channelWindows: [[quiet, quiet], [quiet, quiet]], briefStretches: brief)
+    }
+    var bands = [Measure](repeating: quiet, count: RecordingMixPlan.cancellationBands.count - 1)
+    #expect(RecordingMixPlan.firstChannelNotInCopy(presence([.init(start: 2.048, level: 0.1, bands: bands)]), nativeChannelWindows: native) == nil)
+    bands[2] = Measure(energy: 1, missing: 0.11)
+    #expect(RecordingMixPlan.firstChannelNotInCopy(presence([.init(start: 2.048, level: 0.1, bands: bands)]), nativeChannelWindows: native)
+            == .cancels(seconds: 2.048, band: 2))
+    #expect(RecordingMixPlan.firstChannelNotInCopy(presence([.init(start: 2.048, level: 0.000_01, bands: bands)]), nativeChannelWindows: native) == nil,
+            "silence cancels nothing a listener would miss")
+    bands[2] = Measure(energy: .nan, missing: 0)
+    #expect(RecordingMixPlan.firstChannelNotInCopy(presence([.init(start: 6.1, level: 0.1, bands: bands)]), nativeChannelWindows: native)
+            == .unmeasured(window: 1, channel: nil))
 }
 
 @Test("A bin cancels only where its channels are opposite, consistently, over several frames (F1001)")

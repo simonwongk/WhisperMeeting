@@ -174,6 +174,25 @@ verified and the index saved.
      talkers; and a copy that leaves out a channel holding under a twentieth of the mix. Whole mid/side files
      of 0.05 s and shorter were kept as "Already compact" (nothing to gain), and from 0.08 s they are judged and
      kept.
+   - **F1009 (2026-10-16), beside the stretch rule.** Most of those misses came from the delay allowance: a
+     delay excused every bin less than a quarter-turn from it, and an inverted narrowband sound makes its own
+     correlation peak at half its period. Two rules now sit beside it, each counting what the mix loses in a bin
+     that is opposite (`-Re(L·conj R)`) and excusing it only by a *broadband* delay — a peak of the cross-spectrum
+     weighted by phase alone (GCC-PHAT, each bin by the square root of its coherence, over bins with a tenth of the
+     mean bin energy) that two bands reach by themselves: the **phase rule** over each stretch (a bin 0.99 coherent,
+     excused within 30° of such a delay's phase; per bin the larger of it and the stretch rule) and the **brief
+     rule** over windows of three frames every two (a bin 0.98 coherent, within 20° of opposite, excused within 75°
+     of a delay of the stretches it overlaps or of its own). Every constant is pinned. Measured offline over 50
+     positives and 311 controls (`gates/F1009-x16*.txt`, Wave 8 lane A) and through Shrink's own measure: now kept,
+     a tone burst inverted beside two spaced talkers (953 Hz), a steady tone inverted alone between speech, a side
+     voice 6 dB (and 10 dB) down beside a talker on microphones 1 ms apart or beside two spaced talkers, and solos
+     of 0.08–0.16 s as tones, inside a stretch or across its edge, and spoken from 0.12 s. **Still not caught**:
+     a narrowband sound whose frequency lies within 75° of a spaced talker's comb phase (the 500 Hz bursts beside
+     talkers 0.6 and 1.3 ms apart; 400, 520, 1,200, 2,500 Hz too), a spoken solo of 0.08 s, and the quiet side voice
+     and 4–7.8 kHz rows above. Refused now that was not: a pure tone delayed 1 ms on one channel under speech that
+     is not (the mix loses the tone at a comb notch, about 8 dB, and nothing broadband shows the delay) — the user's
+     rule keeps it. No ordinary control was newly refused; the margins closest to the bound are a phone's spacing
+     with two talkers 0.25 ms apart (0.082) and one talker with an echo 1.5 ms apart (0.073).
    - And a two-channel file whose channel layout the encode's mix is not shown to keep both channels of is not
      shrunk (F1001, rounds 2 and 3). afconvert mixes by position — a WAV's mask, or a CAF's, an AIFF's or any
      container's layout, read with AVAudioFile as one channel label per channel — and leaves out of the copy a
@@ -190,7 +209,9 @@ verified and the index saved.
      every macOS can measure it: on macos-15 (CI run 38859340988) a WAV masked as the side pair, the centre pair
      or front left beside centre was kept, fail-closed, as "could not be read to check the compressed copy" —
      most likely the measure's AVAssetReader, the one reader on that path asked to convert a layout (two channels
-     at 16 kHz with no layout given). macOS 27 reads all three; versions between are untried.
+     at 16 kHz with no layout given). macOS 27 reads all three; versions between are untried. Since F1013 the
+     measure asks for a discrete layout at two channels too, as it did above two, so nothing is mapped; whether
+     macos-15 then reads those three is what CI's "F1001 host:" lines show.
    - A two-channel `recording.<ext>` beside the recording — a link import's download beside the mono WAV ffmpeg
      extracted from it — is removed with it, so the copy is checked against it the same way first, and if that
      is not shown, nothing is removed (review 2, F2-1). A download AVFoundation cannot read (a WebM/Opus one) is
