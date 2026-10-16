@@ -66,8 +66,8 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// characters in place also fits 王经理 for 张经理 and 数据集 for 数据库, which the review of F536
 /// found pre-ticked in seven of eight ordinary sentences. A homophone can still be a different real
 /// word or another person's name (公事 for 公式, 张薇 for 张伟), which is why a Chinese near-miss
-/// arrives unticked and needs its own tick (`ProposalReview`) — and a two-character term that is a
-/// person's name, as the caller's segmenter tells one (`ChinesePersonName`, F921), gets no
+/// arrives unticked and needs its own tick (`ProposalReview`) — and a two- or three-character term
+/// that is a person's name, as the caller's segmenter tells one (`ChinesePersonName`, F921, F995), gets no
 /// sound-alike row at all. A Chinese window is only proposed where
 /// `GlossaryCorrector.apply` would apply it — `ReplacementBoundary` with the caller's
 /// `CJKWordEvidence` (F594) — so a window cutting
@@ -641,7 +641,8 @@ public enum GlossaryCorrector {
         /// Those words normalized, for the F972 gate: windows of more than three are compared only
         /// where the segment holds at least half of them.
         let words: [String]
-        /// A two-character Chinese term that is a person's name by `ChinesePersonName` (F921):
+        /// A two- or three-character Chinese term that is a person's name by `ChinesePersonName`
+        /// (F921, F995):
         /// never proposed for a sound-alike window.
         let isPersonName: Bool
     }
