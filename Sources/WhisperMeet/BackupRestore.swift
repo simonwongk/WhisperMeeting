@@ -114,6 +114,7 @@ enum BackupRestore {
         // Track what actually landed, so rollback undoes exactly that and nothing else. A rollback
         // that assumed the whole plan had been attempted would delete files it never created.
         var written: [URL] = []
+        let generationRoot = generation.resolvingSymlinksInPath()
         do {
             // First, before any index is replaced (F463). A restored index beside the live ledger
             // opens read-only; either index without a ledger is an unrecorded generation, which
@@ -126,6 +127,10 @@ enum BackupRestore {
             for path in paths {
                 let source = generation.appendingPathComponent(path)
                 let target = library.appendingPathComponent(path)
+                // Checked again here, not only before the snapshot (F613): the snapshot takes
+                // minutes, and someone who can write to a shared backup folder can swap a checked
+                // file, or a folder above it, for a link meanwhile.
+                try BackupRestorePlan.checkSource(path, in: generation, generationRoot: generationRoot)
                 try fileManager.createDirectory(
                     at: target.deletingLastPathComponent(), withIntermediateDirectories: true
                 )
@@ -134,6 +139,13 @@ enum BackupRestore {
                 }
                 try copy(source, target)
                 written.append(target)
+                // And what landed is a file (F613). `copyItem` copies a link as a link, so a swap in
+                // the instant between the check above and the copy leaves a link in the library,
+                // pointing every later write to that name wherever its author chose — F432's escape.
+                // Rolled back with the rest: `rollBack` removes a link itself, never what it names.
+                guard BackupRestorePlan.itemType(at: target) == .typeRegular else {
+                    throw BackupRestoreError.unrestorablePath(path)
+                }
             }
         } catch {
             rollBack(written: written, preserved: preserved, plan: plan, library: library)

@@ -165,3 +165,84 @@ func filesOnlyInTheLibrarySurvive() throws {
 
     #expect(try Data(contentsOf: newer.appendingPathComponent("meeting.wav")) == Data("audio-b".utf8))
 }
+
+// F613 — the paths a restore checked are checked again where it copies them.
+//
+// `apply` validates every source (a regular file, inside the generation), then snapshots every file
+// it will overwrite — minutes on a real library — and only then copies. `copyItem` copies a link as a
+// link, so someone who can write to a shared backup folder could swap a checked file, or a folder
+// above it, for a link during the snapshot, and the link — or a file from wherever it pointed —
+// landed in the library: F432's escape, by a later door. The copy seam is the swap here.
+@Test("A source swapped for a link after the check is caught after its copy, and the restore rolls back (F613)")
+func aSourceSwappedForALinkRollsTheRestoreBack() throws {
+    let (root, library, generation) = try makeFixture("swap-link")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try Data("index-changed-since".utf8).write(to: library.appendingPathComponent("meetings.json"))
+    let outside = root.appendingPathComponent("outside.json")
+    try Data("someone else's file".utf8).write(to: outside)
+    let plan = try BackupRestorePlan.make(from: generation, into: library, deep: true)
+
+    #expect(throws: BackupRestoreError.unrestorablePath("meetings.json")) {
+        try BackupRestore.apply(plan, from: generation, into: library, copy: { source, target in
+            if source.lastPathComponent == "meetings.json" {
+                // Between the check and this copy, the checked file becomes a link.
+                try FileManager.default.removeItem(at: source)
+                try FileManager.default.createSymbolicLink(at: source, withDestinationURL: outside)
+            }
+            try FileManager.default.copyItem(at: source, to: target)
+        })
+    }
+
+    let index = library.appendingPathComponent("meetings.json")
+    let type = try FileManager.default.attributesOfItem(atPath: index.path)[.type] as? FileAttributeType
+    #expect(type == .typeRegular, "a link was left in the library")
+    #expect(try Data(contentsOf: index) == Data("index-changed-since".utf8), "the library was not put back")
+}
+
+@Test("A folder above a later source swapped for a link mid-restore is refused before that file is copied (F613)")
+func aFolderSwappedForALinkIsRefusedBeforeItsCopy() throws {
+    // Two recordings, so one is copied while the other's folder in the backup is swapped: the plan
+    // copies in sorted order, `Recordings/a/…` before `Recordings/b/…`.
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("RestoreApply-swap-folder-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = root.appendingPathComponent("Library", isDirectory: true)
+    let destination = root.appendingPathComponent("Dest", isDirectory: true)
+    try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+    for name in ["a", "b"] {
+        let folder = library.appendingPathComponent("Recordings/\(name)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Data("audio-\(name)".utf8).write(to: folder.appendingPathComponent("meeting.wav"))
+    }
+    try Data("index-at-backup-time".utf8).write(to: library.appendingPathComponent("meetings.json"))
+    let summary = try BackupCoordinator.backUp(source: library, destination: destination, now: 1, retain: 3)
+    let generation = destination
+        .appendingPathComponent(BackupCoordinator.managedSubfolder, isDirectory: true)
+        .appendingPathComponent(summary.generation, isDirectory: true)
+    let elsewhere = root.appendingPathComponent("elsewhere", isDirectory: true)
+    try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+    try Data("someone else's audio".utf8).write(to: elsewhere.appendingPathComponent("meeting.wav"))
+    let plan = try BackupRestorePlan.make(from: generation, into: library, deep: true)
+    let first = "Recordings/a/meeting.wav", second = "Recordings/b/meeting.wav"
+    let order = plan.wouldOverwrite + plan.wouldAdd
+    try #require(order.firstIndex(of: first)! < order.firstIndex(of: second)!, "fixture: \(order)")
+    var copied: [String] = []
+
+    #expect(throws: BackupRestoreError.unrestorablePath(second)) {
+        try BackupRestore.apply(plan, from: generation, into: library, copy: { source, target in
+            let path = String(source.path.dropFirst(generation.path.count + 1))
+            copied.append(path)
+            if path == first {
+                // While the first recording is copied, the second's folder in the backup becomes a link.
+                let folder = generation.appendingPathComponent("Recordings/b", isDirectory: true)
+                try FileManager.default.removeItem(at: folder)
+                try FileManager.default.createSymbolicLink(at: folder, withDestinationURL: elsewhere)
+            }
+            try FileManager.default.copyItem(at: source, to: target)
+        })
+    }
+
+    #expect(!copied.contains(second), "a file was copied through the swapped folder: \(copied)")
+    #expect(try Data(contentsOf: library.appendingPathComponent(second)) == Data("audio-b".utf8))
+    #expect(try Data(contentsOf: library.appendingPathComponent(first)) == Data("audio-a".utf8))
+}

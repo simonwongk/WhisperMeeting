@@ -211,18 +211,24 @@ struct BackupRestorePlan: Equatable, Sendable {
             }
         }
         for path in wouldOverwrite + wouldAdd {
-            let source = generation.appendingPathComponent(path)
-            if let type = Self.itemType(at: source) {
-                guard type == .typeRegular,
-                      MeetingStore.isWithinLibrary(source.resolvingSymlinksInPath(), root: generationRoot) else {
-                    throw BackupRestoreError.unrestorablePath(path)
-                }
-            }
+            try Self.checkSource(path, in: generation, generationRoot: generationRoot)
+        }
+    }
+
+    /// The source half of `checkPaths` for one path: a regular file that resolves inside the
+    /// generation, or absent. `BackupRestore.apply` asks it again immediately before each copy
+    /// (F613), because the check above runs before the pre-restore snapshot, which takes minutes.
+    static func checkSource(_ path: String, in generation: URL, generationRoot: URL) throws {
+        let source = generation.appendingPathComponent(path)
+        guard let type = itemType(at: source) else { return }
+        guard type == .typeRegular,
+              MeetingStore.isWithinLibrary(source.resolvingSymlinksInPath(), root: generationRoot) else {
+            throw BackupRestoreError.unrestorablePath(path)
         }
     }
 
     /// The type of the item itself — a link is reported as a link, not as what it points at.
-    private static func itemType(at url: URL) -> FileAttributeType? {
+    static func itemType(at url: URL) -> FileAttributeType? {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
     }
 
