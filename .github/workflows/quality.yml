@@ -47,3 +47,8 @@ jobs:
         run: Scripts/quality-check.sh
         env:
           DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          # The test watchdog (quality-check.sh, default 600 s) exists to catch the F121 helper hang,
+          # which stalls forever; it is not a speed budget. Wave 7's suite took 623.9 s on this runner
+          # (run 38859340988; Wave 6's took 338.1 s), so 600 s failed a healthy run (F1012). 900 s
+          # keeps a hang caught well inside timeout-minutes while leaving the measured suite headroom.
+          WHISPERMEET_TEST_TIMEOUT: "900"
