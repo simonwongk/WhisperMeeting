@@ -30,6 +30,42 @@ import unittest
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPT = os.path.join(REPO, "Scripts", "rehearse-recovery.sh")
 FIRST_MEETING = "11111111-1111-4111-8111-111111111111"
+SWIFT_GOLDENS = os.path.join(REPO, "Tests", "WhisperCoreTests", "StoreFingerprintTests.swift")
+
+
+def _swift_payload(expression):
+    """The bytes one of `storeFingerprintMatchesItsPublishedGoldenValues`'s `Data(...)` expressions
+    builds, for the four shapes that test uses. Anything else raises, so a golden written in a new
+    shape fails here loudly instead of being skipped (F747)."""
+    if expression == "Data()":
+        return b""
+    match = re.fullmatch(r'Data\(\(0\.\.<(\d+)\)\.map \{ UInt8\(\$0\) \}\)', expression)
+    if match:
+        return bytes(range(int(match.group(1))))
+    match = re.fullmatch(r'Data\(#"(.*)"#\.utf8\)', expression, re.S)
+    if match:
+        return match.group(1).encode("utf-8")
+    match = re.fullmatch(r'Data\("((?:[^"\\]|\\.)*)"\.utf8\)', expression)
+    if match and "\\" not in match.group(1):
+        return match.group(1).encode("utf-8")
+    raise ValueError(f"a golden payload this test cannot read: {expression}")
+
+
+def swift_store_fingerprint_goldens():
+    """`(name, payload, fingerprint)` for every golden `StoreFingerprintTests.swift` publishes, read out
+    of that file rather than restated here (F747, AGENTS.md's "Derive the list; do not restate it"):
+    a mixer change that updated the Swift goldens used to leave this copy of them stale, so
+    `store_fingerprint.py` was still checked against the old format."""
+    with open(SWIFT_GOLDENS, encoding="utf-8") as handle:
+        source = handle.read()
+    start = source.index("func storeFingerprintMatchesItsPublishedGoldenValues")
+    block = source[start:source.index("for (name, payload, expected) in goldens", start)]
+    entries = re.findall(r'\(\s*"([^"]*)",\s*(Data\(.*?\)),\s*"([0-9a-f]{16})"\)', block, re.S)
+    # Every tuple the array holds was understood — none silently dropped by the pattern above.
+    tuples = len(re.findall(r'(?m)^\s*\("', block))
+    if len(entries) != tuples:
+        raise ValueError(f"read {len(entries)} goldens out of {tuples} tuples")
+    return [(name, _swift_payload(expression), expected) for name, expression, expected in entries]
 
 
 class RehearseRecoveryTests(unittest.TestCase):
@@ -127,21 +163,17 @@ class RehearseRecoveryTests(unittest.TestCase):
 
     def test_generation_names_carry_the_apps_store_fingerprint(self):
         # The golden values `storeFingerprintMatchesItsPublishedGoldenValues` pins for
-        # `StoreFingerprint.of`. The rehearsal named its generations with a SHA-256 prefix, which
-        # the app reads as "bytes do not match the name" and refuses to restore.
+        # `StoreFingerprint.of`, read out of the Swift test (F747). The rehearsal named its
+        # generations with a SHA-256 prefix, which the app reads as "bytes do not match the name"
+        # and refuses to restore.
         import sys
         sys.path.insert(0, os.path.join(REPO, "Scripts"))
         from store_fingerprint import fingerprint
-        goldens = [
-            (b"", "3e4b04065d2477ff"),
-            (b"a", "0cfa8263a6f0cdd2"),
-            (bytes(range(31)), "a4f0f937f661e633"),
-            (bytes(range(32)), "cf39be82c81c31de"),
-            (bytes(range(100)), "34b6bd87828b245b"),
-            (b'[{"id":"A","title":"Quarterly review"}]', "9899e4e313d81d5e"),
-        ]
-        for payload, expected in goldens:
-            self.assertEqual(fingerprint(payload), expected, payload)
+        goldens = swift_store_fingerprint_goldens()
+        # The six paths through the mixer the Swift test covers; fewer means the reader lost some.
+        self.assertGreaterEqual(len(goldens), 6, goldens)
+        for name, payload, expected in goldens:
+            self.assertEqual(fingerprint(payload), expected, name)
 
         result = self.run_script("--keep-damaged")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
