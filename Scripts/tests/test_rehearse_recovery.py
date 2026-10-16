@@ -30,6 +30,7 @@ import unittest
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCRIPT = os.path.join(REPO, "Scripts", "rehearse-recovery.sh")
 FIRST_MEETING = "11111111-1111-4111-8111-111111111111"
+SECOND_MEETING = "22222222-2222-4222-8222-222222222222"
 SWIFT_GOLDENS = os.path.join(REPO, "Tests", "WhisperCoreTests", "StoreFingerprintTests.swift")
 
 
@@ -139,6 +140,13 @@ class RehearseRecoveryTests(unittest.TestCase):
 
         generations = sorted(os.listdir(os.path.join(root, "meetings.history")))
         self.assertEqual(len(generations), 3, generations)
+        # The good generations name each meeting's recording where the app keeps it, and meeting
+        # one's is the finished recording this mode writes (F748).
+        with open(os.path.join(root, "meetings.history", generations[0]), encoding="utf-8") as handle:
+            meetings = {meeting["id"]: meeting for meeting in json.load(handle)}
+        for meeting_id in (FIRST_MEETING, SECOND_MEETING):
+            self.assertEqual(meetings[meeting_id]["recordingPath"], f"Recordings/{meeting_id}/meeting.wav")
+        self.assertTrue(os.path.isfile(os.path.join(root, meetings[FIRST_MEETING]["recordingPath"])))
 
         # An empty index is only suspicious beside a FINALIZED recording (MeetingStore's
         # suspect-empty check), so the folder must hold a WAV whose header the app can parse and

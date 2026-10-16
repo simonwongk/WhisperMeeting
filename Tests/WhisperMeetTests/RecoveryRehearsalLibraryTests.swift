@@ -112,6 +112,10 @@ func keepDamagedOpensReadOnlyWithTheTwoMeetingGenerationOffered() async throws {
     model.recoverLibrary(from: previousAgain, confirmed: true)
     #expect(!model.store.isDegraded, "\(model.alertMessage ?? "nil")")
     #expect(model.store.meetings.count == 2)
+    // The restored meeting one plays: its recording is where the rehearsal put it (F748).
+    let first = try #require(model.store.meetings.first { $0.id.uuidString == "11111111-1111-4111-8111-111111111111" })
+    #expect(FileManager.default.fileExists(atPath: model.store.recordingURL(for: first).path),
+            "the restored meeting one has no recording at \(first.recordingPath)")
 
     // The library is writable again, so `recoverLibrary` resumed startup recovery in a Task of its
     // own. Left alone, that Task ran after this test had returned: it swept a library the defers

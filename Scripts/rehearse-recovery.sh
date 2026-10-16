@@ -65,7 +65,11 @@ print ""
 # Three generations, oldest to newest, ending in the shape that makes this worth rehearsing: a
 # healthy generation with meetings, then the empty one that a schema-incompatible build wrote over
 # it. That is the incident: 17 meetings replaced by `[]`, twice, 0.6 s apart.
-good_meetings='[{"id":"11111111-1111-4111-8111-111111111111","title":"Synthetic meeting one","createdAt":"2026-08-10T10:00:00Z","duration":1800,"recordingPath":"a/meeting.wav","status":"completed","transcriptText":"synthetic transcript one","segments":[],"markers":[],"tags":[],"pinned":false,"notes":""},{"id":"22222222-2222-4222-8222-222222222222","title":"Synthetic meeting two","createdAt":"2026-08-11T10:00:00Z","duration":900,"recordingPath":"b/meeting.wav","status":"completed","transcriptText":"synthetic transcript two","segments":[],"markers":[],"tags":[],"pinned":false,"notes":""}]'
+#
+# Each meeting's `recordingPath` is where the app keeps it, `Recordings/<id>/meeting.wav` (F748).
+# `--keep-damaged` puts a finished recording at meeting one's, so the restored meeting one plays;
+# meeting two's folder is never written, so it is a meeting whose recording is missing, by design.
+good_meetings='[{"id":"11111111-1111-4111-8111-111111111111","title":"Synthetic meeting one","createdAt":"2026-08-10T10:00:00Z","duration":1800,"recordingPath":"Recordings/11111111-1111-4111-8111-111111111111/meeting.wav","status":"completed","transcriptText":"synthetic transcript one","segments":[],"markers":[],"tags":[],"pinned":false,"notes":""},{"id":"22222222-2222-4222-8222-222222222222","title":"Synthetic meeting two","createdAt":"2026-08-11T10:00:00Z","duration":900,"recordingPath":"Recordings/22222222-2222-4222-8222-222222222222/meeting.wav","status":"completed","transcriptText":"synthetic transcript two","segments":[],"markers":[],"tags":[],"pinned":false,"notes":""}]'
 
 # Content-addressed names: `g-<sequence padded to 9>-<fingerprint>.json`. The fingerprint is the
 # file's own, so a generation identifies itself even with the ledger gone — which is the property the

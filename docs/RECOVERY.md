@@ -231,7 +231,8 @@ It opens read-only. Choose *Recover Library…* in Settings. The rehearsal has n
 is labelled by when its file was written and by a meeting count WhisperMeet reads from the copy
 itself, which is also what you see after a real incident that lost the ledger. The newest copy,
 dated 14 August, is the empty one, at 0 meetings. Restoring it leaves the library read-only and WhisperMeet says so. Choose *Recover Library…*
-again and restore the 13 August copy, which brings the 2 meetings back.
+again and restore the 13 August copy, which brings the 2 meetings back. The first plays its recording; the
+rehearsal never writes the second's, so it shows as a meeting whose recording is missing (F748).
 
 `WHISPERMEET_LIBRARY` moves the whole library for that process: the index, dictation log, `Runtime/`
 and `Models/`, and since F550 its settings. They are kept in a preferences domain derived from the
