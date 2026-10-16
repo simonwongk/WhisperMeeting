@@ -44,7 +44,8 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// "Priya Raman said" proposes nothing for "Priya Raman"), a row `apply` would leave unchanged
 /// is not proposed at all (F820's review), a term of three or more words is compared with
 /// windows up to one more than its own length and is present only across no more words than its
-/// own (F940, F968), a proposal names the window's text as it stands and
+/// own (F940, F968), a window that is itself another term is never proposed (F1003), a proposal
+/// names the window's text as it stands and
 /// is applied to that window (F914, `characterOffset`), a dash ends a word as a space does
 /// while a possessive 's is outside the window (F915), and windows of more than three words are
 /// compared only where the line holds at least half the term's words (F972). A term containing
@@ -140,7 +141,7 @@ public enum GlossaryCorrector {
         let tokens = latinTokens(of: text)
         // F65's own guard: a segment with no words proposes nothing.
         guard !tokens.isEmpty else { return [] }
-        let latin = LatinWindows(tokens: tokens, in: text, table: prepared.table)
+        let latin = LatinWindows(tokens: tokens, in: text, table: prepared.table, terms: prepared.latinTermIDs)
         let chinese = prepared.hasCJKTerms ? CJKRuns(text: text, table: prepared.table) : nil
         let segmented = SegmentedText(text, segmenter: evidence.segmenter)
         // Only a known term present in this segment can enclose one of its windows, so the F594
@@ -168,7 +169,8 @@ public enum GlossaryCorrector {
                                                  otherTerms: prepared.cjkTermIDs,
                                                  evidence: segmentEvidence, sounds: &sounds) else { continue }
                 results.append(GlossaryCorrection(segmentIndex: segmentIndex, from: phrase, to: term.term))
-            } else if let placed = bestLatinWindow(for: term, in: latin, text: text, scratch: &scratch) {
+            } else if let placed = bestLatinWindow(for: term, in: latin, text: text,
+                                                   otherTerms: prepared.latinTermIDs, scratch: &scratch) {
                 results.append(GlossaryCorrection(
                     segmentIndex: segmentIndex, from: placed.phrase, to: term.term, characterOffset: placed.offset
                 ))
@@ -227,8 +229,14 @@ public enum GlossaryCorrector {
     /// saves is building every line's windows up to the longest phrase in the vocabulary (the Wave
     /// 6 review measured +22% on ordinary lines and +78% on long ones with 50 phrases of 10–20
     /// words), and the chance matches a long window makes at the 0.5 threshold.
+    ///
+    /// **A window that is itself another vocabulary term is never proposed (F1003)**, as a Chinese
+    /// one is not (F916): with "Kestrel" and "Kestrol" both listed, each correct one was proposed
+    /// toward the other. Nor is a window across one ("the Kestrol"), unless this term holds that
+    /// one's spelling — another term is seen where it stands as a window of up to three words.
     private static func bestLatinWindow(
-        for term: PreparedTerm, in windows: LatinWindows, text: String, scratch: inout LCSScratch
+        for term: PreparedTerm, in windows: LatinWindows, text: String, otherTerms: Set<[Int32]>,
+        scratch: inout LCSScratch
     ) -> Placement? {
         let allowance: Int
         // A three-word term on a line holding none of its words: its fourth window only if one of
@@ -246,11 +254,21 @@ public enum GlossaryCorrector {
         }
         windows.extend(to: allowance)
         if let smallest = windows.smallestWindowSpelling[term.normalized], smallest <= term.wordCount { return nil }
+        // And a window across another term where it stands ("the Kestrol" for Kestrel, with Kestrol
+        // listed): applying it would rewrite that term — unless this term holds it ("Pria Raman"
+        // for "Priya Raman" with "Raman" listed), when the row keeps it (F1003).
+        let blocking = windows.termOccurrences
+            .filter { $0.ids != term.ids && !contains(term.ids, $0.ids) }
+            .map(\.tokens)
         var best: (similarity: Double, window: LatinWindows.Window)?
         // A window equal to the term is scored like any other: it has more words than the term, or
         // the term would be present (above), and the LCS ratio gives it 1.
         func score(_ candidates: ArraySlice<LatinWindows.Window>) {
             for window in candidates where !window.containsCJK && !window.ids.isEmpty {
+                // Another term the user listed, spelled as listed (F1003). Equal to this term it is
+                // the split-word mishearing (F968), scored below.
+                if window.ids != term.ids, otherTerms.contains(window.ids) { continue }
+                if !blocking.isEmpty, blocking.contains(where: { $0.overlaps(window.tokens) }) { continue }
                 let longer = max(window.ids.count, term.ids.count)
                 // The LCS is at most the shorter length, so this ratio bounds the score: skip a window
                 // that cannot reach the threshold, or cannot beat the best already found (F536).
@@ -272,6 +290,12 @@ public enum GlossaryCorrector {
         }
         guard let window = best?.window else { return nil }
         return placedPhrase(window, term: term.term, in: text)
+    }
+
+    /// Whether `part` occurs contiguously in `whole`.
+    private static func contains(_ whole: [Int32], _ part: [Int32]) -> Bool {
+        guard !part.isEmpty, part.count <= whole.count else { return false }
+        return (0...(whole.count - part.count)).contains { whole[$0..<($0 + part.count)].elementsEqual(part) }
     }
 
     /// The window's phrase trimmed for `term` (F819), placed where it stands (F914): the row is
@@ -478,6 +502,8 @@ public enum GlossaryCorrector {
             let phrase: String
             let range: Range<String.Index>
             let containsCJK: Bool
+            /// Its tokens in the segment (F1003).
+            let tokens: Range<Int>
         }
 
         /// Every built window's normalized text, with the fewest tokens it is spelled across — a
@@ -496,7 +522,14 @@ public enum GlossaryCorrector {
         /// The segment's normalized words, for the F972 gate.
         private let words: Set<String>
 
-        init(tokens: [Token], in text: String, table: CharacterTable) {
+        /// Where a Latin vocabulary term stands in the segment as a window of up to three tokens,
+        /// with its ids (F1003): no window overlapping one is proposed toward a term that does not
+        /// itself hold it — applying the row would rewrite a word the user listed.
+        private(set) var termOccurrences: [(tokens: Range<Int>, ids: [Int32])] = []
+        private let terms: Set<[Int32]>
+
+        init(tokens: [Token], in text: String, table: CharacterTable, terms: Set<[Int32]>) {
+            self.terms = terms
             self.tokens = tokens
             self.text = text
             self.table = table
@@ -519,11 +552,16 @@ public enum GlossaryCorrector {
                         // Joined as strings first, as F65 did, so the character count is the same.
                         let joined = normalized[slice].joined()
                         if smallestWindowSpelling[joined] == nil { smallestWindowSpelling[joined] = size }
+                        let ids = table.ids(joined)
+                        if size <= GlossaryCorrector.maxWindow, terms.contains(ids) {
+                            termOccurrences.append((slice, ids))
+                        }
                         all.append(Window(
-                            ids: table.ids(joined),
+                            ids: ids,
                             phrase: String(text[range]),
                             range: range,
-                            containsCJK: tokens[slice].contains(where: \.isCJK)
+                            containsCJK: tokens[slice].contains(where: \.isCJK),
+                            tokens: slice
                         ))
                     }
                 }
@@ -618,6 +656,9 @@ public enum GlossaryCorrector {
         /// Every Chinese term's characters, so a window that is itself a term is never proposed
         /// toward another (F916, F921).
         let cjkTermIDs: Set<[Int32]>
+        /// Every Latin term's normalized characters, likewise (F1003). A window's ids are its
+        /// normalized text's, and a character no term holds is -1, so equal ids are equal text.
+        let latinTermIDs: Set<[Int32]>
 
         init(_ vocabulary: [String], knownTerms: [String], segmenter: CJKWordEvidence.Segmenter?) {
             knownCJKTerms = knownTerms.filter { ReplacementBoundary.hasCJK($0) }
@@ -636,6 +677,7 @@ public enum GlossaryCorrector {
             }
             hasCJKTerms = terms.contains(where: \.isCJK)
             cjkTermIDs = Set(terms.filter(\.isCJK).map(\.ids))
+            latinTermIDs = Set(terms.filter { !$0.isCJK && !$0.ids.isEmpty }.map(\.ids))
         }
     }
 

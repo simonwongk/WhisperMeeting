@@ -34,6 +34,9 @@ import Testing
 //   more words is then not compared with such a line at all, a three-word term keeps its three.
 // - F972 fourth: a three-word term on such a line is compared with its four-word windows too, but
 //   only where a window of up to three words already scored for it (round 2 of Wave 7, F968's stray word).
+// - F1003: a window equal to another term of the vocabulary is never proposed toward this one, nor
+//   a window overlapping where another term stands as up to three words, unless this term's
+//   spelling holds that one's.
 //
 // Not an amendment: the oracle remembers its scores across runs (F1011, `OracleScores`), which
 // changes no answer — only how often the same pair is scored.
@@ -50,6 +53,7 @@ private struct Amendments {
     var f968 = true
     var f972 = true
     var f972Fourth = true
+    var f1003 = true
 }
 
 /// One of a segment's words, with where it stands (F914).
@@ -60,10 +64,11 @@ private struct OracleWord {
 
 /// The oracle's scores, remembered (F1011). `similarity` is a function of its two strings alone, so a
 /// remembered score is the score and no answer changes. Its LCS over `Character`s was 97% of the
-/// oracle's time in a debug build, and the corpus test runs the oracle fourteen times over the same
-/// windows and terms — once for the answer, and thirteen times with one to three amendments switched
-/// off to show the corpus exercises each — which is what took that test from about 15 s in Wave 6
-/// to 31 s in Wave 7: seven runs became fourteen, each as slow as before. A class, so the corpus
+/// oracle's time in a debug build, and the corpus test runs the oracle many times over the same
+/// windows and terms — once for the answer, and once more for each check that switches one to three
+/// amendments off to show the corpus exercises each — which is what took that test from about 15 s
+/// in Wave 6 to 31 s in Wave 7: seven runs became fourteen, each as slow as before (fifteen since
+/// F1003). A class, so the corpus
 /// test's runs share one and each pair is scored once; any other call gets a fresh one.
 private final class OracleScores {
     private struct Pair: Hashable {
@@ -91,6 +96,7 @@ private enum PreF536GlossaryCorrector {
         scores: OracleScores = OracleScores()
     ) -> [GlossaryCorrection] {
         var results: [GlossaryCorrection] = []
+        let termSpellings = Set(vocabulary.map(normalize)) // amended (F1003)
         for (index, segment) in segments.enumerated() {
             let words = Self.words(of: segment.text, splittingAtDashes: amended.f915)
             guard !words.isEmpty else { continue }
@@ -102,6 +108,17 @@ private enum PreF536GlossaryCorrector {
                 if normalizedWords.contains(termNormalized) { continue }
 
                 var best: (similarity: Double, slice: Range<Int>)?
+                var blocked: [Range<Int>] = [] // amended (F1003)
+                if amended.f1003 { // amended
+                    for size in 1...maxWindow where size <= words.count { // amended
+                        for start in 0...(words.count - size) { // amended
+                            let spelling = normalizedWords[start..<(start + size)].joined() // amended
+                            if spelling != termNormalized, termSpellings.contains(spelling), !termNormalized.contains(spelling) { // amended
+                                blocked.append(start..<(start + size)) // amended
+                            } // amended
+                        } // amended
+                    } // amended
+                } // amended
                 var presentAsAWindow = false // amended
                 let termWordList = Self.words(of: term, splittingAtDashes: amended.f915) // amended
                 let termWords = termWordList.count // amended
@@ -124,6 +141,8 @@ private enum PreF536GlossaryCorrector {
                         let splitWord = amended.f968 && size > termWords // amended
                         if windowNormalized == termNormalized, !splitWord { presentAsAWindow = true } // amended
                         guard !windowNormalized.isEmpty, windowNormalized != termNormalized || splitWord else { continue } // amended
+                        if amended.f1003, windowNormalized != termNormalized, termSpellings.contains(windowNormalized) { continue } // amended
+                        if blocked.contains(where: { $0.overlaps(start..<(start + size)) }) { continue } // amended
                         let score = scores.similarity(windowNormalized, termNormalized) // F1011: remembered
                         if score >= similarityThreshold, score > (best?.similarity ?? 0) {
                             best = (score, start..<(start + size))
@@ -364,9 +383,11 @@ func englishSuggestionsMatchThePreF536Oracle() {
     // where it is not (the review of round 2, R6); then terms of four and five words, mishearings of
     // them, one spelled right and one across a tab (F940); then a window whose text first occurs
     // earlier as a whole word of a worse window, trimmed and untrimmed (F914); and a three-word term
-    // misheard across four words with none of its own (F972's fourth) — added after generating, so
+    // misheard across four words with none of its own (F972's fourth); and two terms a letter apart,
+    // one spoken (F1003) — added after generating, so
     // the seeded corpus above is the one F536 pinned.
-    let vocabulary = generated + ["Acme Inc.", ".NET", "(beta)", "Bank of New York", "Bank of New York Mellon", "Priya Raman Iyer"]
+    let vocabulary = generated + ["Acme Inc.", ".NET", "(beta)", "Bank of New York", "Bank of New York Mellon", "Priya Raman Iyer",
+                                   "Harrier", "Harrior"]
     let fixedLines: [String] = [
         "we signed with Acme Ink, the vendor.", "Acme Ink., the vendor, signed.", "the (NOT) runtime is old.",
         "the .NOT runtime is old.", "the betta, release ships.",
@@ -375,13 +396,13 @@ func englishSuggestionsMatchThePreF536Oracle() {
         "the Kestrol/Falcon build and the Kestrol release.", "the Kestrol-ish build and the Kestrol.",
         "Kestrel's release is ready.", "the Kestrol's build is late.", "Kestrol—the build is late.",
         "the Bank of New Yor k said yes.", "we deployed Kuber netes today.", "ask Priya Ram an now.",
-        "the Bonk off Noo Yolk said yes.", "ask Pria Ram an Eyer now.",
+        "the Bonk off Noo Yolk said yes.", "ask Pria Ram an Eyer now.", "the Harrior build is late.",
     ]
     let segments = syntheticTranscript(generated, &random) + fixedLines.enumerated().map {
         TranscriptSegment(speaker: nil, start: Double(60 + $0.offset), end: Double(61 + $0.offset), text: $0.element)
     }
 
-    // Every run of the oracle below shares one memo of its scores (F1011): fourteen runs over the
+    // Every run of the oracle below shares one memo of its scores (F1011): fifteen runs over the
     // same windows and terms, each pair scored once.
     let scores = OracleScores()
     func oracle(_ amended: Amendments = Amendments()) -> [GlossaryCorrection] {
@@ -430,6 +451,10 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withoutF972Fourth.f972Fourth = false
     #expect(oracle(withoutF972Fourth) != expected,
             "no three-word term in the corpus is misheard across four words on a line holding none of its own, so F972's fourth window is untested here")
+    var withoutF1003 = Amendments()
+    withoutF1003.f1003 = false
+    #expect(oracle(withoutF1003) != expected,
+            "no window in the corpus is itself another vocabulary term, so F1003's amendment is untested here")
     // With F914 off too: a placed row is a genuine occurrence where it stands, so with F914 on no
     // row changes nothing and the no-op rule is a consequence rather than a step of its own.
     var withNoOpOnly = Amendments()

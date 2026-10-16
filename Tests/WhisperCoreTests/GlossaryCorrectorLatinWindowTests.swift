@@ -283,3 +283,24 @@ func multiWordTermAlreadyPresentProposesNothing() {
             == [GlossaryCorrection(segmentIndex: 0, from: "Priya Ramen", to: "Priya Raman")]
     )
 }
+
+@Test("A Latin window that is itself a vocabulary term is never proposed toward another term (F1003)")
+func aLatinVocabularyTermIsNeverProposedTowardAnother() {
+    // F916's round 2 refused this for Chinese only: with both "Kestrel" and "Kestrol" listed, every
+    // correct Kestrol got a row toward Kestrel and every Kestrel one toward Kestrol. The user listed
+    // both spellings, so neither is a mishearing of the other — in any case, and with its comma —
+    // and a window across one ("the Kestrol", 7/10 like Kestrel) would rewrite it as well.
+    let segments = [seg("the Kestrol release"), seg("the Kestrel build"), seg("the kestrol, again"), seg("the Kestral fix")]
+    let rows = GlossaryCorrector.corrections(vocabulary: ["Kestrel", "Kestrol"], segments: segments)
+    // A window that is no term is still proposed toward the term it is nearest, as before.
+    #expect(rows == [
+        GlossaryCorrection(segmentIndex: 3, from: "Kestral", to: "Kestrel"),
+        GlossaryCorrection(segmentIndex: 3, from: "Kestral", to: "Kestrol"),
+    ])
+    // A term that holds the other's spelling keeps it, so its row is still made.
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Priya Raman", "Raman"], segments: [seg("ask Pria Raman now")])
+        == [GlossaryCorrection(segmentIndex: 0, from: "Pria Raman", to: "Priya Raman")])
+    // With one of the pair listed, the other is a near-miss of it, as before.
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Kestrel"], segments: [segments[0]])
+        == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel")])
+}
