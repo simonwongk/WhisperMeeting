@@ -133,11 +133,32 @@ def release_chunk_memory():
     mx.clear_cache()
 
 
-def tokens_until(stream, stop_at):
+class ChunkEnd:
+    """How one chunk's decode ended, as far as it decides whether its text is a fragment (F762).
+
+    `pulled` counts the tokens read from the library's stream; `deadline_hit` is set when the clock
+    ended the read before the stream did. The F260 guard stopping a runaway sets neither: what it
+    keeps is one copy of the cycle, not a fragment of the speech.
+    """
+
+    def __init__(self):
+        self.pulled = 0
+        self.deadline_hit = False
+
+    def truncated(self, max_tokens):
+        """True when the chunk was cut by its share of the deadline (F607) or ran to `max_tokens`
+        (F431). The library's stream ends at EOS without yielding it, or at its own `max_tokens`
+        (`qwen3_asr.py:956-968` in the pinned mlx-audio 0.3.1), so a stream that yielded the whole
+        cap never reached EOS."""
+        return self.deadline_hit or self.pulled >= max_tokens
+
+
+def tokens_until(stream, stop_at, end=None):
     """`stream`'s tokens as ints, read only while `monotonic()` is before `stop_at` (F607).
 
     The clock is checked before each pull, so a chunk whose time is already spent never starts its
-    audio encode and prefill; `None` reads the whole stream.
+    audio encode and prefill; `None` reads the whole stream. `end`, a `ChunkEnd`, is told what was
+    read and whether the clock stopped it (F762).
     """
     iterator = iter(stream)
     while stop_at is None or monotonic() < stop_at:
@@ -145,10 +166,14 @@ def tokens_until(stream, stop_at):
             token, _logprobs = next(iterator)
         except StopIteration:
             return
+        if end is not None:
+            end.pulled += 1
         yield int(token)
+    if end is not None:
+        end.deadline_hit = True
 
 
-def guarded_chunk_tokens(stream, meeting, max_tokens=DICTATION_MAX_TOKENS, stop_at=None):
+def guarded_chunk_tokens(stream, meeting, max_tokens=DICTATION_MAX_TOKENS, stop_at=None, end=None):
     """One chunk's tokens from mlx-audio's own greedy stream, with the meeting path's guard (F431).
 
     `stream` yields `(token, logprobs)` and ends at EOS or at its own `max_tokens`
@@ -157,9 +182,10 @@ def guarded_chunk_tokens(stream, meeting, max_tokens=DICTATION_MAX_TOKENS, stop_
     already emitted back to one copy, `max_tokens` caps anything the guard cannot see, and `stop_at`
     (F607) ends the chunk when its share of the reply's time is spent, at whatever rate this Mac
     decodes. The tokens themselves are exactly the ones `generate` would have produced up to that
-    point: the stream is the library's, only the decision to stop reading it is added.
+    point: the stream is the library's, only the decision to stop reading it is added. `end`, a
+    `ChunkEnd`, records whether the chunk was cut (F762).
     """
-    tokens = tokens_until(stream, stop_at)
+    tokens = tokens_until(stream, stop_at, end)
     end = meeting.ASR_EOS_TOKEN_IDS[0]  # a finished or timed-out stream reads as EOS
     first = next(tokens, end)
     rows = meeting.greedy_decode_rows(
@@ -171,7 +197,7 @@ def guarded_chunk_tokens(stream, meeting, max_tokens=DICTATION_MAX_TOKENS, stop_
     return rows[0]
 
 
-def transcribe_audio(model, audio, language, deadline=None):
+def transcribe_audio(model, audio, language, deadline=None, cut=None):
     """Decode a clip chunk by chunk through the guarded loop, joined as a meeting's chunks are.
 
     With a `deadline` (a `monotonic()` time), each chunk may run until an equal share of the time
@@ -179,7 +205,8 @@ def transcribe_audio(model, audio, language, deadline=None):
     it cannot starve the speech after it, and time an early-finishing chunk leaves unused passes to
     the rest. A chunk cut this way contributes what it decoded — the same partial-output choice
     F431 made for the token cap — so the reply arrives before the Swift wait kills the helper and
-    the model stays loaded.
+    the model stays loaded. `cut`, a list, gets one entry per chunk that was cut that way or by the
+    token cap, so the reply can say its text is a fragment (F762).
     """
     meeting = meeting_helper()
     chunks = list(split_clip(audio, model.sample_rate))
@@ -195,13 +222,16 @@ def transcribe_audio(model, audio, language, deadline=None):
         stream = model.stream_generate(
             chunk_audio, max_tokens=DICTATION_MAX_TOKENS, language=language
         )
+        end = ChunkEnd()
         try:
-            tokens = guarded_chunk_tokens(stream, meeting, stop_at=stop_at)
+            tokens = guarded_chunk_tokens(stream, meeting, stop_at=stop_at, end=end)
         finally:
             # A guarded stop leaves the library's generator suspended mid-decode; close it now
             # rather than whenever it happens to be collected.
             stream.close()
         texts.append(model._tokenizer.decode(tokens, skip_special_tokens=True))
+        if cut is not None and end.truncated(DICTATION_MAX_TOKENS):
+            cut.append(index)
         release_chunk_memory()
     return meeting.joined_text(texts)
 
@@ -212,13 +242,18 @@ def transcribe_request(model, request: dict) -> dict:
     # 20 s margin absorbs the difference.
     deadline = monotonic() + DICTATION_DECODE_BUDGET_SECONDS
     language = request.get("language") or "auto"
-    text = transcribe_audio(model, load_clip(request["wavPath"]), language, deadline).strip()
+    cut = []
+    text = transcribe_audio(model, load_clip(request["wavPath"]), language, deadline, cut).strip()
     detected_language = None if language == "auto" else language
     return {
         "text": text,
         "language": detected_language,
         "error": None,
         "noSpeechProb": None,
+        # F762: a chunk cut by its share of the deadline or by the token cap leaves a fragment
+        # that otherwise reads as a complete reply. Absent from older helpers; Swift reads absent
+        # as false.
+        "truncated": bool(cut),
     }
 
 

@@ -22,15 +22,20 @@ public struct DictationResponse: Codable, Equatable, Sendable {
     /// tell "the model is still downloading" from "this helper cannot run here". Absent from every
     /// older helper and every other reply → nil.
     public var downloadFailed: Bool?
+    /// True when the Qwen helper cut the reply short — a chunk stopped at its share of the reply's
+    /// deadline (F607) or at the per-chunk token cap (F431) — so `text` is a fragment (F762). Absent
+    /// from every older helper and from the Whisper helper → nil, read as not cut.
+    public var truncated: Bool?
     public init(
         text: String?, language: String?, error: String?, noSpeechProb: Double? = nil,
-        downloadFailed: Bool? = nil
+        downloadFailed: Bool? = nil, truncated: Bool? = nil
     ) {
         self.text = text
         self.language = language
         self.error = error
         self.noSpeechProb = noSpeechProb
         self.downloadFailed = downloadFailed
+        self.truncated = truncated
     }
 }
 
@@ -109,10 +114,15 @@ public struct DictationResult: Sendable, Equatable {
     /// value means the clip was likely silence/noise — used to gate prompt-echo suppression so a
     /// confident real dictation is never silently discarded.
     public let noSpeechProb: Double?
-    public init(text: String, languageCode: String?, noSpeechProb: Double? = nil) {
+    /// The helper said it cut this transcript short (F762, `DictationResponse.truncated`). The
+    /// controller logs it; whether to still paste a fragment is a separate product call, so today
+    /// it is pasted as before.
+    public let truncated: Bool
+    public init(text: String, languageCode: String?, noSpeechProb: Double? = nil, truncated: Bool = false) {
         self.text = text
         self.languageCode = WhisperLanguage.code(forReported: languageCode)
         self.noSpeechProb = noSpeechProb
+        self.truncated = truncated
     }
 }
 

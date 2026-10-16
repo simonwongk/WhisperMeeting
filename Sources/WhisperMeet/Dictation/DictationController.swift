@@ -1519,6 +1519,12 @@ final class DictationController: ObservableObject {
                 let gpuNote = gpuBusy.map { " (GPU \($0)% busy before the request)" } ?? ""
                 let transcribeSeconds = clock() - started
                 log.notice("\(selection.rawValue, privacy: .public) transcribed in \(transcribeSeconds, format: .fixed(precision: 2))s\(gpuNote, privacy: .public)")
+                if result.truncated {
+                    // F762: the helper ran out of its reply time or its per-chunk token cap, so the
+                    // text is a fragment of what was said. Pasted as before; this line is how a
+                    // report of a "short" dictation finds out why.
+                    log.error("the recognizer cut this dictation short (its reply deadline or token cap); the text is a fragment")
+                }
                 var rawText: String?
                 var refinement: String?
                 var refineSeconds: TimeInterval?

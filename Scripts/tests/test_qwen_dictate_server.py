@@ -119,6 +119,22 @@ class DictationDecodeTests(unittest.TestCase):
         # the stream already exhausted and reads EOS without another decode step.
         self.assertEqual(model.pulled, server.DICTATION_MAX_TOKENS)
 
+    def test_a_reply_cut_at_the_token_cap_says_it_was_cut(self):
+        """F762: a chunk that ran to DICTATION_MAX_TOKENS ended without EOS, so its text is a
+        fragment; the reply says so instead of looking complete."""
+        cycle = list(range(10, 22))
+        model = _Qwen3ASR(cycle, {token: f"w{token} " for token in cycle}, repeat=True)
+        self.assertIs(self.request(model).get("truncated"), True)
+
+    def test_a_reply_that_ended_at_eos_or_the_guard_is_not_marked_cut(self):
+        """F762: an ordinary decode ends at EOS, and a runaway the F260 guard stopped was trimmed
+        to one copy of its cycle — neither is a fragment of what was said."""
+        ordinary = _Qwen3ASR([1, 2, 1, 2, 1, 3], {1: "no", 2: ", ", 3: "."})
+        looping = _Qwen3ASR([1, 2], {1: "No", 2: ", "}, repeat=True)
+        for model in (ordinary, looping):
+            with self.subTest(text=model._tokenizer.vocabulary):
+                self.assertIs(self.request(model).get("truncated"), False)
+
     def test_ordinary_speech_is_decoded_in_full(self):
         """Natural repetition — "no, no, no" — is well under the guard and must survive intact."""
         script = [1, 2, 1, 2, 1, 3]
@@ -262,6 +278,8 @@ class DictationReplyDeadlineTests(unittest.TestCase):
                 self.assertLess(elapsed, timeout)
                 self.assertEqual(len(model.stream_calls), self.CHUNKS)
                 self.assertTrue(response["text"].startswith("w10 w11"))
+                # F762: cut by the deadline, and the reply says so.
+                self.assertIs(response.get("truncated"), True)
 
     def test_one_stuck_chunk_does_not_starve_the_speech_after_it(self):
         """A fair share per chunk, not one deadline for the whole clip: a runaway first chunk is cut
@@ -289,6 +307,20 @@ class DictationReplyDeadlineTests(unittest.TestCase):
         self.assertEqual(model.per_chunk_pulled, [140] * self.CHUNKS)
         decoded = ["".join(words[token] for token in chunk) for chunk in speech]
         self.assertEqual(response["text"], " ".join(decoded).strip())
+        # F762: nothing was cut, so nothing is marked.
+        self.assertIs(response.get("truncated"), False)
+
+    def test_a_reply_with_one_chunk_cut_by_the_deadline_says_it_was_cut(self):
+        """F762: the review's real-model cut (a 118 s clip back as 16 characters of 1,239, with
+        `error` None) — one runaway chunk cut at its share is enough to mark the whole reply."""
+        speech = [list(range(100 + 40 * index, 140 + 40 * index)) for index in range(4)]
+        model = _TimedQwen3ASR(
+            [(self.LONG_CYCLE, True)] + [(chunk, False) for chunk in speech],
+            self.vocabulary(), self.clock, rate=5,
+        )
+        response, _elapsed = self.dictate(model)
+        self.assertLess(model.per_chunk_pulled[0], server.DICTATION_MAX_TOKENS, "cut by the cap, not the deadline")
+        self.assertIs(response.get("truncated"), True)
 
 
 class DictationChunkJoinTests(unittest.TestCase):

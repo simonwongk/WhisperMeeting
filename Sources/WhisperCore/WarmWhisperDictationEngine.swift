@@ -290,7 +290,8 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
             return DictationResult(
                 text: text,
                 languageCode: response.language,
-                noSpeechProb: response.noSpeechProb
+                noSpeechProb: response.noSpeechProb,
+                truncated: response.truncated ?? false
             )
         }
     }
