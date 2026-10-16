@@ -2852,7 +2852,7 @@ final class AppModel: ObservableObject {
                 let clipURL = try Self.makeSegmentClip(
                     from: store.recordingURL(for: meeting), startSeconds: start, endSeconds: end
                 )
-                defer { try? FileManager.default.removeItem(at: clipURL) }
+                defer { Self.removeSegmentClip(clipURL) }
                 let result = try await executeEngine(selection, on: clipURL)
                 // A re-run can validly return text with no timestamped segments (alignment failure).
                 // Splicing an empty array would DELETE the segment's text — keep the original instead
@@ -3021,10 +3021,29 @@ final class AppModel: ObservableObject {
         // writes the same classic 44-byte header below that (F302).
         var clip = WAVWriter.header(sampleRate: header.sampleRate, dataByteCount64: UInt64(pcm.count))
         clip.append(pcm)
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WhisperMeet-segment-\(UUID().uuidString).wav")
+        let url = try newSegmentClipURL()
         try clip.write(to: url)
         return url
+    }
+
+    /// Where a new segment clip is written: `clip.wav` in a folder of its own named for this process
+    /// (`OwnedTemporaryFolders`, F996), so a launch after a crash mid-re-run can remove it. The caller
+    /// removes the clip's folder (`removeSegmentClip`) when the run ends.
+    nonisolated static func newSegmentClipURL() throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(
+            OwnedTemporaryFolders.name(prefix: segmentClipFolderPrefix), isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent("clip.wav")
+    }
+
+    /// Removes a clip `makeSegmentClip` wrote, with its folder (F996).
+    nonisolated static func removeSegmentClip(_ clipURL: URL) {
+        let folder = clipURL.deletingLastPathComponent()
+        if OwnedTemporaryFolders.owner(of: folder.lastPathComponent, prefix: segmentClipFolderPrefix) != nil {
+            try? FileManager.default.removeItem(at: folder)
+        } else {
+            try? FileManager.default.removeItem(at: clipURL)
+        }
     }
 
     /// A segment clip from a WAV that cannot be byte-sliced — more than one channel, 24- or 32-bit,
@@ -3105,8 +3124,7 @@ final class AppModel: ObservableObject {
         }
         var clip = WAVWriter.header(sampleRate: UInt32(saturating: source.sampleRate), dataByteCount64: UInt64(pcm.count))
         clip.append(pcm)
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WhisperMeet-segment-\(UUID().uuidString).wav")
+        let url = try newSegmentClipURL()
         try clip.write(to: url)
         return url
     }
@@ -3510,6 +3528,12 @@ final class AppModel: ObservableObject {
         // when nothing else is said.
         var messages: [String] = []
         let crashes = crashReportsSinceLastLaunch()
+        // F996: what an engine, helper or re-run left in the temporary folder when a crash or a
+        // force-quit skipped its `defer`. Off the main actor, and never from a test process (F937).
+        if TestProcess.allowsRealAccess(to: Self.launchFolderSweepRefusal) {
+            let scratch = FileManager.default.temporaryDirectory
+            Task.detached(priority: .utility) { Self.removeAbandonedTemporaryFolders(in: scratch) }
+        }
         // F520: the meetings-critical Whisper venv first, for the reason all four share — an install
         // interrupted mid-swap leaves the working runtime in a hidden backup, and the probe below
         // must see it restored.
@@ -5259,7 +5283,7 @@ final class AppModel: ObservableObject {
         }
         let engine = AudioCaptureEngine()
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WhisperMeet-Preflight-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(OwnedTemporaryFolders.name(prefix: Self.preflightFolderPrefix), isDirectory: true)
         preflightRecorder = engine
         preflightDirectory = directory
         preflightTest = .recording(secondsRemaining: Self.preflightDurationSeconds)
@@ -5714,6 +5738,36 @@ final class AppModel: ObservableObject {
     /// What `TestProcess` records when a test's engine run declines to sweep the real temporary folder.
     nonisolated static let mixFolderSweepRefusal = "temporary folder sweep (WhisperMeet-Mix-)"
     nonisolated static let diarizationFolderSweepRefusal = "temporary folder sweep (WhisperMeet-Diarization-)"
+    /// A segment re-run's clip folder and the test recording's folder (F996), named the same way.
+    nonisolated static let segmentClipFolderPrefix = "WhisperMeet-Segment-"
+    nonisolated static let preflightFolderPrefix = "WhisperMeet-Preflight-"
+
+    /// Every temporary folder the app names for its process and leaves to a `defer` (F996): Qwen's run
+    /// folder, which holds a decode the size of the recording's; a summary's, an answer's, a correction's
+    /// and an embedding's working folders; a segment re-run's clip; the test recording; and the mix and
+    /// speaker-analysis folders, which their own runs also sweep (F965). A crash or a force-quit skips
+    /// every `defer`, so each launch removes what a process that has exited left of these.
+    nonisolated static let launchSweptFolderPrefixes: [String] = [
+        QwenASRClient.runFolderPrefix,
+        LocalSummarizer.summaryFolderPrefix,
+        LocalSummarizer.answerFolderPrefix,
+        LocalTranscriptCorrector.workFolderPrefix,
+        LocalEmbedder.workFolderPrefix,
+        segmentClipFolderPrefix,
+        preflightFolderPrefix,
+        mixFolderPrefix,
+        diarizationFolderPrefix,
+    ]
+    /// What `TestProcess` records when a test's launch declines to sweep the real temporary folder (F937).
+    nonisolated static let launchFolderSweepRefusal = "temporary folder sweep at launch (F996)"
+
+    /// Removes, from `directory`, the folders under `launchSweptFolderPrefixes` whose process has exited
+    /// (`OwnedTemporaryFolders.removeAbandoned`: a real directory of exactly that name only, never one
+    /// whose process exists), and returns their names.
+    @discardableResult
+    nonisolated static func removeAbandonedTemporaryFolders(in directory: URL) -> [String] {
+        launchSweptFolderPrefixes.flatMap { OwnedTemporaryFolders.removeAbandoned(in: directory, prefix: $0) }
+    }
 
     /// The longest a conversion left to finish in the background (F912) may go without its output
     /// growing before it is killed and listed as an unfinished import

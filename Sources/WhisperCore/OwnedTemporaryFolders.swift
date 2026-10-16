@@ -3,12 +3,15 @@ import Foundation
 /// Temporary folders named for the process that made them — `<prefix><process ID>-<UUID>` — so a later
 /// run can tell a folder whose process has exited from one still in use, and remove what a crash or a
 /// force-quit left behind (F533 review R7, for Whisper's run folders; F965, for the mix an engine run
-/// makes of a several-track recording and for speaker analysis's workspace).
+/// makes of a several-track recording and for speaker analysis's workspace; F996, for Qwen's decode, the
+/// local helpers' working folders, a segment re-run's clip and the test recording, which each launch
+/// sweeps — `AppModel.removeAbandonedTemporaryFolders`).
 ///
 /// A `defer` removes a folder however a run ends, but it cannot run when the process dies, and these
 /// folders are large: a decode or a mix is about 115 MB per hour of audio, and nothing else removed
-/// one before macOS cleared its temporary folder. So each run sweeps its own prefix first, and the next
-/// run removes what an earlier one could not.
+/// one before macOS cleared its temporary folder. So Whisper's, the mix's and speaker analysis's runs
+/// sweep their own prefix first, each launch sweeps every prefix the app names this way, and a later
+/// run or launch removes what an earlier one could not.
 ///
 /// Only a real directory is removed (never a link, nor what one points at), only when its name is
 /// exactly one `name(prefix:processID:id:)` makes, and only when its process is not this one and no

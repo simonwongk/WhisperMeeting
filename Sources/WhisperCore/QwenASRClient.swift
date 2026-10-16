@@ -77,6 +77,10 @@ public struct QwenASRRuntime: Sendable {
 public struct QwenASRClient: Sendable {
     public typealias ProgressHandler = @Sendable (LocalTranscriptionProgress) async -> Void
 
+    /// The start of each run's working folder, `WhisperMeet-Qwen-<process ID>-<UUID>`
+    /// (`OwnedTemporaryFolders`, F996).
+    public static let runFolderPrefix = "WhisperMeet-Qwen-"
+
     private let pythonExecutableURL: URL
     private let helperScriptURL: URL
     private let modelDirectory: URL
@@ -108,8 +112,11 @@ public struct QwenASRClient: Sendable {
         }
         try Task.checkCancellation()
 
+        // Named for this process (F996): the `defer` below cannot run when the process dies, and this
+        // folder holds a decode the size of the recording's, so the next launch removes one a crash
+        // left (`AppModel.removeAbandonedTemporaryFolders`).
         let workingDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WhisperMeet-Qwen-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(OwnedTemporaryFolders.name(prefix: Self.runFolderPrefix), isDirectory: true)
         try FileManager.default.createDirectory(
             at: workingDirectory,
             withIntermediateDirectories: true

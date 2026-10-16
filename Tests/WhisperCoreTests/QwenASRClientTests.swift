@@ -36,6 +36,29 @@ func qwenClientTranscribesWithAlignment() async throws {
     #expect(environment == "1,1")
 }
 
+// F996: the run's working folder holds a decode the size of the recording's, and only a `defer` removed
+// it. Named for this process, a launch after a crash can tell it from one in use and remove it.
+@Test("Qwen's working folder is named for this process, and removed when the run ends (F996)")
+func qwenWorkingFolderNamesItsProcess() async throws {
+    let fixture = try QwenClientFixture()
+    defer { fixture.remove() }
+    let client = QwenASRClient(
+        pythonExecutableURL: fixture.pythonURL,
+        helperScriptURL: fixture.helperURL,
+        modelDirectory: fixture.modelDirectory,
+        alignerDirectory: fixture.alignerDirectory
+    )
+
+    _ = try await client.transcribe(recordingAt: fixture.audioURL)
+
+    let arguments = try String(contentsOf: fixture.argumentsURL, encoding: .utf8).split(separator: "\n").map(String.init)
+    let outputIndex = try #require(arguments.firstIndex(of: "--output"))
+    let folder = URL(fileURLWithPath: arguments[outputIndex + 1]).deletingLastPathComponent()
+    #expect(OwnedTemporaryFolders.owner(of: folder.lastPathComponent, prefix: "WhisperMeet-Qwen-") == getpid(),
+            "Qwen's working folder does not name this process: \(folder.lastPathComponent)")
+    #expect(!FileManager.default.fileExists(atPath: folder.path), "the run's folder outlived the run")
+}
+
 @Test("Qwen client refuses an incomplete runtime before reading the recording")
 func qwenClientRejectsIncompleteRuntime() async throws {
     let fixture = try QwenClientFixture()

@@ -48,6 +48,10 @@ public struct TranscriptCorrection: Sendable, Equatable, Codable {
 /// It proposes only — nothing is applied here; the user reviews every correction (like F82's glossary
 /// corrections), and the raw recording is never touched.
 public struct LocalTranscriptCorrector: Sendable {
+    /// The start of each run's working folder, `WhisperMeet-Correct-<process ID>-<UUID>`
+    /// (`OwnedTemporaryFolders`, F996), so a later launch can remove one a crash left.
+    public static let workFolderPrefix = "WhisperMeet-Correct-"
+
     private let pythonExecutableURL: URL
     private let helperScriptURL: URL
     private let modelDirectory: URL
@@ -81,7 +85,7 @@ public struct LocalTranscriptCorrector: Sendable {
         try Task.checkCancellation()
 
         let workingDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WhisperMeet-Correct-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(OwnedTemporaryFolders.name(prefix: Self.workFolderPrefix), isDirectory: true)
         try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: workingDirectory) }
 

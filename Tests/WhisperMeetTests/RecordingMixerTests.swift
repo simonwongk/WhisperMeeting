@@ -134,7 +134,7 @@ func segmentClipIsAsLoudAsTheMixOfAPolyWAV() async throws {
 
     let (mix, _) = try await mixed(input, in: dir)
     let clipURL = try AppModel.makeSegmentClip(from: input, startSeconds: 1, endSeconds: 3)
-    defer { try? FileManager.default.removeItem(at: clipURL) }
+    defer { AppModel.removeSegmentClip(clipURL) }
     let clip = try fixtureDecode(clipURL)
     let clipSamples = try #require(clip.channels.first)
 

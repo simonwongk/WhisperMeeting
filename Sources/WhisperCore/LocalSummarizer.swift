@@ -104,6 +104,11 @@ public struct SummarizerRuntime: Sendable {
 /// upgrade behind the same protocol. The helper runs under `ProcessGroupRunner`, so cancelling stops
 /// it and anything it spawned, and a helper that goes silent is stopped (F512).
 public struct LocalSummarizer: MeetingSummarizer {
+    /// The start of a summary's and an answer's working folders, `<prefix><process ID>-<UUID>`
+    /// (`OwnedTemporaryFolders`, F996), so a later launch can remove one a crash left.
+    public static let summaryFolderPrefix = "WhisperMeet-Summary-"
+    public static let answerFolderPrefix = "WhisperMeet-Answer-"
+
     /// How long the helper may print nothing before it is presumed wedged and stopped (F512).
     ///
     /// Derived from what the helper reports, not from how long a summary takes: it prints before and
@@ -169,7 +174,7 @@ public struct LocalSummarizer: MeetingSummarizer {
         try Task.checkCancellation()
 
         let workingDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WhisperMeet-Summary-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(OwnedTemporaryFolders.name(prefix: Self.summaryFolderPrefix), isDirectory: true)
         try FileManager.default.createDirectory(
             at: workingDirectory,
             withIntermediateDirectories: true
@@ -244,7 +249,7 @@ public struct LocalSummarizer: MeetingSummarizer {
         try Task.checkCancellation()
 
         let workingDirectory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("WhisperMeet-Answer-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(OwnedTemporaryFolders.name(prefix: Self.answerFolderPrefix), isDirectory: true)
         try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: workingDirectory) }
 

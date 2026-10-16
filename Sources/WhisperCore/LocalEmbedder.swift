@@ -40,6 +40,10 @@ public enum LocalEmbedderError: LocalizedError, Equatable {
 public struct LocalEmbedder: Sendable {
     public enum Kind: String, Sendable { case query, passage }
 
+    /// The start of each run's working folder, `WhisperMeet-Embed-<process ID>-<UUID>`
+    /// (`OwnedTemporaryFolders`, F996), so a later launch can remove one a crash left.
+    public static let workFolderPrefix = "WhisperMeet-Embed-"
+
     private let pythonExecutableURL: URL
     private let helperScriptURL: URL
     private let modelDirectory: URL
@@ -63,7 +67,8 @@ public struct LocalEmbedder: Sendable {
               files.fileExists(atPath: modelDirectory.appendingPathComponent("model.safetensors").path)
         else { throw LocalEmbedderError.notInstalled }
 
-        let working = files.temporaryDirectory.appendingPathComponent("WhisperMeet-Embed-\(UUID().uuidString)", isDirectory: true)
+        let working = files.temporaryDirectory.appendingPathComponent(
+            OwnedTemporaryFolders.name(prefix: Self.workFolderPrefix), isDirectory: true)
         try files.createDirectory(at: working, withIntermediateDirectories: true)
         defer { try? files.removeItem(at: working) }
         let input = working.appendingPathComponent("in.json")
