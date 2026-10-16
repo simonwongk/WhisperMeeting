@@ -1202,6 +1202,11 @@ final class AppModel: ObservableObject {
     private var transcriptionSettings = TranscriptionSelectionStore()
     private var summarizationTasks: [UUID: Task<Void, Never>] = [:]
     private var didPerformStartupRecovery = false
+    /// True while `performStartupRecovery` runs (F612). It rebuilds and indexes interrupted
+    /// recordings, which takes seconds per folder, and a restore confirmed meanwhile — on the relaunch
+    /// after a crash, the likeliest day to restore — refused its upserts while it still reported each
+    /// meeting recovered. `libraryRestoreBlockedReason` reads it.
+    private(set) var isRunningStartupRecovery = false
     /// The live capture's claim on its own folder (F297): an exclusive `flock` on `capture.lock`,
     /// held from the moment the folder exists until the recording is indexed or discarded. A
     /// second instance's startup sweep asks the kernel whether this is held, and that — not the
@@ -3206,11 +3211,15 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Why a restore is refused while launch's startup recovery is still running (F612).
+    nonisolated static let startupRecoveryRestoreRefusal = "WhisperMeet is still recovering recordings from the last session. Wait for it to finish before restoring the library; a restore now would leave out what it recovers."
+
     /// Why a whole-library restore cannot start now, or nil (F506).
     ///
     /// Anything that writes into a meeting when it finishes would write into the restored one:
     /// a transcription, a summary, a second opinion or segment re-run. A recording or import in
-    /// progress would have its index entry overwritten.
+    /// progress would have its index entry overwritten. And so would launch's startup recovery while it is
+    /// still indexing interrupted recordings (F612).
     private var libraryRestoreBlockedReason: String? {
         if store.isRestoringLibrary {
             return "A restore is already running. Wait for it to finish."
@@ -3222,6 +3231,9 @@ final class AppModel: ObservableObject {
         }
         if isRecordingActive || isImporting {
             return "Finish recording or importing before restoring the library."
+        }
+        if isRunningStartupRecovery {
+            return Self.startupRecoveryRestoreRefusal
         }
         if hasActiveTranscription || isRunningAuxiliaryEngine || isSummarizing {
             return "Wait for the running transcription or summary to finish, or cancel it, before restoring the library. Its result would be written into the meeting you are restoring."
@@ -3459,6 +3471,9 @@ final class AppModel: ObservableObject {
     func performStartupRecovery() async {
         guard !didPerformStartupRecovery else { return }
         didPerformStartupRecovery = true
+        // Every return below ends it, so a restore is held off only while this runs (F612).
+        isRunningStartupRecovery = true
+        defer { isRunningStartupRecovery = false }
         // F318: the watched folder starts only once everything below has settled the library.
         defer { restartWatchedFolder() }
         // F257: idempotent, and started here because this is the one method that runs once per

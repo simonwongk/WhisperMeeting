@@ -278,8 +278,14 @@ func libraryHoldsStillWhileRestoring() async throws {
     #expect(model.store.meeting(id: id)?.title == "Renamed since", "an edit was taken during the restore")
     model.beginTranscription(id: id)
     #expect(!model.hasActiveTranscription, "a transcription started during the restore")
+    // Refused by the restore guard itself, which is asserted by its own words (F612): on a host with
+    // no microphone the preflight below it refuses too, so `activeMeetingID == nil` alone also held
+    // with the guard removed.
+    model.alertMessage = nil
     await model.startRecording()
     #expect(model.activeMeetingID == nil, "a recording started during the restore")
+    #expect(model.alertMessage == AppModel.libraryRestoringMessage("Recording"),
+            "the recording was refused, if at all, by something other than the restore: \(model.alertMessage ?? "nothing was said")")
 
     await pressed.value
     try await drain(model, latch)
@@ -326,4 +332,55 @@ func settingsShowsTheRestoreInProgress() throws {
     let progressIsShown = source.contains("if model.isRestoringLibrary {")
     #expect(restoreButtonIsHeld, "Restore… stays enabled while a restore runs")
     #expect(progressIsShown, "nothing in Settings shows that a restore is running")
+}
+
+// MARK: - F612
+
+/// Holds the startup sweep's rebuild of an interrupted recording on a background thread until the
+/// test lets it go, and says when it has started.
+private final class RebuildGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let release = DispatchSemaphore(value: 0)
+    private var started = false
+    var hasStarted: Bool { lock.withLock { started } }
+    func enter() {
+        lock.withLock { started = true }
+        // Bounded, so a test against code that never lets go cannot hang the suite.
+        _ = release.wait(timeout: .now() + 30)
+    }
+    func letGo() { release.signal() }
+}
+
+@Test("A restore is not offered while startup recovery is still rebuilding an interrupted recording (F612)")
+@MainActor
+func restoreRefusedDuringStartupRecovery() async throws {
+    let latch = Latch()
+    let (root, model, generation, _) = try makeFixture("startup-recovery", latch: latch)
+    defer { try? FileManager.default.removeItem(at: root) }
+    // An interrupted recording the sweep will find: a folder no meeting in the index owns.
+    let orphan = model.store.rootDirectory.appendingPathComponent("Recordings/\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: orphan, withIntermediateDirectories: true)
+    try Data("raw".utf8).write(to: orphan.appendingPathComponent("system-audio.f32"))
+    let gate = RebuildGate()
+    model.recoverInterruptedRecording = { _ in
+        gate.enter()
+        return nil
+    }
+    let recovery = Task { await model.performStartupRecovery() }
+    let deadline = Date().addingTimeInterval(30)
+    while !gate.hasStarted, Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+    try #require(gate.hasStarted, "the startup sweep never reached the interrupted recording")
+
+    model.alertMessage = nil
+    await model.requestLibraryRestore(from: generation)
+
+    #expect(model.pendingLibraryRestore == nil, "a restore was offered while startup recovery was still writing into the library")
+    #expect(model.alertMessage == AppModel.startupRecoveryRestoreRefusal, "\(model.alertMessage ?? "nothing was said")")
+    gate.letGo()
+    await recovery.value
+    // And only while it runs: afterwards the same request is offered.
+    model.alertMessage = nil
+    await model.requestLibraryRestore(from: generation)
+    #expect(model.pendingLibraryRestore != nil, "the restore stayed refused after startup recovery ended: \(model.alertMessage ?? "")")
+    try await drain(model, latch)
 }

@@ -137,3 +137,32 @@ func theImportIsFreeAgainWhenTheProbeDoesNotLeadToADownload() async throws {
         #expect(!model.isImporting)
     }
 }
+
+// F612 (1) — a restore confirmed while a link import is still looking its link up is refused, because
+// the import is busy from before its probe (F975 made it so; this pins the restore's side of it).
+@MainActor
+@Test("A restore is not offered while a link import is still looking its link up (F612)")
+func aRestoreDuringTheProbeIsRefused() async throws {
+    let root = try makeRoot("restore")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let library = root.appendingPathComponent("Library", isDirectory: true)
+    let destination = root.appendingPathComponent("Dest", isDirectory: true)
+    try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+    let gate = ProbeGate()
+    let model = makeModel(root: library, probe: gatedProbe(gate))
+    model.store.upsert(MeetingRecord(id: UUID(), title: "Before the backup", status: .recorded))
+    let summary = try BackupCoordinator.backUp(source: library, destination: destination, now: 1, retain: 3)
+    let generation = destination
+        .appendingPathComponent(BackupCoordinator.managedSubfolder, isDirectory: true)
+        .appendingPathComponent(summary.generation, isDirectory: true)
+
+    let importing = model.startLinkImport("https://www.youtube.com/watch?v=abc123")
+    try #require(await eventually { gate.entered == 1 }, "the import's probe never started")
+
+    await model.requestLibraryRestore(from: generation)
+
+    #expect(model.pendingLibraryRestore == nil, "a restore was offered while a link was being looked up")
+    #expect(model.alertMessage?.contains("importing") == true, "\(model.alertMessage ?? "nothing was said")")
+    gate.openUp()
+    _ = await importing.value
+}
