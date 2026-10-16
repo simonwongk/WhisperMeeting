@@ -524,6 +524,31 @@ func nonWAVRecordingIsMeasuredByDecoding() async throws {
     #expect(try fixture.scratchIsEmpty())
 }
 
+// F903: a `.wav` whose header `WAVInspection` cannot read (only a disk import can be one) was handed to
+// Whisper whole, however long — F533's memory problem kept for it. It is decoded and measured like a
+// container that is not a WAV, and cut into pieces when it is over the bound.
+@Test("A long .wav whose header cannot be read is decoded, measured and transcribed in pieces (F903)")
+func unreadableHeaderWAVIsTranscribedInPieces() async throws {
+    let fixture = try PieceFixture()
+    defer { fixture.remove() }
+    // 44 bytes WAVInspection cannot read (no RIFF/RF64 magic), then ten seconds of the PCM the stub
+    // "decodes" by dropping them: over the small policy's bound.
+    var container = Data(repeating: 0x20, count: 44)
+    container.replaceSubrange(0..<4, with: Data("RIFX".utf8))
+    tenSecondSamples().withUnsafeBufferPointer { container.append(Data(buffer: $0)) }
+    try container.write(to: fixture.recording)
+    #expect(WAVInspection.header(at: fixture.recording) == nil, "precondition: the header is unreadable")
+
+    let result = try await fixture.client().transcribe(recordingAt: fixture.recording, options: .accuracyFirst())
+
+    #expect(FileManager.default.fileExists(atPath: fixture.ffmpegLog.path), "the recording was not decoded to be measured")
+    let runs = try fixture.invocations()
+    #expect(runs.count > 1, "a ten-second recording over a shorter bound ran as \(runs.count) Whisper call(s)")
+    #expect(!runs.contains { $0.first == fixture.recording.path }, "Whisper was handed the whole recording")
+    #expect(result.segments.count == runs.count)
+    #expect(try fixture.scratchIsEmpty())
+}
+
 @Test("A piece that fails fails the whole transcription; no partial transcript comes back (F533)")
 func failedPieceFailsTheWhole() async throws {
     let fixture = try PieceFixture(failPiece: 2)

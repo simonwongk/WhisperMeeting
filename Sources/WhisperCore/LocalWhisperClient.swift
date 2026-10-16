@@ -327,20 +327,21 @@ public struct LocalWhisperClient: Sendable {
     /// to be transcribed whole as before (F533):
     ///
     /// - a WAV whose header puts it within the bound — the common case, measured without a decode;
-    /// - a `.wav` that `WAVInspection` — which reads every WAV the app itself writes, RIFF and
-    ///   RF64 — cannot read: it is given to Whisper exactly as before, failures and all;
     /// - no `ffmpeg` on Whisper's `PATH`: Whisper cannot decode anything either and fails at
     ///   `load_audio`, before any spectrogram exists, with the error it always gave;
     /// - a decode that turns out to be within the bound after all.
     ///
-    /// A decode that fails throws, before Whisper runs: the meeting stays retryable.
+    /// Anything else is decoded to be measured: a container that is not a WAV, and a `.wav` whose
+    /// header `WAVInspection` — which reads every WAV the app itself writes, RIFF and RF64 — cannot
+    /// read. Only a disk import can be the second, and one over the bound used to be given to Whisper
+    /// whole, keeping F533's memory problem for it (F903).
+    ///
+    /// A decode that fails throws, before Whisper runs: the meeting stays retryable. For a `.wav`
+    /// ffmpeg cannot read either, that is ffmpeg's error where it used to be Whisper's `load_audio`
+    /// failing on the same decode.
     private func decodeForPieces(_ fileURL: URL, in workingDirectory: URL) async throws -> DecodedRecording? {
         let wavSeconds = WhisperPieceAudio.wavDurationSeconds(at: fileURL)
         if let wavSeconds, wavSeconds <= piecePolicy.maximumPieceSeconds { return nil }
-        if wavSeconds == nil, fileURL.pathExtension.lowercased() == "wav",
-           WAVInspection.header(at: fileURL) == nil {
-            return nil
-        }
         guard let ffmpeg = ffmpegExecutableURL ?? Self.findFFmpeg(path: Self.subprocessPATH()) else { return nil }
 
         let audioURL = workingDirectory.appendingPathComponent("whispermeet-decoded.s16le")

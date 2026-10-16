@@ -47,7 +47,7 @@ private func temporaryDirectory(_ name: String) throws -> URL {
 
 private func batchEngine(whisper: URL, in directory: URL) throws -> (BatchWhisperDictationEngine, URL) {
     let clip = directory.appendingPathComponent("clip.wav")
-    try Data("not really audio".utf8).write(to: clip)
+    try shortReadableWAV().write(to: clip)
     let engine = BatchWhisperDictationEngine(
         client: LocalWhisperClient(
             executableURL: whisper, modelDirectory: directory.appendingPathComponent("models"),

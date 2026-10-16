@@ -41,7 +41,11 @@ struct DownloadSurfaceRig {
         defaults.set(true, forKey: "dictationEnabled")
         defaults.set(false, forKey: "dictationAutoPaste")
         let clip = directory.appendingPathComponent("clip.wav")
-        try Data("not really audio".utf8).write(to: clip)
+        // Half a second of a tone in a readable WAV, as the recorder writes one: loud enough for the
+        // speech floor (F599). A few bytes of text named `.wav` is decoded by ffmpeg first since
+        // F903, so where ffmpeg is installed the batch engine's test would test ffmpeg's error.
+        let tone = (0..<8_000).map { Float(0.3 * sin(2 * Double.pi * 440 * Double($0) / 16_000)) }
+        try WAVWriter.wavData(from: tone, sampleRate: 16_000).write(to: clip)
         controller = DictationController(
             defaults: defaults,
             engine: engine,

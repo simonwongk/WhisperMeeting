@@ -98,7 +98,7 @@ func reportsMissingRuntime() async throws {
         .appendingPathComponent("WhisperMeetTests-\(UUID().uuidString)", isDirectory: true)
     let audioURL = directory.appendingPathComponent("meeting.wav")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try Data("audio".utf8).write(to: audioURL)
+    try shortReadableWAV().write(to: audioURL)
     defer { try? FileManager.default.removeItem(at: directory) }
     let client = LocalWhisperClient(
         executableURL: directory.appendingPathComponent("missing-whisper"),
@@ -118,7 +118,7 @@ func reportsProcessFailure() async throws {
     let executableURL = directory.appendingPathComponent("whisper")
     let audioURL = directory.appendingPathComponent("meeting.wav")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try Data("audio".utf8).write(to: audioURL)
+    try shortReadableWAV().write(to: audioURL)
     try makeExecutable(
         at: executableURL,
         script: "#!/bin/zsh\nprint -u2 'model could not load'\nexit 7\n"
@@ -147,7 +147,7 @@ func capsMissingOutputLogInProcessFailedMessage() async throws {
     let executableURL = directory.appendingPathComponent("whisper")
     let audioURL = directory.appendingPathComponent("meeting.wav")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try Data("audio".utf8).write(to: audioURL)
+    try shortReadableWAV().write(to: audioURL)
     // ~200 KB of blank-padded noise, matching the client's own accumulation cap, plus the one
     // line an engineer actually needs.
     try makeExecutable(
@@ -183,7 +183,7 @@ func cancelsLocalProcess() async throws {
     let executableURL = directory.appendingPathComponent("whisper")
     let audioURL = directory.appendingPathComponent("meeting.wav")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try Data("audio".utf8).write(to: audioURL)
+    try shortReadableWAV().write(to: audioURL)
     try makeExecutable(
         at: executableURL,
         script: "#!/bin/zsh\nexec sleep 120\n"
@@ -226,7 +226,7 @@ func cancelKillsDecoderGrandchild() async throws {
     let audioURL = directory.appendingPathComponent("meeting.wav")
     let pidFile = directory.appendingPathComponent("decoder.pid")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try Data("audio".utf8).write(to: audioURL)
+    try shortReadableWAV().write(to: audioURL)
     try makeExecutable(
         at: executableURL,
         script: """
@@ -373,7 +373,7 @@ private struct LocalWhisperFixture {
         scratchDirectory = directory.appendingPathComponent("Scratch", isDirectory: true)
         argumentsURL = audioURL.appendingPathExtension("arguments")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Data("audio".utf8).write(to: audioURL)
+        try shortReadableWAV().write(to: audioURL)
 
         // F535: the JSON's `language` is what openai-whisper really writes — the `--language` value
         // exactly as passed (20250625 `transcribe.py:159`, returned at `:513`), or a detected code
