@@ -36,13 +36,13 @@ public struct WhisperPiecePolicy: Sendable, Equatable {
     /// helper's ±5 s (below) is for 60-second chunks, not 40-minute ones.
     ///
     /// **Measured (F902, 2026-10-16, an 18 GB M3 Pro):** the installed openai-whisper 20250625
-    /// (torch 2.13.0) running Large (`large-v3.pt`) with this client's flags on synthetic speech peaks at the same
-    /// footprint whatever the piece's length — 9.469 GB on 2 minutes, 9.474 GB on 15, 9.473 GB on 45
-    /// (`/usr/bin/time -l` "peak memory footprint"). That peak is the model load (the 3 GB fp16
-    /// checkpoint beside the ~6 GB of fp32 weights it is loaded into), not the mel: a 45-minute
-    /// piece's spectrogram stays under it, so this bound adds nothing to a run's peak. It was not
-    /// raised on that account: the slope above is the reason for a bound, and the measurement shows
-    /// only that 45 minutes is inside the load's shadow, not where a longer piece would leave it.
+    /// (torch 2.13.0) running Large (`large-v3.pt`) with this client's flags on synthetic speech
+    /// peaks at the same footprint whatever the piece's length — 9.469 GB on 2 minutes, 9.474 GB on
+    /// 15, 9.473 GB on 45 (`/usr/bin/time -l` "peak memory footprint"). The length does not move it,
+    /// so it is not the spectrogram: whatever sets it, a 2-minute file reaches it too, and a 45-minute
+    /// piece's spectrogram stays under it — this bound adds nothing to a run's peak. It was not raised
+    /// on that account: the slope above is the reason for a bound, and the measurement shows only
+    /// that 45 minutes is inside that peak, not where a longer piece would rise above it.
     public static let standard = WhisperPiecePolicy(maximumPieceSeconds: 45 * 60, quietSearchSeconds: 120)
 }
 
