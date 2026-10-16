@@ -628,7 +628,10 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
         // would be the first refusal resting on `running`, which `AVAudioEngine.h` documents only as
         // "The engine's running state." — a false reading on a healthy engine would fail a dictation
         // that had lost nothing. Keeping the clip is the deferred outcome; refusing is the
-        // destructive one.
+        // destructive one. The delay itself is unmeasured — the header says the engine stops and
+        // then posts, and gives no bound — and the decision holds whatever it is. What is read
+        // below is logged, never refused on, so a hardware sitting (F361, F760) can see whether a
+        // release ever lands in that window.
         let ending: (wasRecording: Bool, input: AVAudioInputNode?, interruption: DictationCaptureInterruption?) =
             stateLock.withLock {
                 // `starting` belongs to `start()`, which is still running and will settle it.
@@ -641,6 +644,10 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
                 return snapshot
             }
         if ending.wasRecording {
+            // F719: only a capture that installed a real tap; a headless one never ran its engine.
+            if ending.input != nil, !engine.isRunning {
+                log.notice("dictation key released after the engine stopped itself, before its configuration-change notice arrived; the clip is kept")
+            }
             ending.input?.removeTap(onBus: 0)
             engine.stop()
         }
