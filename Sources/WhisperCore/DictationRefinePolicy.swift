@@ -137,8 +137,11 @@ public enum DictationRefinePolicy {
     /// can stand in for the word it replaced and not for a second word translated beside it. And
     /// only in that word's place (F852): one of the term's places in the output must keep a token
     /// that stood beside a missing word in the source, before it or after it. A neighbour is a
-    /// rough stand-in for alignment — a common token such as 了 can match twice — but a term the
-    /// refiner added somewhere else entirely no longer excuses a word it translated.
+    /// rough stand-in for alignment — a common token such as 了 can match twice, and a term at the
+    /// very start of the output matches a word missing at the very start of the source through the
+    /// two ends' `nil` — but a term the refiner added somewhere else entirely no longer excuses a
+    /// word it translated. Either neighbour is enough, not both, so a refiner that also touched one
+    /// side of the corrected word ("Kubernetis 集群" → "Kubernetes 的集群") is still in place.
     ///
     /// Erring towards refusal costs nothing: the raw transcript ships, as it does whenever
     /// refinement is off or slow. Known refusals of an edit that kept the word: a Latin word joined

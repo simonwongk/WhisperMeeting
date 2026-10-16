@@ -191,6 +191,11 @@ func aVocabularyTermExcusesOnlyTheWordInItsPlace() {
     #expect(DictationRefinePolicy.acceptedOutput(
         "把这个部署到 Kubernetes。", input: "把这个部署到 Kubernetis", protectedTerms: ["Kubernetes"]
     ) == "把这个部署到 Kubernetes。")
+    // Either neighbour is enough (the review's finding 8): the refiner may also touch one side of
+    // the corrected word — here it added 的 after it — and the correction is still in place.
+    #expect(DictationRefinePolicy.acceptedOutput(
+        "把这个部署到 Kubernetes 的集群", input: "把这个部署到 Kubernetis 集群", protectedTerms: ["Kubernetes"]
+    ) != nil)
     // Two words for one term is still one word lost (F637's one-for-one count, kept).
     #expect(DictationRefinePolicy.acceptedOutput(
         "把这个部署到 Kubernetes。", input: "把这个部署到 Cooper netties", protectedTerms: ["Kubernetes"]
