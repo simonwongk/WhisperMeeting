@@ -34,6 +34,9 @@ import Testing
 //   more words is then not compared with such a line at all, a three-word term keeps its three.
 // - F972 fourth: a three-word term on such a line is compared with its four-word windows too, but
 //   only where a window of up to three words already scored for it (round 2 of Wave 7, F968's stray word).
+// - F994: a term is present where it stands, not in the whole segment: no window across it, nor
+//   across a word that begins with its spelling (its inflection, "Kestrels"), and the rest of the
+//   line is searched as before.
 // - F1003: a window equal to another term of the vocabulary is never proposed toward this one, nor
 //   a window overlapping where another term stands as up to three words, unless this term's
 //   spelling holds that one's.
@@ -54,6 +57,7 @@ private struct Amendments {
     var f972 = true
     var f972Fourth = true
     var f1003 = true
+    var f994 = true
 }
 
 /// One of a segment's words, with where it stands (F914).
@@ -67,8 +71,8 @@ private struct OracleWord {
 /// oracle's time in a debug build, and the corpus test runs the oracle many times over the same
 /// windows and terms — once for the answer, and once more for each check that switches one to three
 /// amendments off to show the corpus exercises each — which is what took that test from about 15 s
-/// in Wave 6 to 31 s in Wave 7: seven runs became fourteen, each as slow as before (fifteen since
-/// F1003). A class, so the corpus
+/// in Wave 6 to 31 s in Wave 7: seven runs became fourteen, each as slow as before (sixteen since
+/// F994 and F1003). A class, so the corpus
 /// test's runs share one and each pair is scored once; any other call gets a fresh one.
 private final class OracleScores {
     private struct Pair: Hashable {
@@ -101,24 +105,25 @@ private enum PreF536GlossaryCorrector {
             let words = Self.words(of: segment.text, splittingAtDashes: amended.f915)
             guard !words.isEmpty else { continue }
             let normalizedWords = words.map { normalize($0.text) }
+            // Where any term stands as up to three words, once per segment (F1003). // amended
+            var termsStanding: [(span: Range<Int>, spelling: String)] = [] // amended
+            if amended.f1003 { // amended
+                for size in 1...maxWindow where size <= words.count { // amended
+                    for start in 0...(words.count - size) { // amended
+                        let spelling = normalizedWords[start..<(start + size)].joined() // amended
+                        if termSpellings.contains(spelling) { termsStanding.append((start..<(start + size), spelling)) } // amended
+                    } // amended
+                } // amended
+            } // amended
 
             for term in vocabulary {
                 let termNormalized = normalize(term)
                 guard !termNormalized.isEmpty else { continue }
-                if normalizedWords.contains(termNormalized) { continue }
+                if !amended.f994, normalizedWords.contains(termNormalized) { continue } // amended (was unconditional)
 
                 var best: (similarity: Double, slice: Range<Int>)?
-                var blocked: [Range<Int>] = [] // amended (F1003)
-                if amended.f1003 { // amended
-                    for size in 1...maxWindow where size <= words.count { // amended
-                        for start in 0...(words.count - size) { // amended
-                            let spelling = normalizedWords[start..<(start + size)].joined() // amended
-                            if spelling != termNormalized, termSpellings.contains(spelling), !termNormalized.contains(spelling) { // amended
-                                blocked.append(start..<(start + size)) // amended
-                            } // amended
-                        } // amended
-                    } // amended
-                } // amended
+                var blocked = termsStanding // amended (F1003)
+                    .filter { $0.spelling != termNormalized && !termNormalized.contains($0.spelling) }.map(\.span) // amended
                 var presentAsAWindow = false // amended
                 let termWordList = Self.words(of: term, splittingAtDashes: amended.f915) // amended
                 let termWords = termWordList.count // amended
@@ -130,6 +135,23 @@ private enum PreF536GlossaryCorrector {
                         if termWords > maxWindow { continue } // amended
                         fourthIfScored = amended.f972Fourth // amended
                         largest = maxWindow // amended
+                    } // amended
+                } // amended
+                var standsHere = false // amended (F994)
+                if amended.f994 { // amended: the term where it stands, and no window across it
+                    let presentUpTo = !amended.f820 ? 1 : amended.f968 ? termWords : largest // amended
+                    for size in 1...max(1, presentUpTo) where size <= words.count { // amended
+                        for start in 0...(words.count - size) // amended
+                        where normalizedWords[start..<(start + size)].joined() == termNormalized { // amended
+                            blocked.append(start..<(start + size)) // amended
+                            standsHere = true // amended
+                        } // amended
+                    } // amended
+                    if standsHere { // amended: and beside it, no window across a word that is it inflected
+                        for (position, word) in normalizedWords.enumerated() // amended
+                        where word.count > termNormalized.count && word.hasPrefix(termNormalized) { // amended
+                            blocked.append(position..<(position + 1)) // amended
+                        } // amended
                     } // amended
                 } // amended
                 // Run once to three words, and again to four where F972's fourth window is due. // amended
@@ -150,7 +172,7 @@ private enum PreF536GlossaryCorrector {
                     }
                 }
                 } // amended
-                if amended.f820, presentAsAWindow { continue } // amended
+                if amended.f820, presentAsAWindow, !amended.f994 { continue } // amended
                 if let best {
                     let window = words[best.slice.lowerBound].range.lowerBound..<words[best.slice.upperBound - 1].range.upperBound // amended
                     let untrimmed = amended.f914 // amended
@@ -384,7 +406,8 @@ func englishSuggestionsMatchThePreF536Oracle() {
     // them, one spelled right and one across a tab (F940); then a window whose text first occurs
     // earlier as a whole word of a worse window, trimmed and untrimmed (F914); and a three-word term
     // misheard across four words with none of its own (F972's fourth); and two terms a letter apart,
-    // one spoken (F1003) — added after generating, so
+    // one spoken (F1003); a mishearing and an inflection beside the right spelling (F994) — added
+    // after generating, so
     // the seeded corpus above is the one F536 pinned.
     let vocabulary = generated + ["Acme Inc.", ".NET", "(beta)", "Bank of New York", "Bank of New York Mellon", "Priya Raman Iyer",
                                    "Harrier", "Harrior"]
@@ -397,12 +420,13 @@ func englishSuggestionsMatchThePreF536Oracle() {
         "Kestrel's release is ready.", "the Kestrol's build is late.", "Kestrol—the build is late.",
         "the Bank of New Yor k said yes.", "we deployed Kuber netes today.", "ask Priya Ram an now.",
         "the Bonk off Noo Yolk said yes.", "ask Pria Ram an Eyer now.", "the Harrior build is late.",
+        "Kestrel shipped and Kestrol followed.", "the Kestrel build and the Kestrels nest.",
     ]
     let segments = syntheticTranscript(generated, &random) + fixedLines.enumerated().map {
         TranscriptSegment(speaker: nil, start: Double(60 + $0.offset), end: Double(61 + $0.offset), text: $0.element)
     }
 
-    // Every run of the oracle below shares one memo of its scores (F1011): fifteen runs over the
+    // Every run of the oracle below shares one memo of its scores (F1011): sixteen runs over the
     // same windows and terms, each pair scored once.
     let scores = OracleScores()
     func oracle(_ amended: Amendments = Amendments()) -> [GlossaryCorrection] {
@@ -451,6 +475,10 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withoutF972Fourth.f972Fourth = false
     #expect(oracle(withoutF972Fourth) != expected,
             "no three-word term in the corpus is misheard across four words on a line holding none of its own, so F972's fourth window is untested here")
+    var withoutF994 = Amendments()
+    withoutF994.f994 = false
+    #expect(oracle(withoutF994) != expected,
+            "no line in the corpus holds a term and a mishearing of it, so F994's amendment is untested here")
     var withoutF1003 = Amendments()
     withoutF1003.f1003 = false
     #expect(oracle(withoutF1003) != expected,

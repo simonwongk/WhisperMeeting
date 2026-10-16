@@ -54,8 +54,8 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// and digits: Chinese
 /// has no spaces, so the old whitespace split made a whole sentence one "word" — a short segment was
 /// proposed to be replaced wholesale ("对，张经里" → "张经理", deleting "对，") and a mishearing
-/// inside an ordinary sentence was never found. A term already present in the segment is correct and
-/// proposes nothing. A window must match more than half the term's characters, position for
+/// inside an ordinary sentence was never found. A Chinese term already present in the segment is
+/// correct and proposes nothing (a Latin one is present only where it stands, F994). A window must match more than half the term's characters, position for
 /// position — one of two for a two-character term, since F817 (`enoughInPlace`) — and every
 /// character it gets wrong must sound like the term's, or nearly, by the accent confusions
 /// `MandarinSound` folds (zh/z, sh/s/x, n/l, in/ing…, F916), though a near sound never stands
@@ -189,10 +189,15 @@ public enum GlossaryCorrector {
 
     /// F65's search, which picks the same window for text without Chinese: the first 1–3-token
     /// window (1–(n+1) for a term of n ≥ 3 words, F940 and F968, below) with the highest ratio at
-    /// or above the threshold, unless the
-    /// term already stands as a window — one token or, since F820, several: F65 asked only whether
-    /// it was one token, so a correct "Priya Raman said" scored 10/14 against "Priya Raman" and was
-    /// proposed as it, deleting "said". The phrase returned is the window's text as it stands in
+    /// or above the threshold, among the windows that do not run across the term where it already
+    /// stands as a window — one token or, since F820, several: F65 asked only whether it was one
+    /// token, so a correct "Priya Raman said" scored 10/14 against "Priya Raman" and was proposed
+    /// as it, deleting "said". Until F994 a term standing anywhere in the segment stopped the search
+    /// there, so "Priya Raman and Pria Ramen spoke" proposed nothing (the Wave 5 review's T11); now
+    /// the rest of the line is searched — except, beside the right spelling, a word that begins with
+    /// it and goes on ("Kestrels", "deployed"), which is the term inflected rather than misheard:
+    /// measured before choosing, eight of eleven probe lines' new rows were that, and the golden
+    /// corpus's rows did not change (the F994 closure). The phrase returned is the window's text as it stands in
     /// the segment (F914) without the punctuation stuck to its outer words, less what the term's
     /// own spelling begins or ends with (F819), and the row is applied to that window — see
     /// `placedPhrase`.
@@ -211,7 +216,7 @@ public enum GlossaryCorrector {
     /// was compared with too short a window and left the fragment behind: "the Bank of New Yor k"
     /// became "the Bank of New York k" (F968).
     ///
-    /// **A term is present where it equals a window of no more words than its own (F820, F968):**
+    /// **A term is present where it equals a window of no more words than its own (F820, F968, F994):**
     /// "Priya Raman said", "Bank⟨TAB⟩of New York". Equal across *more* words it is that term with a
     /// word split in two — "Kuber netes", "Priya Ram an" — a mishearing like any other, and the
     /// best there is (F968; F820 counted any equal window as the term present, so "Kuber netes"
@@ -253,13 +258,17 @@ public enum GlossaryCorrector {
             return nil
         }
         windows.extend(to: allowance)
-        if let smallest = windows.smallestWindowSpelling[term.normalized], smallest <= term.wordCount { return nil }
         // And a window across another term where it stands ("the Kestrol" for Kestrel, with Kestrol
         // listed): applying it would rewrite that term — unless this term holds it ("Pria Raman"
         // for "Priya Raman" with "Raman" listed), when the row keeps it (F1003).
-        let blocking = windows.termOccurrences
+        var blocking = windows.termOccurrences
             .filter { $0.ids != term.ids && !contains(term.ids, $0.ids) }
             .map(\.tokens)
+        // Nor a window across the term itself where it stands, nor, beside it, across a word that is
+        // the term inflected (F994): the rest of the line is searched.
+        if let smallest = windows.smallestWindowSpelling[term.normalized], smallest <= term.wordCount {
+            blocking += windows.spans(spelling: term.ids, upTo: term.wordCount) + windows.words(extending: term.ids)
+        }
         var best: (similarity: Double, window: LatinWindows.Window)?
         // A window equal to the term is scored like any other: it has more words than the term, or
         // the term would be present (above), and the LCS ratio gives it 1.
@@ -572,6 +581,18 @@ public enum GlossaryCorrector {
         /// Where the windows of up to `size` tokens end in `all`.
         func end(ofSize size: Int) -> Int {
             ends[min(size, ends.count - 1)]
+        }
+
+        /// The token spans of the built windows of up to `size` tokens that spell `ids` (F994).
+        func spans(spelling ids: [Int32], upTo size: Int) -> [Range<Int>] {
+            all[..<end(ofSize: size)].filter { $0.ids == ids }.map(\.tokens)
+        }
+
+        /// The one-token windows that begin with `ids` and go on — the term inflected, "Kestrels"
+        /// for "Kestrel" (F994). A character no term holds is -1, so a prefix of ids is a prefix of
+        /// the normalized text.
+        func words(extending ids: [Int32]) -> [Range<Int>] {
+            all[..<end(ofSize: 1)].filter { $0.ids.count > ids.count && $0.ids.starts(with: ids) }.map(\.tokens)
         }
 
         /// Whether at least `count` of `termWords` stand in the segment as whole words (F972).

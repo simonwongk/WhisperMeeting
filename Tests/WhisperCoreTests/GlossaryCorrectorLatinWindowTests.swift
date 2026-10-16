@@ -304,3 +304,29 @@ func aLatinVocabularyTermIsNeverProposedTowardAnother() {
     #expect(GlossaryCorrector.corrections(vocabulary: ["Kestrel"], segments: [segments[0]])
         == [GlossaryCorrection(segmentIndex: 0, from: "Kestrol", to: "Kestrel")])
 }
+
+@Test("A mishearing beside the right spelling of its term in one line is proposed; the term's inflections there are not (F994)")
+func mishearingBesideTheRightSpellingIsProposed() {
+    // F65 took a term spelled right anywhere in a segment as right for the whole segment, so a
+    // second, misheard mention was never offered (the Wave 5 review's T11). Presence is now per
+    // occurrence: no window across the right spelling, and the rest of the line is searched.
+    // Measured before choosing (the F994 closure): on the golden corpus the rows are the same 529;
+    // on eleven probe lines per-occurrence presence alone added eight wrong rows, every one a word
+    // that begins with the term ("releases", "deployed", "Kestrels") — so beside the right spelling,
+    // a word that is the term inflected is the same word, and no window across it is proposed.
+    let segments = [
+        seg("Priya Raman and Pria Ramen spoke"), seg("Kestrel shipped and Kestrol followed"),
+        seg("we deploy and deployed it"), seg("deploy the deployment"),
+        seg("Kestrel and the Kestrels nest"), seg("Priya Raman said so"),
+    ]
+    let rows = GlossaryCorrector.corrections(vocabulary: ["Priya Raman", "Kestrel", "deploy"], segments: segments)
+    #expect(rows == [
+        GlossaryCorrection(segmentIndex: 0, from: "Pria Ramen", to: "Priya Raman"),
+        GlossaryCorrection(segmentIndex: 1, from: "Kestrol", to: "Kestrel"),
+    ])
+    #expect(GlossaryCorrector.apply(rows, to: segments).prefix(2).map(\.text)
+        == ["Priya Raman and Priya Raman spoke", "Kestrel shipped and Kestrel followed"])
+    // Where the term is absent, an inflection is proposed as it always was (F915's Gaps).
+    #expect(GlossaryCorrector.corrections(vocabulary: ["Kestrel"], segments: [seg("the Kestrels nest")])
+        == [GlossaryCorrection(segmentIndex: 0, from: "Kestrels", to: "Kestrel")])
+}
