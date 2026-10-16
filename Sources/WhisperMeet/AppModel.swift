@@ -652,6 +652,10 @@ final class AppModel: ObservableObject {
     /// delete files a backup is reading, and a backup must not start while Shrink deletes.
     @Published private(set) var isBackingUp = false
     @Published var storageFacts: [UUID: MeetingStoragePlan.DiskFacts] = [:]
+    /// The refusals Shrink found only after a whole encode and remembers for the session, by meeting: a file whose
+    /// two channels cancel when mixed into one, with that file's identity then (F1006). While the file is unchanged
+    /// the refusal is the meeting's reason up front, so nothing is encoded again only to be refused again.
+    @Published var rememberedShrinkRefusals: [UUID: RememberedShrinkRefusal] = [:]
     /// True while the Storage sheet is on screen, so the meeting page's Shrink dialog stands down
     /// and only the sheet's presents (F795).
     @Published var isStorageSheetOpen = false

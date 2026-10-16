@@ -49,15 +49,55 @@ extension AppModel {
     /// Why Shrink can't run for this meeting now, or nil when it can.
     func shrinkUnavailability(for meeting: MeetingRecord) -> MeetingStoragePlan.Unavailability? {
         guard let disk = storageFacts[meeting.id] else { return nil }
-        return MeetingStoragePlan.unavailability(disk: disk, live: liveShrinkFacts(for: meeting.id), mixing: shrinkMixesRecordings)
+        return shrinkReason(for: meeting, disk: disk)
+    }
+
+    /// What the plan says of these facts, after a refusal Shrink remembers for the meeting (F1006).
+    private func shrinkReason(for meeting: MeetingRecord, disk: MeetingStoragePlan.DiskFacts) -> MeetingStoragePlan.Unavailability? {
+        rememberedShrinkRefusal(for: meeting)
+            ?? MeetingStoragePlan.unavailability(disk: disk, live: liveShrinkFacts(for: meeting.id), mixing: shrinkMixesRecordings)
+    }
+
+    /// A refusal found after an encode, remembered while the file it is about is the file it was then (F1006).
+    func rememberedShrinkRefusal(for meeting: MeetingRecord) -> MeetingStoragePlan.Unavailability? {
+        guard let remembered = rememberedShrinkRefusals[meeting.id], let folder = store.ownRecordingFolder(of: meeting),
+              InterruptedLinkImportExtraction.FileIdentity(of: folder.appendingPathComponent(remembered.name)) == remembered.identity
+        else { return nil }
+        return .channelsCancelled(detail: remembered.detail)
+    }
+
+    /// Remembers `failure` for the meeting when it is a property of a file rather than of one run — the file's
+    /// channels cancel when mixed into one (F1001's `.cancels` and `.missing`) — keyed on that file's identity as the
+    /// checks measured it (`entries`, the listing they ran on). Anything else is not remembered (F1006).
+    private func rememberShrinkRefusal(_ failure: Error, id: UUID, recordingName: String,
+                                       entries: [MeetingStoragePlan.FolderEntry]) {
+        guard let failure = failure as? ShrinkFailure else { return }
+        let name: String, finding: RecordingMixPlan.ChannelPresenceFinding, owner: String
+        switch failure {
+        case let .channelNotInCopy(found): (name, finding, owner) = (recordingName, found, "the recording's")
+        case let .otherChannelNotInCopy(other, found), let .leftoverChannelNotInCopy(other, found):
+            (name, finding, owner) = (other, found, "“\(other)”'s")
+        default: return
+        }
+        switch finding {
+        case .cancels, .missing: break
+        case .copyMissing, .unmeasured: return
+        }
+        guard let identity = entries.first(where: { $0.name.lowercased() == name.lowercased() })?.identity else { return }
+        rememberedShrinkRefusals[id] = RememberedShrinkRefusal(
+            name: name, identity: identity, detail: ShrinkFailure.sentence(finding, owner: owner))
     }
 
     func requestShrink(ids: [UUID]) {
         var eligible: [MeetingRecord] = [], skipped: [ShrinkRequest.Skipped] = []
         var current: Int64 = 0, predicted: Int64 = 0
         for id in ids {
-            guard let meeting = store.meeting(id: id), let disk = storageFacts[id] else { continue }
-            if let reason = MeetingStoragePlan.unavailability(disk: disk, live: liveShrinkFacts(for: id), mixing: shrinkMixesRecordings) {
+            guard let meeting = store.meeting(id: id) else { continue }
+            // F799: a row still showing "Measuring…" is named as skipped, not left out unsaid.
+            guard let disk = storageFacts[id] else {
+                skipped.append(.init(title: meeting.title, reason: .stillMeasuring)); continue
+            }
+            if let reason = shrinkReason(for: meeting, disk: disk) {
                 skipped.append(.init(title: meeting.title, reason: reason)); continue
             }
             eligible.append(meeting)
@@ -170,7 +210,7 @@ extension AppModel {
         }
         let disk = await diskFacts(for: meeting)
         storageFacts[id] = disk
-        if let reason = MeetingStoragePlan.unavailability(disk: disk, live: liveShrinkFacts(for: id), mixing: shrinkMixesRecordings) {
+        if let reason = shrinkReason(for: meeting, disk: disk) {
             return .refused(title: meeting.title, reason: reason)
         }
         // Read-only and restoring are refused above, each with its own reason (final review: this
@@ -330,6 +370,7 @@ extension AppModel {
             let encodedBytes: Int64
             switch encoded {
             case let .failure(error):
+                rememberShrinkRefusal(error, id: id, recordingName: disk.recordingName, entries: disk.entries)
                 return .failed(title: meeting.title, message: error.localizedDescription)
             case let .success(bytes):
                 encodedBytes = bytes
@@ -455,7 +496,10 @@ extension AppModel {
                 }
                 return nil
             }.value
-            if let checked { return .failed(title: meeting.title, message: checked.localizedDescription) }
+            if let checked {
+                rememberShrinkRefusal(checked, id: id, recordingName: disk.recordingName, entries: disk.entries)
+                return .failed(title: meeting.title, message: checked.localizedDescription)
+            }
         }
 
         // Delete (design, step 7), in the planner's order, only names on its list — and of those, only
@@ -542,6 +586,14 @@ extension AppModel {
         default:
             throw ShrinkFailure.leftoverUnchecked(name: name)
         }
+    }
+
+    /// A refusal Shrink found after an encode and remembers for the session (F1006): the file it is about, by its
+    /// name in the meeting's folder and its identity when it was measured, and what was found, as a clause.
+    struct RememberedShrinkRefusal: Equatable {
+        let name: String
+        let identity: InterruptedLinkImportExtraction.FileIdentity
+        let detail: String
     }
 
     /// Said whenever a verified `.m4a` is left beside the originals it did not replace.
@@ -688,6 +740,7 @@ extension AppModel {
             || segmentReTranscriptionRunningID == id || sourceRebuildRunningID == id
         live.backupRunning = isBackingUp
         live.anotherShrinkRunning = shrinkRunningID != nil
+        live.shrinkingThis = shrinkRunningID == id
         live.libraryRestoring = store.isRestoringLibrary
         return live
     }

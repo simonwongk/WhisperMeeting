@@ -459,6 +459,8 @@ public enum MeetingStoragePlan {
         public var meetingBusy = false
         public var backupRunning = false
         public var anotherShrinkRunning = false
+        /// Shrink is running on this very meeting (F1008): said as such, not as "another meeting".
+        public var shrinkingThis = false
         public var libraryRestoring = false
         public init() {}
     }
@@ -500,6 +502,13 @@ public enum MeetingStoragePlan {
         /// Or lays its channels out in a way the mix is not shown to keep both of (`.notShown`, F1001).
         case channelLayoutNotShown(name: String)
         case cannotMeasureLength
+        /// The meeting's size and files are still being measured, so a batch Shrink skips it rather than
+        /// leaving it out unsaid (F799).
+        case stillMeasuring
+        /// Shrink found, the last time it tried, that a file's two channels cancel each other when mixed into one
+        /// (`detail` says which and where, without a capital or a full stop), and that file has not changed since
+        /// (F1006): it is not encoded again only to be refused again.
+        case channelsCancelled(detail: String)
         case alreadyShrunk
         case nothingToGain
         case libraryReadOnly
@@ -508,6 +517,8 @@ public enum MeetingStoragePlan {
         case meetingBusy
         case backupRunning
         case anotherShrinkRunning
+        /// This meeting is being shrunk now (F1008).
+        case shrinkingNow
 
         public var message: String {
             switch self {
@@ -544,6 +555,10 @@ public enum MeetingStoragePlan {
                 return "“\(name)” labels its two channels in a way Shrink hasn't shown the compression keeps both of in a mono copy, so it is kept as it is."
             case .cannotMeasureLength:
                 return "This recording's length can't be read, so a compressed copy couldn't be checked against it."
+            case .stillMeasuring:
+                return "Its size is still being measured; try again in a moment."
+            case let .channelsCancelled(detail):
+                return "Shrink found, the last time it tried, that " + detail + ". It is kept as it is, and Shrink won't try again unless that file changes."
             case .alreadyShrunk:
                 return "Already shrunk."
             case .nothingToGain:
@@ -560,6 +575,8 @@ public enum MeetingStoragePlan {
                 return "Wait for the backup to finish."
             case .anotherShrinkRunning:
                 return "Another meeting is being shrunk."
+            case .shrinkingNow:
+                return "Shrinking now. A long stereo recording can take a minute or more while every channel is checked."
             }
         }
     }
@@ -645,6 +662,7 @@ public enum MeetingStoragePlan {
         if live.captureOrImportInProgress { return .captureOrImportInProgress }
         if live.meetingBusy { return .meetingBusy }
         if live.backupRunning { return .backupRunning }
+        if live.shrinkingThis { return .shrinkingNow }
         if live.anotherShrinkRunning { return .anotherShrinkRunning }
         return nil
     }
