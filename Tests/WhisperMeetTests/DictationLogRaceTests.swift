@@ -144,3 +144,31 @@ func aWaitingDictationSurvivesTheNextLostRace() throws {
     here.record(text: "after the clear", outcome: .pasted)
     #expect(onDisk(root) == ["after the clear"], "a saved dictation was carried back over the other copy's Clear All: \(onDisk(root))")
 }
+
+/// The Wave 8 lane C review's finding 7: the waiting dictation is written by the NEXT dictation's
+/// first-try save (no race), so that save — not only the lost race's retry — must stop carrying it.
+/// Otherwise the next lost race brings it back over another copy's Clear All.
+@MainActor
+@Test("A waiting dictation saved by the next dictation's first try is not carried back over a Clear All (F988)")
+func aWaitingDictationSavedOnTheFirstTryIsNotCarriedBack() throws {
+    let root = try libraryRoot("first-try")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let here = DictationLogStore(directory: root)
+    here.record(text: "first", outcome: .pasted)
+    try #require(here.saveErrorMessage == nil)
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+    here.record(text: "unsaved", outcome: .pasted)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+    try #require(here.saveErrorMessage != nil)
+    here.record(text: "second", outcome: .pasted) // lands first try, writing "unsaved" too
+    try #require(here.saveErrorMessage == nil)
+    try #require(Set(onDisk(root)) == ["first", "unsaved", "second"])
+
+    let clearer = DictationLogStore(directory: root)
+    try #require(clearer.clear())
+    here.record(text: "after the clear", outcome: .pasted)
+    #expect(onDisk(root) == ["after the clear"], "\(onDisk(root))")
+}
