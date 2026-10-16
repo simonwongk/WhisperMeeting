@@ -241,13 +241,15 @@ func shrinkStopAnywhereNeverLooksDamaged() throws {
         .write(to: f.folder.appendingPathComponent("meeting.wav"))
     try Data(count: 15_000).write(to: f.folder.appendingPathComponent("meeting.m4a"))
     let order = MeetingStoragePlan.removableFiles(in: MeetingStorageMeter.entries(in: f.folder), keeping: "meeting.m4a")
+    // The meeting as the index names it once the copy is committed: Verify Library's descriptor is built from it the
+    // way production builds it (F803) — `rawTracksWithoutManifest` derived from the folder, not assumed.
+    let shrunk = MeetingRecord(id: f.id, title: "Weekly sync", duration: 1,
+                               recordingPath: "Recordings/\(f.id.uuidString)/meeting.m4a", status: .completed, transcriptText: "Hi.")
     for entry in order {
         try FileManager.default.removeItem(at: f.folder.appendingPathComponent(entry.name))
-        let m4a = f.folder.appendingPathComponent("meeting.m4a")
-        let findings = MeetingIntegrityChecker.check(MeetingIntegrityDescriptor(
-            recordingURL: m4a, sourceTracks: AppModel.sourceTracks(in: f.folder), indexDurationSeconds: 1,
-            rawTracksWithoutManifest: false))
-        #expect(!findings.contains { $0.isProblem }, "after removing \(entry.name)")
+        let descriptor = try #require(f.model.integrityDescriptorForShrink(shrunk))
+        let findings = MeetingIntegrityChecker.check(descriptor)
+        #expect(!findings.contains { $0.isProblem }, "after removing \(entry.name): \(findings)")
         #expect(SourceRebuild.offer(in: f.folder, currentDuration: 1) == nil, "after removing \(entry.name)")
     }
 }
