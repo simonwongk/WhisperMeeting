@@ -102,3 +102,45 @@ func aLostClearShowsWhatTheOtherCopySavedAndTheNextClearWorks() throws {
     #expect(onDisk(root).isEmpty, "\(onDisk(root))")
     #expect(here.log.entries.isEmpty)
 }
+
+/// F988 — the Wave 7 review's probe P2. A dictation whose save failed for an ordinary reason (here a
+/// folder that cannot be written for one save) waits in memory; the next dictation then loses a race
+/// to another copy, and its re-read replaced the whole log with what is on disk and made only ITS
+/// change again — so the waiting dictation vanished. Every dictation still waiting is carried over.
+@MainActor
+@Test("A dictation still waiting in memory survives the next lost race's re-read (F988)")
+func aWaitingDictationSurvivesTheNextLostRace() throws {
+    let root = try libraryRoot("waiting")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    let here = DictationLogStore(directory: root)
+    here.record(text: "first", outcome: .pasted)
+    try #require(here.saveErrorMessage == nil)
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: root.path)
+    here.record(text: "unsaved", outcome: .pasted)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+    try #require(here.saveErrorMessage != nil, "the read-only folder did not fail the save, so nothing waited in memory")
+    try #require(onDisk(root) == ["first"], "\(onDisk(root))")
+
+    let there = DictationLogStore(directory: root)
+    there.record(text: "theirs", outcome: .pasted)
+    try #require(there.saveErrorMessage == nil)
+
+    here.record(text: "next", outcome: .pasted)
+
+    #expect(here.saveErrorMessage == nil, "\(here.saveErrorMessage ?? "")")
+    let saved = onDisk(root)
+    #expect(Set(saved) == ["first", "unsaved", "theirs", "next"], "the waiting dictation was dropped by the re-read: \(saved)")
+    #expect(saved.count == 4, "\(saved)")
+    #expect(Set(here.log.entries.map(\.text)) == Set(saved), "\(here.log.entries.map(\.text))")
+
+    // Once saved, it is no longer carried: the other copy's Clear All is not undone by this copy's
+    // next dictation re-adding entries it already saved.
+    let clearer = DictationLogStore(directory: root)
+    #expect(clearer.clear())
+    here.record(text: "after the clear", outcome: .pasted)
+    #expect(onDisk(root) == ["after the clear"], "a saved dictation was carried back over the other copy's Clear All: \(onDisk(root))")
+}

@@ -119,7 +119,16 @@ import WhisperCore
             rawText: rawText, refinement: refinement, timings: timings
         )
         persist({ $0.adding(entry) }, afterALostRace: .makeAgain)
+        if saveErrorMessage != nil { unsavedEntryIDs.insert(entry.id) }
     }
+
+    /// Dictations this copy has recorded whose save has not landed yet (F988). A save that fails for
+    /// an ordinary reason keeps its entry in `log`, and the next lost race's re-read used to replace
+    /// `log` with what is on disk and make only its own change again, so a dictation still waiting
+    /// vanished. The re-read carries these over by `id`. Emptied by every save that lands, since that
+    /// save wrote them — so a dictation already saved is never carried back over another copy's
+    /// Clear All.
+    private var unsavedEntryIDs: Set<UUID> = []
 
     /// Erases the whole history — not just the primary file (F456).
     ///
@@ -204,6 +213,7 @@ import WhisperCore
             let outcome = try store.save(log, expecting: token)
             token = outcome.token
             saveErrorMessage = nil
+            unsavedEntryIDs.removeAll()
         } catch {
             // Deliberately does NOT touch `health`, including on a lost race (F190). `health` is the
             // *load* verdict: a write that failed says nothing about whether the bytes on disk were
@@ -213,6 +223,10 @@ import WhisperCore
             guard WriteConflictReport(error).isRace else { return }
             // The re-read IS a load, so its verdict is `health`'s to keep: a history the other copy
             // left undecodable is shown read-only, and the change waits in memory as any refused one.
+            // What this copy recorded earlier and has not saved, oldest first, taken before the
+            // re-read replaces `log` (F988). The entry `change` adds is not among them: `record`
+            // marks it waiting only once this save has failed for good.
+            let waiting = log.entries.filter { unsavedEntryIDs.contains($0.id) }.reversed()
             let reread: BackupJSONStore<DictationLog>.LoadResult?
             do {
                 reread = try store.load()
@@ -230,11 +244,16 @@ import WhisperCore
                 log = DictationLog()
             }
             guard afterALostRace == .makeAgain else { return }
+            let onDisk = Set(log.entries.map(\.id))
+            for entry in waiting where !onDisk.contains(entry.id) {
+                log = log.adding(entry)
+            }
             log = change(log)
             do {
                 let outcome = try store.save(log, expecting: token)
                 token = outcome.token
                 saveErrorMessage = nil
+                unsavedEntryIDs.removeAll()
             } catch {
                 saveErrorMessage = error.localizedDescription
             }
