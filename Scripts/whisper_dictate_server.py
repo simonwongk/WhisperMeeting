@@ -863,6 +863,118 @@ def skips_window_as_silence(no_speech_prob, avg_logprob) -> bool:
     return should_skip
 
 
+# F1015: the reply wait on the Swift side — `readLine(timeout: 120)` in
+# `WarmWhisperDictationEngine.transcribe`. Mirrored, not imported, so
+# `test_whisper_dictate_server.py` reads that literal from the Swift source and fails if the two drift
+# apart (F607's arrangement for the Qwen helper).
+REPLY_TIMEOUT_SECONDS = 120.0
+# Wall-clock seconds a request may spend before the decodes still to come are skipped and the reply
+# is sent with what was decoded. Set when the request line has been read. The 20 s left of the reply
+# wait covers what this clock cannot interrupt: the one decode already running when the time runs
+# out (F761 measured 1.7–2.1 s for a full 224-token decode on the development M3 Pro; a Mac several
+# times slower still fits), and the join and emit.
+DICTATION_DECODE_BUDGET_SECONDS = REPLY_TIMEOUT_SECONDS - 20.0
+
+# The clock the budget is measured on; a test replaces it.
+monotonic = time.monotonic
+
+
+class DecodeDeadline:
+    """Bounds one request's decoding by wall-clock time (F1015, F607's rule for the Whisper helper).
+
+    F761 measured the helper's worst case: every 30 s window decoded at all six temperatures of the
+    fallback ladder (`transcribe.py:207-245` in the pinned mlx-whisper 0.4.3), each up to
+    `n_text_ctx // 2` = 224 tokens (`decoding.py:419`) — about 48 s for a 120 s clip on the M3 Pro,
+    and past the 120 s reply wait on a Mac about 2.5x slower, or for a clip whose windows advance less
+    than 30 s. No argument of `transcribe` bounds it, so this stands in for the model's own `decode`
+    (the one call every attempt makes: `transcribe.py:224`, and `transcribe_single_window`'s loop)
+    for the length of a request, and checks the clock before each call — between temperature
+    attempts and between windows.
+
+    Once the time is spent, no new decode runs. A further attempt at the SAME window gets that
+    window's last real result back, so the ladder ends at once with what was decoded (what
+    `transcribe` keeps when every temperature fails). A NEW window gets `skip_result`: a result that
+    reads as silence (`no_speech_prob` 1.0, `avg_logprob` -inf), which `transcribe` skips at once
+    without a fallback (`transcribe.py:236-240`, `:300-313`). `cut` says it happened, and the reply
+    carries it as `truncated` (F762's field).
+    """
+
+    def __init__(self, model, stop_at, skip_result):
+        self.model = model
+        self.stop_at = stop_at
+        self.skip_result = skip_result
+        self.cut = False
+        self._last = None  # (the window passed to decode, its last real result)
+        self._original = None
+
+    def __enter__(self):
+        self._original = self.model.decode
+        self.model.decode = self._decode
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            del self.model.decode  # the class's own method shows through again
+        except AttributeError:
+            self.model.decode = self._original
+        return False
+
+    def _decode(self, mel, options, *args, **kwargs):
+        if monotonic() >= self.stop_at:
+            self.cut = True
+            if self._last is not None and self._last[0] is mel:
+                return self._last[1]
+            return self.skip_result(mel, options)
+        result = self._original(mel, options, *args, **kwargs)
+        self._last = (mel, result)
+        return result
+
+
+class _NoDeadline:
+    """What `decode_deadline` returns when the model cannot be reached to bound: decoding runs as
+    before, and nothing is reported cut."""
+
+    cut = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def silent_decoding_result(mel, options):
+    """A pinned mlx-whisper 0.4.3 `DecodingResult` (`decoding.py:120-129`) that `transcribe` skips as
+    silence without a fallback: no tokens, no text."""
+    from mlx_whisper.decoding import DecodingResult
+
+    return DecodingResult(
+        audio_features=None,
+        language=getattr(options, "language", None) or "en",
+        tokens=[],
+        text="",
+        avg_logprob=float("-inf"),
+        no_speech_prob=1.0,
+        temperature=getattr(options, "temperature", 0.0),
+        compression_ratio=0.0,
+    )
+
+
+def decode_deadline(mlx, mlx_repo, stop_at):
+    """A `DecodeDeadline` around the resident model `transcribe` and the single-window path both use
+    (`ModelHolder.get_model(repo, mx.float16)`, the same cache key), or a `_NoDeadline` when it
+    cannot be reached — never a reason to fail a dictation."""
+    try:
+        from mlx_whisper.transcribe import ModelHolder
+
+        model = ModelHolder.get_model(mlx_repo, mlx.float16)
+        if not callable(getattr(model, "decode", None)):
+            return _NoDeadline()
+        return DecodeDeadline(model, stop_at, silent_decoding_result)
+    except Exception:
+        return _NoDeadline()
+
+
 def transcribe_single_window(mlx_whisper, mlx, audio, mlx_repo, language, initial_prompt):
     """One encoder pass, shared by language ID and every decode attempt (F210).
 
@@ -1079,6 +1191,8 @@ def main() -> int:
             continue
         try:
             request = json.loads(line)
+            # F1015: the budget starts when the request has been read.
+            deadline = decode_deadline(mx, args.mlx_repo, monotonic() + DICTATION_DECODE_BUDGET_SECONDS)
             # Hand the model samples directly when the clip is already in its target format,
             # skipping load_audio's per-request ffmpeg fork. The conversion mirrors load_audio's
             # own line exactly (int16 -> float32 / 32768.0), so samples stay byte-identical.
@@ -1100,23 +1214,25 @@ def main() -> int:
             # and therefore every dictation. Returns None for anything it will not handle — a long
             # clip, a runtime whose internals moved — and the full `transcribe` below then runs
             # exactly as before.
-            response = transcribe_single_window(
-                mlx_whisper,
-                mx,
-                audio,
-                args.mlx_repo,
-                request.get("language"),
-                request.get("initialPrompt"),
-            )
-            if response is None:
-                result = mlx_whisper.transcribe(
+            with deadline:
+                response = transcribe_single_window(
+                    mlx_whisper,
+                    mx,
                     audio,
-                    path_or_hf_repo=args.mlx_repo,
-                    task="transcribe",  # never translate
-                    language=request.get("language"),
-                    initial_prompt=request.get("initialPrompt"),
-                    verbose=None,  # see the warm-up call: False is NOT silent, it prints to stdout
+                    args.mlx_repo,
+                    request.get("language"),
+                    request.get("initialPrompt"),
                 )
+            if response is None:
+                with deadline:
+                    result = mlx_whisper.transcribe(
+                        audio,
+                        path_or_hf_repo=args.mlx_repo,
+                        task="transcribe",  # never translate
+                        language=request.get("language"),
+                        initial_prompt=request.get("initialPrompt"),
+                        verbose=None,  # see the warm-up call: False is NOT silent, it prints to stdout
+                    )
                 # Report the lowest per-segment no_speech_prob (the most speech-like segment). The
                 # app uses it to tell a real dictation from a silence-driven prompt echo; taking the
                 # min biases toward keeping — a clip is only "silence" if EVERY segment looks like
@@ -1133,6 +1249,9 @@ def main() -> int:
                     "language": result.get("language"),
                     "noSpeechProb": min(probs) if probs else None,
                 }
+            # F1015: the reply says when the deadline skipped a decode, so its text may be a
+            # fragment (F762's field, which the app already reads).
+            response["truncated"] = deadline.cut
         except Exception as error:  # never crash the daemon on one bad request
             response = {"error": str(error)}
         sys.stdout.write(json.dumps(response) + "\n")

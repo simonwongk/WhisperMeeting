@@ -482,6 +482,177 @@ class UnexpectedFailureTests(unittest.TestCase):
         self.assertIsNone(result)
 
 
+_SWIFT_ENGINE = os.path.join(
+    os.path.dirname(__file__), "..", "..", "Sources", "WhisperCore", "WarmWhisperDictationEngine.swift"
+)
+
+
+def swift_reply_timeout_seconds():
+    """The first `readLine(timeout:)` inside `WarmWhisperDictationEngine.transcribe`, read from the
+    Swift source (as `test_qwen_dictate_server.py` does for F607)."""
+    import re
+
+    with open(_SWIFT_ENGINE, encoding="utf-8") as handle:
+        source = handle.read()
+    start = source.index("public func transcribe(")
+    match = re.compile(r"readLine\(timeout:\s*([^,)]+)").search(source, start)
+    if match is None:
+        raise AssertionError("no readLine(timeout:) after WarmWhisperDictationEngine.transcribe")
+    argument = match.group(1).strip()
+    if not re.fullmatch(r"[0-9][0-9_]*(\.[0-9_]+)?", argument):
+        raise AssertionError(f"transcribe's reply wait is {argument!r}, not a literal; update this reader")
+    return float(argument.replace("_", ""))
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 1_000.0
+
+    def __call__(self):
+        return self.now
+
+
+class _SlowModel:
+    """Stands in for the resident Whisper model's `decode`: every call costs `seconds` of `clock`.
+    A `runaway` window always trips the fallback ladder (compression ratio over 2.4), as F761's
+    worst case does; any other window decodes cleanly at the first temperature."""
+
+    def __init__(self, clock, seconds, runaway):
+        self.clock = clock
+        self.seconds = seconds
+        self.runaway = runaway
+        self.calls = 0
+
+    def decode(self, mel, options):
+        from types import SimpleNamespace
+
+        self.calls += 1
+        self.clock.now += self.seconds
+        if mel in self.runaway:
+            return SimpleNamespace(text=f"{mel}-attempt{self.calls}", compression_ratio=3.0,
+                                   avg_logprob=-0.5, no_speech_prob=0.01, language="en")
+        return SimpleNamespace(text=mel, compression_ratio=1.2, avg_logprob=-0.2,
+                               no_speech_prob=0.01, language="en")
+
+
+def _silent(mel, options):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(text="", compression_ratio=0.0, avg_logprob=float("-inf"),
+                           no_speech_prob=1.0, language="en")
+
+
+def _transcribe_like_mlx_whisper(model, windows):
+    """The pinned mlx-whisper 0.4.3 loop, reduced to what decides time and text: each window decoded
+    through the fallback ladder (`transcribe.py:207-245`), then skipped if it reads as silence
+    (`:300-313`), else kept."""
+    texts = []
+    for window in windows:
+        result = None
+        for temperature in server.FALLBACK_TEMPERATURES:
+            result = model.decode(window, temperature)
+            if not server.needs_temperature_fallback(
+                result.compression_ratio, result.avg_logprob, result.no_speech_prob
+            ):
+                break
+        if server.skips_window_as_silence(result.no_speech_prob, result.avg_logprob):
+            continue
+        texts.append(result.text)
+    return texts
+
+
+class ReplyDeadlineTests(unittest.TestCase):
+    """F1015 — F607's deadline, for the Whisper dictation helper. F761 measured its worst case (every
+    30 s window through all six temperatures, each up to 224 tokens) at ~48 s for a 120 s clip on the
+    M3 Pro: past the Swift reply wait on a Mac ~2.5x slower, which then kills the helper and the next
+    dictation reloads cold. Four windows at 10 s a decode is that slow Mac."""
+
+    def setUp(self):
+        self._saved_clock = server.monotonic if hasattr(server, "monotonic") else None
+        self.clock = _Clock()
+        server.monotonic = self.clock
+
+    def tearDown(self):
+        if self._saved_clock is None:
+            del server.monotonic
+        else:
+            server.monotonic = self._saved_clock
+
+    def run_request(self, model, windows):
+        started = self.clock.now
+        with server.DecodeDeadline(model, started + server.DICTATION_DECODE_BUDGET_SECONDS, _silent) as deadline:
+            texts = _transcribe_like_mlx_whisper(model, windows)
+        return texts, deadline.cut, self.clock.now - started
+
+    def test_the_helper_mirrors_the_swift_reply_wait(self):
+        self.assertEqual(server.REPLY_TIMEOUT_SECONDS, swift_reply_timeout_seconds())
+        self.assertLess(server.DICTATION_DECODE_BUDGET_SECONDS, server.REPLY_TIMEOUT_SECONDS)
+
+    def test_four_runaway_windows_on_a_slow_mac_reply_inside_the_swift_wait_and_say_so(self):
+        windows = ["w0", "w1", "w2", "w3"]
+        model = _SlowModel(self.clock, seconds=10.0, runaway=set(windows))
+        texts, cut, elapsed = self.run_request(model, windows)
+        # Unbounded this is 4 x 6 decodes = 240 s. Bounded: the budget plus the one decode running
+        # when it ran out.
+        self.assertLessEqual(elapsed, server.DICTATION_DECODE_BUDGET_SECONDS + 10.0)
+        self.assertLess(elapsed, swift_reply_timeout_seconds())
+        self.assertTrue(cut)
+        # What was decoded is kept: the whole first window, and the second window's last real
+        # attempt (the ladder ends on it at once); the windows after the deadline are skipped.
+        self.assertEqual(len(texts), 2)
+        self.assertTrue(texts[0].startswith("w0-"))
+        self.assertTrue(texts[1].startswith("w1-"))
+        self.assertEqual(model.calls, 10)
+
+    def test_ordinary_speech_at_the_same_slow_rate_is_not_cut(self):
+        windows = ["w0", "w1", "w2", "w3"]
+        model = _SlowModel(self.clock, seconds=10.0, runaway=set())
+        texts, cut, _elapsed = self.run_request(model, windows)
+        self.assertEqual(texts, windows)
+        self.assertFalse(cut)
+
+    def test_the_model_s_own_decode_is_back_after_the_request(self):
+        model = _SlowModel(self.clock, seconds=1.0, runaway=set())
+        original = model.decode
+        with server.DecodeDeadline(model, self.clock.now + 5, _silent):
+            self.assertNotEqual(model.decode, original)
+        self.assertEqual(model.decode, original)
+        self.assertNotIn("decode", vars(model))
+
+    def test_the_silent_result_is_skipped_by_the_ladder_rules_without_a_fallback(self):
+        """`silent_decoding_result` builds the pinned 0.4.3 `DecodingResult`; whatever builds it, its
+        values must end the ladder at once and be skipped (no text, no extra decode)."""
+        import sys
+        from types import ModuleType, SimpleNamespace
+
+        fake = ModuleType("mlx_whisper.decoding")
+        fake.DecodingResult = lambda **fields: SimpleNamespace(**fields)
+        package = ModuleType("mlx_whisper")
+        package.decoding = fake
+        saved = {name: sys.modules.get(name) for name in ("mlx_whisper", "mlx_whisper.decoding")}
+        sys.modules.update({"mlx_whisper": package, "mlx_whisper.decoding": fake})
+        try:
+            result = server.silent_decoding_result("mel", SimpleNamespace(language="zh", temperature=0.4))
+        finally:
+            for name, module in saved.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+        self.assertFalse(server.needs_temperature_fallback(
+            result.compression_ratio, result.avg_logprob, result.no_speech_prob))
+        self.assertTrue(server.skips_window_as_silence(result.no_speech_prob, result.avg_logprob))
+        self.assertEqual((result.text, result.tokens, result.language), ("", [], "zh"))
+
+    def test_a_model_that_cannot_be_reached_is_never_bounded_and_never_fails(self):
+        from types import SimpleNamespace
+
+        deadline = server.decode_deadline(SimpleNamespace(), "no/such-repo", self.clock.now)
+        with deadline:
+            pass
+        self.assertFalse(deadline.cut)
+
+
 class MainHarnessCase(unittest.TestCase):
     """F522 — what `main()` does with a model cache it finds unfinished, run through the real
     `main()` with fake `mlx` and `mlx_whisper` modules, a recorded downloader, and `huggingface_hub`
