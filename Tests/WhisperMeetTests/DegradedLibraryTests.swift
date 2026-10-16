@@ -170,6 +170,21 @@ func degradedMutationsAreRefused() throws {
     #expect(store.persistCount == before)
 }
 
+@Test("A refused add on a read-only library says it was refused, so the Add box keeps the typing (F577)")
+@MainActor
+func degradedAddReportsRefusalSoTheAddBoxKeepsTyping() throws {
+    let (store, root) = try makeDegradedStore()
+    defer { try? FileManager.default.removeItem(at: root) }
+    // F577: the Add button is disabled only on the list's own health, so on a read-only library the
+    // add reaches the store. `addManualTerms` keeps the field unless the result says otherwise
+    // (`addBoxKeepsRefusedTerms` pins that), so the store must say refused, not "nothing new".
+    let vocabulary = store.addVocabulary(["Kestrel", "预算"])
+    #expect(vocabulary.wasRefused)
+    #expect(vocabulary.added == 0)
+    #expect(store.addReplacementRule(heard: "cooper netties", preferred: "Kubernetes") == .refused)
+    #expect(store.vocabulary.isEmpty && store.replacementRules.isEmpty)
+}
+
 @Test("A degraded index reports no orphans, so startup cannot rebuild over it")
 @MainActor
 func degradedIndexReportsNoOrphans() throws {
