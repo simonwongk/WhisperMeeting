@@ -149,10 +149,12 @@ verified and the index saved.
      reviews made reads 0.25 to 1.0 and is kept — synthetic and, with the bench clips, speech in every pairing
      tried; ordinary stereo reads at most 0.04 — a voice per channel, one silent channel, identical, panned or
      correlated channels, DC or hiss on a silent channel, clipping, noise, a phone's spacing with one or two
-     talkers, eight and 96 kHz, float, 0.3 s, the review's 23 controls, ten ffmpeg-made files — and all of them
-     shrank, none refused, in every run. Refused by this rule although nothing a listener would call a second
-     voice is lost: two talkers before microphones 0.75 ms or more apart in an echoing room, and a Haas widening
-     of 10–20 ms; both lose sound to the mix's comb filter, and the user's rule keeps them. Not caught: a side
+     talkers, eight and 96 kHz, float, 0.3 s, review 1's controls, ten ffmpeg-made files — and all of them
+     shrank, none refused, in every run made, but one of review 1's 22: a float WAV with one NaN sample, which
+     cannot be measured and is kept as damaged, as the level checks would. Refused by this rule although nothing a listener would call a second
+     voice is lost: two talkers before microphones 0.75 to 1.5 ms apart (five of six such fixtures, echoing or
+     not), and a Haas widening of 10–20 ms; both lose sound to the mix's comb filter, and the user's rule keeps
+     them. Not caught: a side
      voice more than about 10 dB under the middle one that talks over it throughout (tones 10 dB down read
      0.11; 15 dB down, 0.03), and a copy that leaves out a channel holding under a twentieth of the mix.
    - And a two-channel WAV whose channels are marked as anything but front left and front right

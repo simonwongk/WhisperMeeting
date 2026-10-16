@@ -82,7 +82,7 @@ extension RecordingMixPlan {
     /// A bin counts as cancelling only where the channels' cross-spectrum over the stretch is at least this
     /// coherent, `|Σ L·conj(R)|² / (Σ|L|² Σ|R|²)`: a voice in opposite polarity on the two channels is opposite
     /// in every frame (1), while two independent voices' harmonics drift past each other and are opposite only
-    /// for a moment (about 1/16 on average over a stretch).
+    /// for a moment, so their coherence over a stretch is low.
     public static let cancellationMinimumCoherence = 0.7
 
     /// And only where its energy is spread over at least this many frames, `(Σ|L||R|)² / Σ|L|²|R|²`: in one
@@ -113,9 +113,10 @@ extension RecordingMixPlan {
     /// only from 2 kHz or only above 4 kHz, 0.54 to 0.59 — while ordinary stereo reads at
     /// most 0.04: a voice per channel, one silent channel, identical, panned or correlated channels, DC or
     /// hiss on a silent channel, clipping, noise, a phone's spacing with one or two talkers. What it refuses
-    /// that a listener might call ordinary: two talkers before a pair of microphones 0.75 ms or more apart in
-    /// an echoing room, and a Haas widening of 10–20 ms — both do lose sound to the mix's comb filter. A side
-    /// voice more than about 10 dB under the middle one, talking over it throughout, is not caught.
+    /// that a listener might call ordinary: two talkers before a pair of microphones 0.75 to 1.5 ms apart (five
+    /// of the six such fixtures, echoing or not, read 0.26 to 0.70), and a Haas widening of 10–20 ms (0.18 to
+    /// 0.49) — both do lose sound to the mix's comb filter. A side voice more than about 10 dB under the middle
+    /// one, talking over it throughout, is not caught.
     public static let mostCancelledShare = 0.1
 
     /// Whether a bin whose channels' cross-spectrum over a stretch, at its best alignment, has real part
