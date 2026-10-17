@@ -989,11 +989,16 @@ final class MeetingStore: ObservableObject {
             .appendingPathComponent(id.uuidString, isDirectory: true)
     }
 
+    /// How many times `meetingIDsInSavedIndex()` has parsed the index, so a test can see that the
+    /// launch does not parse it when no folder has a lock to heal (F990 round 2).
+    private(set) var savedIndexReadCount = 0
+
     /// The ids `meetings.json` lists as it is on disk now, or nil when it cannot be read as a list
     /// (F990). A raw read with no side effect — no quarantine, no health change — for the two places
     /// that remove a `capture.lock` because its meeting is indexed: keyed on what the saved index
     /// says at that moment, not on this window's list, which another copy may have overtaken.
     func meetingIDsInSavedIndex() -> Set<UUID>? {
+        savedIndexReadCount += 1
         guard let data = try? Data(contentsOf: rootDirectory.appendingPathComponent("meetings.json")),
               let records = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
         return Set(records.compactMap { ($0["id"] as? String).flatMap(UUID.init(uuidString:)) })

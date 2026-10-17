@@ -353,6 +353,34 @@ func theSweepHealsOnlyWhatTheSavedIndexLists() async throws {
     #expect(next.health == .complete, "the next launch opened read-only: \(next.health)")
 }
 
+/// F990 round 2: the heal parsed the whole saved index at every launch, about 0.42 s of main-actor
+/// time on a 1,000-meeting library (the review's measurement), though a lock file to heal is rare. It
+/// is read only when some indexed folder holds one.
+@MainActor
+@Test("The launch does not parse the saved index for the heal when no folder holds a capture.lock (F990)")
+func theHealReadsTheSavedIndexOnlyWhenALockIsThere() async throws {
+    let root = try libraryRoot("f990-noparse")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (id, folder) = try writeFinishedFolder(in: root, lockFile: false)
+    let seeded = MeetingStore(rootDirectory: root)
+    seeded.upsert(MeetingRecord(id: id, title: "Indexed, no lock",
+                                recordingPath: "Recordings/\(id.uuidString)/meeting.wav", status: .recorded))
+    try #require(seeded.health == .complete)
+
+    let (model, cleanup) = try makeModel(root: root)
+    defer { cleanup() }
+    await model.performStartupRecovery()
+    #expect(model.store.savedIndexReadCount == 0, "the launch parsed the saved index with no lock file to heal")
+
+    // With a lock file to heal, it is read, once.
+    try Data().write(to: folder.appendingPathComponent(RecordingCaptureLock.filename))
+    let (relaunched, cleanupAgain) = try makeModel(root: root)
+    defer { cleanupAgain() }
+    await relaunched.performStartupRecovery()
+    #expect(relaunched.store.savedIndexReadCount == 1)
+    #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent(RecordingCaptureLock.filename).path))
+}
+
 @MainActor
 @Test("The sweep leaves a lock file whose writer is alive, whether or not its meeting is indexed (F936, F297)")
 func theSweepLeavesAHeldLockAlone() async throws {

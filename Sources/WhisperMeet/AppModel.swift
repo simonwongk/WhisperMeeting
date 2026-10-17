@@ -4172,9 +4172,18 @@ final class AppModel: ObservableObject {
             // have replaced the index since this launch loaded it, and a meeting no longer in it
             // keeps its file, so its folder is adopted by the next launch rather than counted as a
             // meeting an index lost. An unreadable index heals nothing; the next launch asks again.
-            let savedIDs = store.meetingIDsInSavedIndex() ?? []
-            for meeting in store.meetings where meeting.id != activeMeetingID && savedIDs.contains(meeting.id) {
-                RecordingCaptureLock.removeIfFree(in: store.recordingURL(for: meeting).deletingLastPathComponent())
+            // The index is parsed only when some folder has a lock file to heal (F990 round 2): the
+            // parse is about 0.42 s of main-actor time on a 1,000-meeting library, and a lock file
+            // left in an indexed folder is rare.
+            let lockedFolders = store.meetings.filter { $0.id != activeMeetingID }.compactMap { meeting -> (UUID, URL)? in
+                let folder = store.recordingURL(for: meeting).deletingLastPathComponent()
+                return RecordingCaptureLock.lockFileExists(in: folder) ? (meeting.id, folder) : nil
+            }
+            if !lockedFolders.isEmpty {
+                let savedIDs = store.meetingIDsInSavedIndex() ?? []
+                for (id, folder) in lockedFolders where savedIDs.contains(id) {
+                    RecordingCaptureLock.removeIfFree(in: folder)
+                }
             }
             // F297: let go of every lock the probe took. The file goes too for a folder that is
             // now indexed — it no longer looks crashed, because it no longer is. A folder still
