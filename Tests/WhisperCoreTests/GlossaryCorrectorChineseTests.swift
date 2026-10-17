@@ -223,11 +223,37 @@ func threeCharacterNamesGetNoSoundAlikeRow() {
     #expect(ChinesePersonName.isLikely("张伟明", segmenter: segmenter))
     #expect(!ChinesePersonName.isLikely("张经理", segmenter: segmenter))
     #expect(!ChinesePersonName.isLikely("马拉松", segmenter: segmenter))
-    // A surname before characters the segmenter does not read as one word is no name: 高 | 可 | 用.
-    #expect(!ChinesePersonName.isLikely("高可用", segmenter: segmenter))
+    // Round 2 (the review of lane E): a surname before characters the segmenter splits is a name
+    // too, so 高 | 可 | 用 now reads as one — `threeCharacterNameSplitIntoCharactersIsAName`.
+    #expect(ChinesePersonName.isLikely("高可用", segmenter: segmenter))
     // Without a segmenter nothing can tell, as for two characters.
     #expect(GlossaryCorrector.corrections(vocabulary: ["张伟明"], segments: [seg("张伟民明天来")])
         == [GlossaryCorrection(segmentIndex: 0, from: "张伟民", to: "张伟明")])
+}
+
+@Test("A three-character name whose given name the segmenter splits into characters is a name too (F995, round 2)")
+func threeCharacterNameSplitIntoCharactersIsAName() {
+    // The review of lane E measured the app's NLTokenizer on 65 common three-character names: 21
+    // read surname | char | char (林 | 宇 | 轩, 王 | 梓 | 涵, 马 | 化 | 腾), so round 1's rule — the
+    // rest must be one word — left them unprotected and 林雨轩 was proposed as 林宇轩. A name is now
+    // a surname the segmenter reads alone and two characters that are no title. This segmenter is
+    // NLTokenizer's reading of these words, as the review recorded it.
+    let segmenter = dictionarySegmenter(["明天", "来", "经理", "可", "用", "马拉松"])
+    let vocabulary = ["林宇轩", "王梓涵", "马化腾", "张经理", "马拉松"]
+    let evidence = CJKWordEvidence(segmenter: segmenter, knownTerms: vocabulary)
+    let segments = [seg("林雨轩明天来"), seg("王子涵明天来"), seg("马华腾明天来"), seg("对，张经里"), seg("马拉宋明天来")]
+    #expect(GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, evidence: evidence) == [
+        GlossaryCorrection(segmentIndex: 3, from: "张经里", to: "张经理"),
+        GlossaryCorrection(segmentIndex: 4, from: "马拉宋", to: "马拉松"),
+    ])
+    for name in ["林宇轩", "王梓涵", "马化腾"] {
+        #expect(ChinesePersonName.isLikely(name, segmenter: segmenter), "\(name)")
+    }
+    // A surname before characters that are no title reads as a name now: 高 | 可 | 用 loses its
+    // sound-alike rows — a missed row, the safe direction (the review measured 高可用, 秦始皇, 宋体字, 张总助).
+    #expect(ChinesePersonName.isLikely("高可用", segmenter: segmenter))
+    #expect(!ChinesePersonName.isLikely("张经理", segmenter: segmenter))
+    #expect(!ChinesePersonName.isLikely("马拉松", segmenter: segmenter))
 }
 
 @Test("A Chinese window that is itself a vocabulary term is never proposed toward another term (F916, F921)")

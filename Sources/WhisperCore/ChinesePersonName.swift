@@ -17,11 +17,13 @@ import Foundation
 ///
 /// **Three characters (F995).** NLTokenizer reads 张伟明 as 张 | 伟明 — exactly as it reads 张经理 as
 /// 张 | 经理 — and 王建国, 李小龙, 周杰伦 the same way, while it reads 马拉松, 黄金周, 林业局 whole and
-/// 高可用 as 高 | 可 | 用 (F995's closure). So a three-character term is
-/// a name when it is a surname followed by one two-character word that is not a title (`titles`):
-/// 张经理 stays a title term, proposed as before (张经里 → 张经理). A surname before an ordinary
-/// two-character word (周报告: 周 | 报告) reads as a name too, and loses its sound-alike rows — a
-/// missed row, never a wrong one. With no segmenter nothing can tell, and no term is a name.
+/// 高可用 as 高 | 可 | 用 (F995's closure). It also reads 21 of 65 common names surname | char | char
+/// (林 | 宇 | 轩, 王 | 梓 | 涵, 马 | 化 | 腾 — the review of lane E), so a three-character term is a
+/// name when the segmenter reads its surname as a word of its own and the other two characters are
+/// not a title (`titles`), however it reads them: 63 of those 65 names, all but 李子柒 (李子 | 柒) and
+/// 许家印 (许家 | 印). 张经理 stays a title term, proposed as before (张经里 → 张经理). A surname before
+/// ordinary characters (周报告, 高可用, 高性能, 宋体字) reads as a name too, and loses its sound-alike
+/// rows — a missed row, never a wrong one. With no segmenter nothing can tell, and no term is a name.
 enum ChinesePersonName {
     /// The hundred or so most common surnames, each one character.
     static let surnames: Set<Character> = Set(
@@ -40,8 +42,8 @@ enum ChinesePersonName {
     ]
 
     /// True when `term` is a common surname followed by a given name, as `segmenter` reads it: two
-    /// Han characters the segmenter does not read as one word, or three that it reads as the surname
-    /// and then one two-character word that is no title (F995).
+    /// Han characters the segmenter does not read as one word, or three whose surname it reads alone
+    /// and whose other two characters are no title (F995).
     static func isLikely(_ term: String, segmenter: CJKWordEvidence.Segmenter?) -> Bool {
         guard let segmenter, term.count == 2 || term.count == 3, let first = term.first, surnames.contains(first),
               term.allSatisfy({ ReplacementBoundary.hasCJK(String($0)) }) else { return false }
@@ -51,7 +53,6 @@ enum ChinesePersonName {
         }
         let afterSurname = term.index(after: term.startIndex)
         let rest = afterSurname..<term.endIndex
-        return words.contains { $0 == term.startIndex..<afterSurname } && words.contains { $0 == rest }
-            && !titles.contains(String(term[rest]))
+        return words.contains { $0 == term.startIndex..<afterSurname } && !titles.contains(String(term[rest]))
     }
 }

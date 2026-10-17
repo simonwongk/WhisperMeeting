@@ -197,3 +197,32 @@ func reviewSheetOffersKeepTogether() throws {
     #expect(source.contains("Button(\"Keep \\(word) Together\")"))
     #expect(source.contains("guard review.source == .replacementRules"))
 }
+
+// F995 round 2 — with the app's own segmenter (NLTokenizer), not a recording of it. Which names it
+// reads with the surname alone depends on this Mac's dictionary, so the test asks it and expects the
+// guard for exactly those: every name whose surname stands alone gets no sound-alike row.
+@Test("With the app's real segmenter, no three-character name whose surname stands alone gets a sound-alike row (F995)")
+func realSegmenterProtectsThreeCharacterNames() {
+    let segmenter = NaturalLanguageWordSegmenter.wordRanges
+    // The review's misheard lines: each is the name with one character swapped for a sound-alike.
+    let pairs: [(name: String, heard: String)] = [
+        ("林宇轩", "林雨轩"), ("刘子豪", "刘子浩"), ("王梓涵", "王子涵"), ("郭佳琪", "郭佳奇"), ("杨雨桐", "杨雨彤"),
+        ("徐静怡", "徐静宜"), ("陈奕迅", "陈义迅"), ("赵一诺", "赵依诺"), ("马化腾", "马华腾"), ("张伟明", "张伟民"),
+    ]
+    var protected = 0
+    for pair in pairs {
+        let words = segmenter(pair.name)
+        let surnameAlone = words.contains { $0 == pair.name.startIndex..<pair.name.index(after: pair.name.startIndex) }
+        guard surnameAlone else { continue }
+        protected += 1
+        let evidence = CJKWordEvidence(segmenter: segmenter, knownTerms: [pair.name])
+        let rows = GlossaryCorrector.corrections(
+            vocabulary: [pair.name],
+            segments: [TranscriptSegment(speaker: nil, start: 0, end: 1, text: pair.heard + "明天来")],
+            evidence: evidence
+        )
+        #expect(rows.isEmpty, "\(pair.heard) was proposed as \(pair.name)")
+    }
+    // The premise: this Mac's segmenter reads at least one of them with the surname alone.
+    #expect(protected > 0, "the segmenter read no surname alone, so nothing was checked")
+}
