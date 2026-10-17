@@ -560,7 +560,13 @@ enum DamagedListNotice {
         let because = onDisk == .missing
             ? "\(fileName(of: list)) is missing and the list shown is its backup copy"
             : "\(fileName(of: list)) could not be read cleanly"
-        return "The library was not backed up: the \(name(of: list)) is read-only because \(because), and each backup taken now would hold that file while older backups with a readable copy are removed. Choose \(actionTitle(for: list, health: health)) in Business Vocabulary, then back up."
+        let refused = "The library was not backed up: the \(name(of: list)) is read-only because \(because), and each backup taken now would hold that file while older backups with a readable copy are removed."
+        guard health == .recoveredFromBackup || health == .divergentGenerations else {
+            // No readable copy is left in the library (the review of F611): the only readable list
+            // may now be in an earlier backup, which the backups this would invite remove one by one.
+            return "\(refused) No readable copy of it is left in the library, so an earlier backup may hold the only readable one: Restore… in Settings → Meeting library brings a backup back. Choose \(actionTitle(for: list, health: health)) in Business Vocabulary only if you do not need that list, then back up."
+        }
+        return "\(refused) Choose \(actionTitle(for: list, health: health)) in Business Vocabulary, then back up."
     }
 
     private static func name(of list: MeetingStore.EditableList) -> String {

@@ -70,6 +70,34 @@ func aBackupIsRefusedWhileAListIsReadOnly(file: String, withBackup: Bool) async 
 }
 
 @MainActor
+@Test("A refusal for a list with no readable copy says an earlier backup may hold the only readable one, and names Restore… (F611)")
+func theRefusalForAListWithNoReadableCopyPointsAtOlderBackups() async throws {
+    let (model, root, destination, _) = try makeModel(damaging: "vocabulary.json", withBackup: false)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try #require(DamagedListNotice.actionTitle(for: .vocabulary, health: model.store.health(of: .vocabulary)) == "Start a New List",
+                 "fixture: the list has no readable copy")
+
+    await model.backUpLibrary(to: destination, now: 5_000)
+
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("earlier backup"), "\(message)")
+    #expect(message.contains("Restore… in Settings"), "\(message)")
+}
+
+@MainActor
+@Test("A refusal for a list that still shows a readable copy does not send the user to Restore… (F611)")
+func theRefusalForAReadableListKeepsItsOneWayOut() async throws {
+    let (model, root, destination, _) = try makeModel(damaging: "vocabulary.json", withBackup: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    await model.backUpLibrary(to: destination, now: 5_000)
+
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("Keep This List"), "\(message)")
+    #expect(!message.contains("Restore…"), "\(message)")
+}
+
+@MainActor
 @Test("Back Up Library still runs when both lists loaded cleanly (F611)")
 func aBackupRunsWithHealthyLists() async throws {
     let root = FileManager.default.temporaryDirectory
