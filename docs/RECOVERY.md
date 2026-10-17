@@ -268,6 +268,28 @@ rm meetings.ledger.json                 # the ledger now describes a generation 
 Removing the ledger is correct here, not a workaround: it is advisory, so the next launch simply
 reads the two index files the way every version of WhisperMeet always has.
 
+### If you want WhisperMeet's last saved list back after editing it by hand
+
+When `vocabulary.json` or `replacement-rules.json` is changed outside WhisperMeet, that list opens
+read-only on the edited copy, and Business Vocabulary offers *Keep This List* (or *Keep These Rules*)
+to accept the edit as the current copy. The version WhisperMeet itself last saved is not lost: it is
+the newest file in `vocabulary.history/` (or `replacement-rules.history/`), the one whose `g-` number
+is highest. There is no button for going back to it (F578, the user's choice of 2026-10-16); with
+WhisperMeet **quit**:
+
+```bash
+cd ~/Library/Application\ Support/WhisperMeet
+ls -l vocabulary.history/                         # the g- file with the highest number is the last save
+mv vocabulary.json vocabulary.json.hand-edited     # keeps your edit beside the list; nothing is deleted
+cp -n vocabulary.history/g-000000012-….json vocabulary.json
+```
+
+For the replacement rules, the same with `replacement-rules.history/` and `replacement-rules.json`.
+Open WhisperMeet again: the list is WhisperMeet's last save, and because that file is one WhisperMeet
+recorded, the list opens editable with no notice. If it still opens read-only, the file you copied
+was not WhisperMeet's last save; choose *Keep This List* to keep what is shown, or copy a different
+one with WhisperMeet quit.
+
 ### If the app says two versions of the library were found
 
 This is the one state that needs a decision from you. The app says it at launch, in the banner above a
