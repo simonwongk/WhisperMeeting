@@ -91,6 +91,59 @@ func storedLocalChoiceOnUnsupportedMacRefusesHonestly() throws {
     #expect(model.store.meeting(id: id)?.summary == nil)
 }
 
+// F784 — on an Intel Mac with a stored Local choice the Summary section said nothing: its install
+// hint was gated on Apple silicon (Settings has no install there), so the user saw an enabled
+// Summarize button and no explanation until they pressed it.
+
+@MainActor
+@Test("A stored local choice on a Mac without local summaries says why in the Summary section, before Summarize is pressed (F784)")
+func summarySectionExplainsUnsupportedLocalEngine() throws {
+    let defaults = UserDefaults(suiteName: testSuiteName())!
+    defaults.set("local", forKey: "summarizationEngine")
+    let model = try makeModel(defaults: defaults, localSummariesSupported: false)
+    model.isSummarizerModelInstalled = { false }
+    model.refreshRuntime()
+    try #require(model.summarizationEngine == .local)
+    try #require(!model.isSummarizerInstalled)
+
+    let hint = try #require(model.summaryUnavailableHint)
+    #expect(hint.contains("Apple-silicon"))
+    #expect(hint.contains("Anthropic"), "choosing Claude uploads the transcript, so the hint says so")
+    #expect(!hint.contains("on this Mac"))
+    #expect(!hint.contains("Install"), "Settings has no install on this Mac")
+
+    // The same reason Summarize gives when pressed (F566), so the two never disagree.
+    let id = UUID()
+    model.store.upsert(MeetingRecord(id: id, title: "M", status: .completed, transcriptText: "hello world"))
+    model.summarize(id: id)
+    #expect(model.alertMessage == hint)
+}
+
+@MainActor
+@Test("The Summary section's hint: install on a supported Mac, a key for Claude, nothing when Summarize can run (F784)")
+func summarySectionHintOnSupportedMac() throws {
+    let model = try makeModel(localSummariesSupported: true)
+    model.summarizationEngine = .local
+    model.isSummarizerModelInstalled = { false }
+    model.refreshRuntime()
+    #expect(model.summaryUnavailableHint?.contains("Install the local summarization model") == true)
+
+    model.isSummarizerModelInstalled = { true }
+    model.refreshRuntime()
+    #expect(model.summaryUnavailableHint == nil)
+
+    model.summarizationEngine = .claude
+    #expect(model.summaryUnavailableHint?.contains("Add a Claude API key") == true)
+}
+
+@Test("The Summary section shows the model's hint, not its own architecture check (F784)")
+func summarySectionReadsTheModelHint() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    #expect(source.contains("model.summaryUnavailableHint"))
+    // The view's own Apple-silicon gate is what hid the Intel case.
+    #expect(!source.contains("!model.isSummarizerInstalled, SummarizerRuntime.isSupportedOnCurrentMac"))
+}
+
 @MainActor
 @Test("performSummarization threads the chosen engine and key into makeSummarizer and stores the result (F164)")
 func engineReachesMakeSummarizer() async throws {

@@ -6796,6 +6796,29 @@ final class AppModel: ObservableObject {
         if let running = glossaryCorrectionRun?.meetingID, gone.contains(running) { cancelGlossaryCorrections() }
     }
 
+    /// Why a stored Local engine cannot summarize on this Mac (F566), shown by Summarize and by the
+    /// Summary section (F784). Choosing Claude sends the transcript to Anthropic, so it says so.
+    nonisolated static let localSummariesUnsupportedMessage = "Local summaries require an Apple-silicon Mac. "
+        + "To use Claude instead, choose it in Settings: the transcript is then sent to Anthropic."
+
+    /// The line a meeting's Summary section shows while it has no summary and Summarize cannot
+    /// work as things stand, or nil when it can (F784).
+    var summaryUnavailableHint: String? {
+        switch summarizationEngine {
+        case .local:
+            guard !isSummarizerInstalled else { return nil }
+            // On a Mac that cannot run the local model, Settings has no install to point at, so the
+            // section says why — the same sentence Summarize gives when pressed (F566). Until F784
+            // the view gated its hint on Apple silicon and showed nothing at all here.
+            return localSummariesSupported
+                ? "Install the local summarization model in Settings to turn this transcript into a summary, key points, and action items — privately, on this Mac."
+                : Self.localSummariesUnsupportedMessage
+        case .claude:
+            guard !hasClaudeAPIKey else { return nil }
+            return "Add a Claude API key in Settings to turn this transcript into a summary, key points, and action items."
+        }
+    }
+
     /// - Parameter cloudUploadConfirmed: The product spec's "an explicit, confirmed Summarize
     ///   press" for the `.claude` engine (F499). Until now that confirmation lived only in
     ///   `ContentView`'s `confirmSummarize` alert — a `switch` inside one button closure — so
@@ -6827,8 +6850,7 @@ final class AppModel: ObservableObject {
                 // depend on the host's architecture through the init parameter's default.
                 alertMessage = localSummariesSupported
                     ? ErrorPresentation.readable(SummarizerError.modelNotInstalled)
-                    : "Local summaries require an Apple-silicon Mac. "
-                        + "To use Claude instead, choose it in Settings: the transcript is then sent to Anthropic."
+                    : Self.localSummariesUnsupportedMessage
                 return
             }
             apiKey = ""

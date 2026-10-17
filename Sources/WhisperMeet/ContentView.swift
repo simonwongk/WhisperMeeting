@@ -3445,11 +3445,8 @@ private struct TranscriptDetailView: View {
             } else if let summary = meeting.summary {
                 summaryBody(summary, transcript: meeting.transcriptText, languageWarning: meeting.summaryLanguageWarning)
                     .transition(.gentleFade(reduceMotion: reduceMotion))
-            } else if model.summarizationEngine == .local, !model.isSummarizerInstalled, SummarizerRuntime.isSupportedOnCurrentMac {
-                Text("Install the local summarization model in Settings to turn this transcript into a summary, key points, and action items — privately, on this Mac.")
-                    .foregroundStyle(.secondary)
-            } else if model.summarizationEngine == .claude, !model.hasClaudeAPIKey {
-                Text("Add a Claude API key in Settings to turn this transcript into a summary, key points, and action items.")
+            } else if let hint = model.summaryUnavailableHint {
+                Text(hint)
                     .foregroundStyle(.secondary)
             }
         }
