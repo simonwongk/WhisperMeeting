@@ -25,6 +25,9 @@ final class DictationOverlay {
         /// The dictation model's first-run download is running (F823): a press is refused with it,
         /// and a dictation already waiting on the model shows it instead of "Transcribing…".
         case modelDownloading
+        /// The dictation is ready and waits for the clipboard: another app owns it lazily and has not
+        /// answered yet (F692, the user's decision of 2026-10-16). The paste follows when it does.
+        case waitingForClipboard
         /// Pasted, but no text field could be seen to take it, so it is on the clipboard too (F600).
         case pastedUnconfirmed
         /// Copied rather than pasted: the app in front is not the one the key was pressed in (F445).
@@ -252,6 +255,7 @@ private struct DictationPill: View {
         case .empty: Image(systemName: "waveform.slash").foregroundStyle(.yellow)
         case .error: Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         case .busy: Image(systemName: "hourglass").foregroundStyle(.white)
+        case .waitingForClipboard: ProgressView().controlSize(.small).tint(.white)
         case .modelDownloading: Image(systemName: "arrow.down.circle").foregroundStyle(.white)
         case .endMayBeMissing: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         }
@@ -270,6 +274,7 @@ private struct DictationPill: View {
         case .empty: "Didn’t catch that"
         case .error: "Dictation failed"
         case .busy: "Busy…"
+        case .waitingForClipboard: "Waiting for the clipboard…"
         case .modelDownloading: "Downloading model…"
         case .endMayBeMissing: "Pasted"
         }

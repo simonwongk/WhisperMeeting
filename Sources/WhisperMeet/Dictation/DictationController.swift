@@ -1669,39 +1669,12 @@ final class DictationController: ObservableObject {
         case let .deliver(payload):
             status = .delivering
             lastFailureReason = nil // the last dictation is this one, and it did not fail (F687)
-            let delivery = textInjector.deliver(payload, autoPaste: autoPaste, pressedIn: pressTarget)
-            _ = session.handle(.delivered)
-            let delivered = { (phase: DictationOverlay.Phase) in
-                truncated ? DictationOverlay.Phase.endMayBeMissing(phase) : phase
-            }
-            switch delivery {
-            case .pasted: showPhase(delivered(.done))
-            // Pasted, and on the clipboard too: no "press ⌘V" notice, which would paste it twice (F600).
-            case .pastedUnconfirmed: showPhase(delivered(.pastedUnconfirmed))
-            case .clipboard: showPhase(delivered(.copied)); clipboardNotifier()
-            case .appChanged: showPhase(delivered(.appChanged)); clipboardNotifier()
-            // Not on the clipboard, so no notice: the pill's Copy button is the only way to it (F586).
-            case .secureInput: showSecureCopyPill(.secureInput, holding: payload)
-            case let .secureKeyboardEntry(app): showSecureCopyPill(.secureKeyboardEntry(app: app), holding: payload)
-            }
-            log.notice("delivered via \(String(describing: delivery), privacy: .public)")
-            if delivery.isSecure {
-                // Secure input means the words may be a password: kept out of the history file
-                // (F445). Nothing is in flight any more — only the pill and its Copy button remain,
-                // for longer than a result pill so there is time to reach it (F586).
-                status = .idle
-                scheduleDismiss(after: secureCopyWindow)
-            } else {
-                logStore.record(
-                    text: payload,
-                    outcome: delivery.wasPasted ? .pasted : .clipboard,
-                    rawText: rawText,
-                    refinement: refinement,
-                    timings: timings,
-                    truncated: truncated
+            // F692: off the main thread's back. The clipboard may be held by another app that has not
+            // answered; the delivery waits for it without freezing the app or the pill.
+            Task { @MainActor [weak self] in
+                await self?.deliverWhenTheClipboardIsFree(
+                    payload, rawText: rawText, refinement: refinement, timings: timings, truncated: truncated
                 )
-                // Longer when the pill has a second line to read (F1016).
-                scheduleDismiss(after: truncated ? 2.5 : 1.1)
             }
         case .none where session.state == .failed(.emptyTranscript):
             lastFailureReason = nil // nothing heard is not a failure (F687)
@@ -1714,6 +1687,67 @@ final class DictationController: ObservableObject {
         default:
             scheduleDismiss(after: 1.0)
             status = settledStatus
+        }
+    }
+
+    /// The delivery half of `finish` (F692, the user's decision of 2026-10-16: paste late, without
+    /// freezing). `TextInjector.prepareDelivery` does every clipboard wait as an `await` — this
+    /// dictation's early read, a read an earlier one left running, the paste-time read — so the main
+    /// actor stays free; the pill says "Waiting for the clipboard…" once the wait has gone on long
+    /// enough to notice, and the paste follows when the clipboard owner answers or AppKit gives up on
+    /// it (about 120 s). `deliver` then takes F656's second look, because it waited: an app or a
+    /// password field that took focus meanwhile still refuses the paste. No new history outcome.
+    private func deliverWhenTheClipboardIsFree(
+        _ payload: String, rawText: String?, refinement: String?, timings: DictationTimings, truncated: Bool
+    ) async {
+        let pressedIn = pressTarget
+        let autoPaste = self.autoPaste
+        let waitingPill = Task { @MainActor [weak self] in
+            // Long enough that an ordinary paste-time read (22 ms measured for an eagerly provided
+            // image, F601) never flashes it.
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled, let self, self.status == .delivering else { return }
+            self.showPhase(.waitingForClipboard)
+        }
+        let waited = await textInjector.prepareDelivery(autoPaste: autoPaste)
+        waitingPill.cancel()
+        // Disabled while it waited: dropped, as a dictation disabled mid-transcribe is.
+        guard enabled else { return }
+        let delivery = textInjector.deliver(
+            payload, autoPaste: autoPaste, pressedIn: pressedIn, waitedForClipboard: waited
+        )
+        _ = session.handle(.delivered)
+        let delivered = { (phase: DictationOverlay.Phase) in
+            truncated ? DictationOverlay.Phase.endMayBeMissing(phase) : phase
+        }
+        switch delivery {
+        case .pasted: showPhase(delivered(.done))
+        // Pasted, and on the clipboard too: no "press ⌘V" notice, which would paste it twice (F600).
+        case .pastedUnconfirmed: showPhase(delivered(.pastedUnconfirmed))
+        case .clipboard: showPhase(delivered(.copied)); clipboardNotifier()
+        case .appChanged: showPhase(delivered(.appChanged)); clipboardNotifier()
+        // Not on the clipboard, so no notice: the pill's Copy button is the only way to it (F586).
+        case .secureInput: showSecureCopyPill(.secureInput, holding: payload)
+        case let .secureKeyboardEntry(app): showSecureCopyPill(.secureKeyboardEntry(app: app), holding: payload)
+        }
+        log.notice("delivered via \(String(describing: delivery), privacy: .public)")
+        if delivery.isSecure {
+            // Secure input means the words may be a password: kept out of the history file
+            // (F445). Nothing is in flight any more — only the pill and its Copy button remain,
+            // for longer than a result pill so there is time to reach it (F586).
+            status = .idle
+            scheduleDismiss(after: secureCopyWindow)
+        } else {
+            logStore.record(
+                text: payload,
+                outcome: delivery.wasPasted ? .pasted : .clipboard,
+                rawText: rawText,
+                refinement: refinement,
+                timings: timings,
+                truncated: truncated
+            )
+            // Longer when the pill has a second line to read (F1016).
+            scheduleDismiss(after: truncated ? 2.5 : 1.1)
         }
     }
 
@@ -1979,7 +2013,7 @@ final class DictationController: ObservableObject {
         case .secureInput: "Dictation not pasted, because a secure field has focus. Use Copy to copy it."
         case let .secureKeyboardEntry(app):
             "Dictation not pasted, because Secure Keyboard Entry is on in \(app). Use Copy to copy it."
-        case .listening, .transcribing, .refining, .modelDownloading: nil
+        case .listening, .transcribing, .refining, .modelDownloading, .waitingForClipboard: nil
         // F1016: the delivery's own sentence, then why the text may be short.
         case let .endMayBeMissing(delivered):
             [announcement(for: delivered, detail: detail), "The end may be missing."].compactMap { $0 }.joined(separator: " ")

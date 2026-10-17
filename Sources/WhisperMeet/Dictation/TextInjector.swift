@@ -95,6 +95,17 @@ final class TextInjector {
         let pasteboard: NSPasteboard
     }
 
+    /// Items handed to the snapshot queue for a write that may run there after this call returns
+    /// (F692). Built on the main thread and only read on the queue.
+    private struct StagedItems: @unchecked Sendable {
+        let items: [NSPasteboardItem]
+    }
+
+    /// The pasteboard types of a write, handed to the snapshot queue the same way (F692).
+    private struct Markers: @unchecked Sendable {
+        let types: [NSPasteboard.PasteboardType]
+    }
+
     /// Reads a snapshot under a byte cap: `PasteboardSnapshot.read`, or a test's stand-in that
     /// also records which thread it ran on.
     typealias SnapshotReader = @Sendable (PasteboardHandle, Int) -> Result<PasteboardSnapshot, PasteboardSnapshot.Refusal>
@@ -220,15 +231,66 @@ final class TextInjector {
         clipboardPrefetch = nil
     }
 
+    /// Does, before `deliver`, every clipboard wait `deliver` would otherwise do on the main thread
+    /// (F692, the user's decision of 2026-10-16: paste late, without freezing). Returns whether it
+    /// waited, which `deliver` takes as its reason for F656's second look.
+    ///
+    /// F657 made the main thread wait on `snapshotQueue` with `sync` for a read still in flight, and
+    /// read the clipboard there at paste time; a clipboard owner that never answers holds that read
+    /// for up to 120 s (`data(forType:)` returned nil after 120.0 s in the lane J review), so the app
+    /// and the pill froze. Here the waits are `await`s: this dictation's early read (F601), any read
+    /// an earlier dictation left on the queue (F656), and — when the clipboard changed since the
+    /// early read, or none was made — the paste-time read itself, run on the queue as every read is.
+    /// The main actor is free meanwhile. After it, `deliver`'s own uses of the queue find it idle
+    /// (only this actor queues reads), and its paste-time read finds this one's answer.
+    ///
+    /// The paste-time read is made when the paste may give the clipboard back (auto-paste on, paste
+    /// allowed, contents readable without asking), before `deliver` has looked at the focused field;
+    /// so it can be a read `deliver` then does not use, when the field turns out not to be a text
+    /// field. That read happens off the main thread and costs nothing the user sees.
+    func prepareDelivery(autoPaste: Bool) async -> Bool {
+        var waited = false
+        if let early = clipboardPrefetch {
+            waited = Self.readsOnQueue.withLock { $0 } > 0
+            await early.value
+        }
+        if Self.readsOnQueue.withLock({ $0 }) > 0 {
+            waited = true
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                Self.snapshotQueue.async { continuation.resume() }
+            }
+        }
+        guard autoPaste, canSynthesizePaste(), mayReadContents() else { return waited }
+        // The clipboard still holds the previous dictation, whose restore carries over (`deliver`).
+        if let pending, pasteboard.changeCount == pending.written { return waited }
+        // The early read is still the clipboard as it is now.
+        if let prefetched, prefetched.changeCount == pasteboard.changeCount { return waited }
+        let generation = prefetchGeneration
+        let handle = PasteboardHandle(pasteboard: pasteboard)
+        let maximumBytes = maximumSnapshotBytes
+        let read = readSnapshot
+        let outcome = await withCheckedContinuation { continuation in
+            Self.snapshotQueue.async {
+                let changeCount = handle.pasteboard.changeCount
+                continuation.resume(returning: (read(handle, maximumBytes), changeCount))
+            }
+        }
+        if generation == prefetchGeneration { prefetched = outcome }
+        return true
+    }
+
     /// `pressed` is `target()` as it was when the key went down (F445), so the paste goes where the
     /// user started or nowhere. Nil skips both press-time checks.
-    func deliver(_ text: String, autoPaste: Bool, pressedIn pressed: FocusedTextField.Probe? = nil) -> Delivery {
+    func deliver(
+        _ text: String, autoPaste: Bool, pressedIn pressed: FocusedTextField.Probe? = nil,
+        waitedForClipboard: Bool = false
+    ) -> Delivery {
         let early = prefetched
         // A read still on the snapshot queue — this dictation's, or one an earlier dictation left
         // running — makes anything below that touches the pasteboard wait for it (F657), so it is
         // what decides the second look (F656). Only this thread queues reads, so the count cannot
         // rise between here and the write.
-        let readsQueued = Self.readsOnQueue.withLock { $0 } > 0
+        let readsQueued = Self.readsOnQueue.withLock { $0 } > 0 || waitedForClipboard
         discardClipboardPrefetch()
         let target = focusedTextField()
         // What was judged, so a real app's secure-input and text-field reading can be checked
@@ -332,7 +394,7 @@ final class TextInjector {
     /// takes the clipboard over from a restore still owed to an earlier paste.
     func copyConcealed(_ text: String) {
         takeOverClipboard()
-        write(text, markers: Self.transientMarkers + [Self.concealedMarker])
+        write(text, markers: Self.transientMarkers + [Self.concealedMarker], waiting: false)
         log.notice("secure-input dictation copied at the user's request, concealed")
     }
 
@@ -340,14 +402,37 @@ final class TextInjector {
     nonisolated static let concealedMarker = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
 
     /// Writes on the snapshot queue, so an early read still in flight finishes first (F657).
-    private func write(_ text: String, markers: [NSPasteboard.PasteboardType]) {
-        let pasteboard = self.pasteboard
-        Self.snapshotQueue.sync {
-            pasteboard.clearContents()
+    ///
+    /// `deliver`'s writes wait for the write (`waiting`), so ⌘V and a "copied" report always follow a
+    /// clipboard that holds the text; in the app they run after `prepareDelivery` has emptied the
+    /// queue, so the wait is immediate (F692). The pill's Copy does not wait when a read is still in
+    /// flight — the next dictation's early read, held by a clipboard owner — but queues the write
+    /// behind it rather than hold the main thread.
+    private func write(_ text: String, markers: [NSPasteboard.PasteboardType], waiting: Bool = true) {
+        let handle = PasteboardHandle(pasteboard: pasteboard)
+        let markers = Markers(types: markers)
+        let work: @Sendable () -> Void = {
+            handle.pasteboard.clearContents()
             let item = NSPasteboardItem()
             item.setString(text, forType: .string)
-            for marker in markers { item.setData(Data(), forType: marker) }
-            pasteboard.writeObjects([item])
+            for marker in markers.types { item.setData(Data(), forType: marker) }
+            handle.pasteboard.writeObjects([item])
+        }
+        if waiting { Self.snapshotQueue.sync(execute: work) } else { Self.onSnapshotQueue(work) }
+    }
+
+    #if DEBUG
+    /// Waits for whatever is on the snapshot queue, so a test can see a queued write land (F692).
+    static func drainSnapshotQueueForTesting() { snapshotQueue.sync {} }
+    #endif
+
+    /// `work` on the snapshot queue: at once, waiting for it, when no read is on the queue; queued
+    /// behind the read otherwise, so the main thread never waits on a clipboard owner (F692).
+    private static func onSnapshotQueue(_ work: @escaping @Sendable () -> Void) {
+        if readsOnQueue.withLock({ $0 }) == 0 {
+            snapshotQueue.sync(execute: work)
+        } else {
+            snapshotQueue.async(execute: work)
         }
     }
 
@@ -394,18 +479,20 @@ final class TextInjector {
             log.error("clipboard not restored: a saved representation was refused")
             return
         }
-        // On the snapshot queue like every other write (F657).
-        let pasteboard = self.pasteboard
-        let accepted = Self.snapshotQueue.sync {
-            pasteboard.clearContents()
+        // On the snapshot queue like every other write (F657), and never waiting on the main thread
+        // for a read still on it (F692): the next dictation's early read may be the one there.
+        let handle = PasteboardHandle(pasteboard: pasteboard)
+        let items = StagedItems(items: staged)
+        let log = self.log
+        Self.onSnapshotQueue {
+            handle.pasteboard.clearContents()
             // An empty snapshot is an empty clipboard, which the clear above has already restored.
-            return staged.isEmpty || pasteboard.writeObjects(staged)
+            guard items.items.isEmpty || handle.pasteboard.writeObjects(items.items) else {
+                log.error("clipboard not restored: the pasteboard refused the saved items")
+                return
+            }
+            log.notice("clipboard restored after dictation paste")
         }
-        guard accepted else {
-            log.error("clipboard not restored: the pasteboard refused the saved items")
-            return
-        }
-        log.notice("clipboard restored after dictation paste")
     }
 
     private func mayReadContents() -> Bool {

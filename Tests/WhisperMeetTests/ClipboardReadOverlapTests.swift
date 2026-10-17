@@ -201,6 +201,8 @@ func copyFromTheSecurePillWaitsForTheEarlyRead() async throws {
     #expect(injector.deliver("dictated words", autoPaste: true, pressedIn: pressedIn) == .secureInput)
     injector.copyConcealed("dictated words")
     await early.value
+    // F692: the Copy no longer holds the main thread for the read; it is queued behind it.
+    TextInjector.drainSnapshotQueueForTesting()
 
     #expect(!harness.reads.snapshot().writtenDuringEarlyRead)
     #expect(harness.board.string(forType: .string) == "dictated words")
@@ -234,6 +236,8 @@ func theRestoreGoesThroughTheSnapshotQueue() async throws {
     let (_, early) = try await harness.startBlockedEarlyRead(reading)
     restores[0]()
     await early.value
+    // F692: the restore no longer holds the main thread for the read; it is queued behind it.
+    TextInjector.drainSnapshotQueueForTesting()
 
     #expect(!harness.reads.snapshot().writtenDuringEarlyRead)
     #expect(restoring.string(forType: .string) == "copied on my phone")
