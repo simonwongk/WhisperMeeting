@@ -2336,14 +2336,85 @@ final class MeetingStore: ObservableObject {
             : "\(titles.count) meetings were not deleted because their recording folders are still being written — audio being compressed or rebuilt, or notes updated: \(names). Delete them again once that has finished."
     }
 
-    /// Removes a recording directory. Injectable so the failure path is testable (F146). The only
-    /// folder a delete hands it is the meeting's own `Recordings/<id>` (`ownRecordingFolder(of:)`), so
-    /// the user flags cleared first are on the app's own files (F943).
+    /// Takes a meeting's own recording folder out of `Recordings/<id>` in one rename, the first thing a
+    /// delete does to the disk (F609). Returns where the folder went, or nil when nothing was there.
+    /// Injectable so the refusal is testable (F146); the default is `moveAsideForDeletion(_:)`.
+    ///
+    /// Throwing means nothing moved, and the delete then keeps the meeting with all of its files.
+    /// That is why this is a separate step from `removeRecordingDirectory`: removing a folder is not
+    /// atomic, so a removal that failed part-way had already taken some files, and keeping the meeting
+    /// after it listed one whose audio was gone (F609).
+    var setRecordingDirectoryAside: (URL) throws -> URL? = { try MeetingStore.moveAsideForDeletion($0) }
+
+    /// Removes a folder `setRecordingDirectoryAside` set aside, or one the launch sweep finds
+    /// (`sweepSetAsideRecordings()`). Injectable so the failure path is testable (F146). It is only
+    /// ever handed one of those hidden folders, which a delete made from the meeting's own
+    /// `Recordings/<id>` (`ownRecordingFolder(of:)`), so the user flags cleared first are on the app's
+    /// own files (F943). A failure here does not undo the deletion; what is left is swept at the next
+    /// launch (F609).
     var removeRecordingDirectory: (URL) throws -> Void = { url in
-        if FileManager.default.fileExists(atPath: url.path) {
-            MeetingStore.clearUserFlags(under: url)
+        if (try? FileManager.default.attributesOfItem(atPath: url.path)) != nil {
+            // A link is removed as a link: the walk under it would follow it out of the library.
+            if MeetingStore.isRealFolder(url) { MeetingStore.clearUserFlags(under: url) }
             try FileManager.default.removeItem(at: url)
         }
+    }
+
+    /// What a delete renames a recording folder to before removing it (F609): hidden, so nothing that
+    /// lists `Recordings` takes it for a recording (`orphanedRecordings()`, `FolderRebuild`, the wipe
+    /// check and the empty-path lookup all skip hidden names), followed by the folder's own name and a
+    /// random suffix, so a second deletion of the same id never collides with an earlier remnant.
+    nonisolated static let setAsidePrefix = ".deleted-"
+
+    /// The default `setRecordingDirectoryAside` (F609): one `renamex_np(RENAME_EXCL)` to a hidden
+    /// sibling, in the same folder and so on the same volume. Not `FileManager.moveItem`, which falls
+    /// back to copying and then deleting where a rename is refused across volumes — exactly the
+    /// part-way state this exists to avoid. The exclusive flag refuses to replace anything already
+    /// at the new name. Clears the folder's own Locked flag first, which refuses a rename (F943); what
+    /// is inside it is cleared by the removal.
+    nonisolated static func moveAsideForDeletion(_ folder: URL) throws -> URL? {
+        // `attributesOfItem` does not follow a link, so a dangling one is still moved as itself.
+        guard (try? FileManager.default.attributesOfItem(atPath: folder.path)) != nil else { return nil }
+        clearUserFlags(at: folder)
+        let suffix = UUID().uuidString.prefix(8).lowercased()
+        let aside = folder.deletingLastPathComponent()
+            .appendingPathComponent("\(setAsidePrefix)\(folder.lastPathComponent)-\(suffix)", isDirectory: true)
+        guard renamex_np(folder.path, aside.path, UInt32(RENAME_EXCL)) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO, userInfo: [NSFilePathErrorKey: folder.path])
+        }
+        return aside
+    }
+
+    /// Removes the folders deletes set aside and could not finish removing (F609): run at launch.
+    /// Returns what to say about any that are still there, or nil.
+    ///
+    /// Deferred, never destructive, where a folder is not plainly a deleted meeting's: a name this
+    /// build did not write (no meeting id after the prefix) is left alone, and so is a remnant whose
+    /// meeting is listed again — a hand restore of an older index brings a meeting back under its old
+    /// id — or that a listed meeting's recording path points into. Nothing at all while the library
+    /// is read-only (F187): an index that did not load cannot say which meetings are listed.
+    @discardableResult
+    func sweepSetAsideRecordings() -> String? {
+        guard !isDegraded else { return nil }
+        let recordings = rootDirectory.appendingPathComponent("Recordings", isDirectory: true)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: recordings.path) else { return nil }
+        let live = Set(meetings.map(\.id))
+        var stuck: [String] = []
+        for name in names.sorted() where name.hasPrefix(Self.setAsidePrefix) {
+            guard let id = UUID(uuidString: String(name.dropFirst(Self.setAsidePrefix.count).prefix(36))),
+                  !live.contains(id) else { continue }
+            let folder = recordings.appendingPathComponent(name, isDirectory: true)
+            guard liveMeetings(withRecordingsInside: folder).isEmpty else { continue }
+            do {
+                try removeRecordingDirectory(folder)
+            } catch {
+                stuck.append("Recordings/\(name)")
+            }
+        }
+        guard !stuck.isEmpty else { return nil }
+        return stuck.count == 1
+            ? "A deleted meeting's files are still on disk because they could not be removed: \(stuck[0]) in the library folder. WhisperMeet tries again each time it opens, or you can delete that folder yourself."
+            : "\(stuck.count) deleted meetings' files are still on disk because they could not be removed: \(stuck.joined(separator: ", ")) in the library folder. WhisperMeet tries again each time it opens, or you can delete those folders yourself."
     }
 
     /// Clears Finder's Locked flag (`uchg`) and the append-only flag (`uappnd`) on the file at `url`,
@@ -2703,6 +2774,14 @@ final class MeetingStore: ObservableObject {
     /// meeting's id when `recordingPath` is empty (F576) — for any other `recordingPath` only the
     /// index entry goes and the message says so. No notes-sidecar hook: the sidecar lives in the
     /// recording folder, which dies with the meeting.
+    ///
+    /// A folder is renamed aside before it is removed (`setRecordingDirectoryAside`, F609), so the
+    /// one step that decides whether a meeting is kept either happened whole or not at all. A crash
+    /// between the save and that rename leaves the folder in `Recordings/<id>`, unindexed, where
+    /// the next launch's `orphanedRecordings()` lists it and the startup sweep adopts it again: the
+    /// meeting comes back from what its folder holds, rather than its audio being lost — F190's
+    /// trade-off. Not planned: closing it
+    /// would take a journal written before the save, for a window of one rename.
     @discardableResult
     func delete(ids: [UUID]) -> [UUID] {
         guard editMutationIsAllowed() else { return [] }
@@ -2765,19 +2844,30 @@ final class MeetingStore: ObservableObject {
             return []
         }
 
-        // The index no longer references these folders, so a failure below destroys nothing that
-        // is still listed — and putting the entry back is a true rollback (F146: don't half-delete).
+        // The index no longer references these folders, so nothing below touches a listed meeting's
+        // files. Each folder is first renamed out of `Recordings/<id>` (F609): a rename either happened
+        // or did not, so a folder that would not move is untouched, and putting its entry back is a
+        // true rollback (F146: don't half-delete). Removing it in place was not: `removeItem` takes
+        // what it can before it fails, and the kept entry then pointed at missing audio.
         var kept: [MeetingRecord] = []
+        var setAside: [(title: String, folder: URL)] = []
         for meeting in doomed {
             guard let directory = folders[meeting.id] else { continue }
             do {
-                try removeRecordingDirectory(directory)
+                if let aside = try setRecordingDirectoryAside(directory) {
+                    setAside.append((meeting.title, aside))
+                }
             } catch {
                 kept.append(meeting)
             }
         }
         let keptIDs = Set(kept.map(\.id))
         let removed = doomed.map(\.id).filter { !keptIDs.contains($0) }
+        // What this delete has to say, composed once (F579). Each outcome used to replace the one
+        // before it: a kept folder hid an entry-only delete, and the shred pass below replaced either.
+        var said: [String] = []
+        // Whether `storageErrorMessage` is now a failure's own words, which stay beside `said`.
+        var failureSaid = false
         if !kept.isEmpty {
             let gone = Set(removed)
             meetings = before.filter { !gone.contains($0.id) }
@@ -2785,22 +2875,56 @@ final class MeetingStore: ObservableObject {
             // `orphanedRecordings()` finds and can re-adopt; the save's own message stands then,
             // because "changes could not be saved" is the more accurate thing to report.
             if persistMeetings() {
-                storageErrorMessage = Self.batchDeleteFailureMessage(kept.map(\.title))
+                said.append(Self.batchDeleteFailureMessage(kept.map(\.title)))
             } else if writeConflict?.isRace == true {
                 // Lost to another copy between the two saves (F642): re-read, so the session is
                 // not stuck. The kept rows are in neither this session's last save nor the other
                 // copy's, so the recovery puts them back in the list and saves them at once (F667);
                 // only if that save loses too are they held by the offer, which either answer saves.
                 beginConflictRecovery(note: Self.keptFoldersNote(kept.map(\.title)))
+                failureSaid = true
+            } else {
+                failureSaid = true
             }
-        } else if entryOnly > 0 {
-            storageErrorMessage = Self.entryOnlyDeleteMessage(count: entryOnly)
         }
+        if entryOnly > 0 {
+            said.append(Self.entryOnlyDeleteMessage(count: entryOnly))
+        }
+        // The deletions stand whatever happens here: their folders are out of `Recordings/<id>` and
+        // the index no longer lists them. What could not be removed waits in its hidden folder for
+        // the next launch's sweep, and is said, because the user deleted it expecting it gone.
+        var remnants: [String] = []
+        for (title, folder) in setAside {
+            do {
+                try removeRecordingDirectory(folder)
+            } catch {
+                remnants.append(title)
+            }
+        }
+        if !remnants.isEmpty {
+            said.append(Self.remnantDeleteMessage(remnants))
+        }
+        var shredSaid: String?
         if !removed.isEmpty {
             shredFromHistory(removed)
+            let beforeShred = storageErrorMessage
             processPendingShreds()
+            if storageErrorMessage != beforeShred { shredSaid = storageErrorMessage }
+            storageErrorMessage = beforeShred
+        }
+        let sentences = (failureSaid ? [storageErrorMessage].compactMap { $0 } : []) + said + [shredSaid].compactMap { $0 }
+        if !said.isEmpty || shredSaid != nil {
+            storageErrorMessage = sentences.joined(separator: " ")
         }
         return removed
+    }
+
+    /// For a delete that stands but left part of a recording folder on disk, set aside (F609).
+    private static func remnantDeleteMessage(_ titles: [String]) -> String {
+        let names = titles.map { "“\($0)”" }.joined(separator: ", ")
+        return titles.count == 1
+            ? "\(names) was deleted, but some of its recording files could not be removed from disk. WhisperMeet tries again the next time it opens."
+            : "\(titles.count) meetings were deleted, but some of their recording files could not be removed from disk: \(names). WhisperMeet tries again the next time it opens."
     }
 
     private static func batchDeleteFailureMessage(_ titles: [String]) -> String {
@@ -2990,10 +3114,12 @@ final class MeetingStore: ObservableObject {
     /// Forgets the retained index history now — the immediate counterpart to the automatic shred
     /// (F239, F295).
     ///
-    /// Deleting a meeting removes its recording folder at once; its title, transcript, notes and
-    /// summary stay in the retained generations under `meetings.history/` and in the backup copy for
-    /// `shredGracePeriod` (a week), and `processPendingShreds` then removes them from every
-    /// generation automatically. That week is protection against losing the library, not an undo
+    /// Deleting a meeting removes its recording folder at once (or, for any part that cannot be
+    /// removed, at the next launch: `sweepSetAsideRecordings()`, F609). Its title, transcript, notes
+    /// and summary stay in the retained generations under `meetings.history/` for `shredGracePeriod`
+    /// (a week), and `processPendingShreds` then removes them from every generation automatically.
+    /// The backup copy holds them only until the next save rotates it out, or until that shred if
+    /// no save comes first (F609 corrected "for a week" here). That week is protection against losing the library, not an undo
     /// for one delete: Recover Library, which restores from these generations, is offered only while
     /// the library cannot be read (F457, the user's answer of 2026-09-24). This command does not
     /// wait: it removes every generation at once, for every meeting. Since F580 it first saves once,

@@ -16,7 +16,7 @@ func deleteSurfacesRemovalFailure() throws {
     store.upsert(MeetingRecord(id: id, title: "M", recordingPath: "Recordings/\(id.uuidString)/meeting.wav", status: .completed))
 
     struct RemovalError: Error {}
-    store.removeRecordingDirectory = { _ in throw RemovalError() }
+    store.setRecordingDirectoryAside = { _ in throw RemovalError() }
 
     store.delete(id: id)
 
@@ -212,7 +212,8 @@ func deleteRemovesTheOwnFolderOfAMeetingWithNoRecordingPath() throws {
 // The spelling half. `orphanedRecordings()` lists a folder under any name `UUID(uuidString:)`
 // parses to the id, lowercase included. On the default case-insensitive volume `Recordings/<UPPER>`
 // names a lowercase folder too, so removing it proves nothing about spelling here; on a case-sensitive
-// volume only the folder's own name removes it. So the name handed to the remover is the assertion.
+// volume only the folder's own name removes it. So the name handed to the delete's first step, the
+// set-aside rename (F609), is the assertion.
 @MainActor
 @Test("A meeting with no recording path has its own folder removed by the name it has on disk (F576)")
 func deleteNamesTheOwnFolderOfAMeetingWithNoRecordingPathAsItIsSpelledOnDisk() throws {
@@ -225,14 +226,14 @@ func deleteNamesTheOwnFolderOfAMeetingWithNoRecordingPathAsItIsSpelledOnDisk() t
     let store = MeetingStore(rootDirectory: root)
     store.upsert(MeetingRecord(id: id, title: "Interrupted import from example.com", status: .failed))
     var removed: [String] = []
-    store.removeRecordingDirectory = { url in
+    store.setRecordingDirectoryAside = { url in
         removed.append(url.lastPathComponent)
-        try FileManager.default.removeItem(at: url)
+        return try MeetingStore.moveAsideForDeletion(url)
     }
 
     #expect(store.delete(ids: [id]) == [id])
 
-    #expect(removed == [name], "the remover was handed \(removed), not the folder's own name")
+    #expect(removed == [name], "the delete was handed \(removed), not the folder's own name")
     #expect(!FileManager.default.fileExists(atPath: folder.path))
     #expect(try store.orphanedRecordings().isEmpty)
 }

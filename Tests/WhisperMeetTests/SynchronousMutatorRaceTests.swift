@@ -307,7 +307,7 @@ func lostRestoringSaveListsTheKeptRowAgain() throws {
     store.upsert(record)
     let theirs = meeting("The other copy's meeting")
     // Another copy commits after this session's first save, and then the folder refuses to go.
-    store.removeRecordingDirectory = { _ in
+    store.setRecordingDirectoryAside = { _ in
         let rival = BackupJSONStore<[MeetingRecord]>(
             primaryURL: root.appendingPathComponent("meetings.json"),
             backupURL: root.appendingPathComponent("meetings.backup.json"),

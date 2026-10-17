@@ -57,7 +57,7 @@ func aResultReSavedAfterARecoveryKeepsWhatTheRecoverySaid() throws {
     store.upsert(MeetingRecord(id: review, title: "Review", status: .processing))
     // The folder refuses to go, and the other copy saves before the row's restoring save and again before
     // the recovery's save of it.
-    store.removeRecordingDirectory = { _ in
+    store.setRecordingDirectoryAside = { _ in
         try otherCopyCommits(in: root) { $0 + [MeetingRecord(title: "The other copy's first", status: .recorded)] }
         throw CocoaError(.fileWriteNoPermission)
     }
@@ -100,7 +100,7 @@ func theReplayedRecoveryWordsDoNotNameAMeetingDeletedSince() throws {
     let store = MeetingStore(rootDirectory: root)
     store.upsert(MeetingRecord(id: stubborn, title: "Stubborn", recordingPath: "Recordings/\(stubborn.uuidString)/meeting.wav", status: .recorded))
     store.upsert(MeetingRecord(id: review, title: "Review", status: .processing))
-    store.removeRecordingDirectory = { _ in
+    store.setRecordingDirectoryAside = { _ in
         try otherCopyCommits(in: root) { $0 + [MeetingRecord(title: "The other copy's first", status: .recorded)] }
         throw CocoaError(.fileWriteNoPermission)
     }
@@ -148,7 +148,7 @@ func anOrdinaryFailureAfterARecoveryThatSpokeShowsBoth() throws {
     let store = MeetingStore(rootDirectory: root)
     store.upsert(MeetingRecord(id: stubborn, title: "Stubborn", recordingPath: "Recordings/\(stubborn.uuidString)/meeting.wav", status: .recorded))
     store.upsert(MeetingRecord(id: review, title: "Review", status: .processing))
-    store.removeRecordingDirectory = { _ in
+    store.setRecordingDirectoryAside = { _ in
         try otherCopyCommits(in: root) { $0 + [MeetingRecord(title: "The other copy's first", status: .recorded)] }
         throw CocoaError(.fileWriteNoPermission)
     }

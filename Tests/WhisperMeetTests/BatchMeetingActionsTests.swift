@@ -51,11 +51,11 @@ func batchDeleteKeepsWhatItCouldNotRemove() throws {
     let (store, root, ids) = try makeLibrary(count: 3)
     defer { try? FileManager.default.removeItem(at: root) }
     let stubborn = ids[1]
-    store.removeRecordingDirectory = { url in
+    store.setRecordingDirectoryAside = { url in
         if url.lastPathComponent == stubborn.uuidString {
             throw NSError(domain: "test", code: 1)
         }
-        try FileManager.default.removeItem(at: url)
+        return try MeetingStore.moveAsideForDeletion(url)
     }
 
     store.delete(ids: ids)
@@ -89,7 +89,7 @@ func batchDeleteRefusedWhileDegraded() throws {
     #expect(store.meetings.count == 2)
     let before = store.persistCount
     var removalAttempted = false
-    store.removeRecordingDirectory = { _ in removalAttempted = true }
+    store.setRecordingDirectoryAside = { _ in removalAttempted = true; return nil }
 
     store.delete(ids: ids)
 

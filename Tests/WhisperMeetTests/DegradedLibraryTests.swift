@@ -92,7 +92,7 @@ func degradedDeleteRemovesNothing() throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try Data("audio".utf8).write(to: directory.appendingPathComponent("meeting.wav"))
     var removalAttempted = false
-    store.removeRecordingDirectory = { _ in removalAttempted = true }
+    store.setRecordingDirectoryAside = { _ in removalAttempted = true; return nil }
 
     store.delete(id: id)
 
@@ -101,10 +101,11 @@ func degradedDeleteRemovesNothing() throws {
     #expect(store.storageErrorMessage != nil)
 }
 
-// The store's own delete guard, exercised against a record that exists — `delete` calls
-// `removeRecordingDirectory` BEFORE it persists the index, so a guard placed anywhere later would
-// destroy the audio and merely decline to save. The stub performs the real removal so that a missing
-// guard actually costs the file on disk, not just a flag (F187).
+// The store's own delete guard, exercised against a record that exists — `delete` once called its
+// remover BEFORE it persisted the index, so a guard placed anywhere later would destroy the audio and
+// merely decline to save. The stub on the delete's first file-system step (the set-aside rename, F609)
+// performs the real move, so that a missing guard actually costs the file its place, not just a flag
+// (F187).
 @Test("Deleting a real meeting while degraded removes neither its audio nor its record")
 @MainActor
 func degradedDeleteKeepsRealAudioAndRecord() throws {
@@ -113,9 +114,9 @@ func degradedDeleteKeepsRealAudioAndRecord() throws {
     let audio = root.appendingPathComponent(meeting.recordingPath)
     try #require(FileManager.default.fileExists(atPath: audio.path))
     var removalAttempted = false
-    store.removeRecordingDirectory = { url in
+    store.setRecordingDirectoryAside = { url in
         removalAttempted = true
-        try FileManager.default.removeItem(at: url)
+        return try MeetingStore.moveAsideForDeletion(url)
     }
     let before = store.persistCount
 

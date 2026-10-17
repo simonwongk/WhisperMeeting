@@ -128,7 +128,7 @@ private func foreignWriterRetitles(in root: URL) throws {
 }
 
 /// The same rival committing `change` over what it has just read. Called from a
-/// `removeRecordingDirectory` stub, it lands between a kept-folder delete's two saves, as the rival
+/// `setRecordingDirectoryAside` stub, it lands between a kept-folder delete's two saves, as the rival
 /// in F642's `lostRestoringSaveOffersTheKeptRowBack` does.
 private func foreignWriterCommits(in root: URL, _ change: ([MeetingRecord]) -> [MeetingRecord]) throws {
     let rival = BackupJSONStore<[MeetingRecord]>(
@@ -156,7 +156,7 @@ func keptFolderDeleteLeavesSummaryAndSecondOpinionRunning() async throws {
     #expect(model.requestSecondOpinion(id: id))
     try await waitUntil("both jobs to start") { summaryProbe.started && engineProbe.started }
 
-    model.store.removeRecordingDirectory = { _ in throw FolderStuck() }
+    model.store.setRecordingDirectoryAside = { _ in throw FolderStuck() }
     model.deleteMeetings(ids: [id])
     try #require(model.store.meeting(id: id) != nil, "the delete was meant to be refused, and it went through")
 
@@ -180,7 +180,7 @@ func keptFolderDeleteLeavesTranscriptionRunning() async throws {
     model.beginTranscription(id: id)
     try await waitUntil("the transcription to start") { probe.started }
 
-    model.store.removeRecordingDirectory = { _ in throw FolderStuck() }
+    model.store.setRecordingDirectoryAside = { _ in throw FolderStuck() }
     model.deleteMeetings(ids: [id])
     try #require(model.store.meeting(id: id) != nil, "the delete was meant to be refused, and it went through")
 
@@ -319,7 +319,7 @@ func lostRestoringSaveLeavesTheOfferedRowsTranscriptionRunning() async throws {
 
     let theirs = MeetingRecord(id: UUID(), title: "The other copy's meeting", recordingPath: "none", status: .recorded)
     let alsoTheirs = MeetingRecord(id: UUID(), title: "The other copy's second meeting", recordingPath: "none", status: .recorded)
-    model.store.removeRecordingDirectory = { _ in
+    model.store.setRecordingDirectoryAside = { _ in
         try foreignWriterCommits(in: root) { $0 + [theirs] }
         throw FolderStuck()
     }

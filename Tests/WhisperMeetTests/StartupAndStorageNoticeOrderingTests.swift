@@ -77,9 +77,9 @@ func repeatedStorageFailureReachesTheWindowlessChannelTwice() throws {
     model.observeStorageErrors()
 
     struct RemovalError: Error {}
-    store.removeRecordingDirectory = { _ in throw RemovalError() }
+    store.setRecordingDirectoryAside = { _ in throw RemovalError() }
 
-    // A meeting with its own recording folder: deleting it while `removeRecordingDirectory` throws
+    // A meeting with its own recording folder: deleting it while `setRecordingDirectoryAside` throws
     // sets `storageErrorMessage` to the SAME text every time, driven only by the title and the kept
     // count — both held constant below.
     func makeFailingMeeting() throws -> UUID {

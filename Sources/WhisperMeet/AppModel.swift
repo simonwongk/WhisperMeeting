@@ -3715,6 +3715,9 @@ final class AppModel: ObservableObject {
         await retryMissingSourceTrackManifests()
         // F295: deletions older than the grace window lose their text from the saved history.
         store.processPendingShreds()
+        // F609: what a delete set aside and could not remove — or a crash left between its rename
+        // and its removal — goes now; anything that still will not go is said.
+        if let remnants = store.sweepSetAsideRecordings() { messages.append(remnants) }
 
         do {
             let recover = recoverInterruptedRecording
