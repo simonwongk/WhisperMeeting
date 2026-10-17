@@ -6925,6 +6925,82 @@ final class AppModel: ObservableObject {
     static let transcriptChangedDuringRulesMessage =
         "The transcript changed while it was being checked against your replacement rules, so nothing is proposed. Choose Apply Replacement Rules again."
 
+    // MARK: - Finished passes, held for their meeting (F1000)
+
+    /// A finished pass's proposals, waiting for their meeting's view to open them as a review sheet.
+    struct HeldProposals: Equatable {
+        let id = UUID()
+        let proposals: [GlossaryCorrection]
+        let source: ProposalReview.Source
+    }
+
+    /// Proposals per meeting that no review sheet has opened yet (F1000). A pass runs in the
+    /// background and the meeting view is keyed by meeting, so a pass that finished after the user
+    /// switched meetings used to present its sheet into a view that no longer existed: the proposals
+    /// were dropped, and nothing said so. The model holds them instead, and the view takes them.
+    @Published private(set) var heldProposals: [UUID: HeldProposals] = [:]
+
+    /// How many windows show each meeting's view now.
+    private var shownMeetingDetails: [UUID: Int] = [:]
+
+    func meetingDetailAppeared(_ id: UUID) {
+        shownMeetingDetails[id, default: 0] += 1
+    }
+
+    func meetingDetailDisappeared(_ id: UUID) {
+        guard let count = shownMeetingDetails[id] else { return }
+        shownMeetingDetails[id] = count > 1 ? count - 1 : nil
+    }
+
+    /// Holds a finished pass's `proposals` for meeting `id`, for its view to open (`takeHeldProposals`).
+    /// When no window shows that meeting, says that the pass finished and where its proposals wait.
+    /// A later pass for the same meeting replaces an unopened one: it was made over the same lines,
+    /// or newer ones.
+    func holdProposals(_ proposals: [GlossaryCorrection], source: ProposalReview.Source, for id: UUID) {
+        heldProposals[id] = HeldProposals(proposals: proposals, source: source)
+        guard (shownMeetingDetails[id] ?? 0) == 0 else { return }
+        alertMessage = Self.proposalsHeldMessage(
+            count: proposals.count, source: source, title: store.meeting(id: id)?.title ?? "the meeting"
+        )
+    }
+
+    /// The proposals held for meeting `id`, removed so one sheet opens them, or nil.
+    func takeHeldProposals(for id: UUID) -> HeldProposals? {
+        heldProposals.removeValue(forKey: id)
+    }
+
+    static func proposalsHeldMessage(count: Int, source: ProposalReview.Source, title: String) -> String {
+        let tool: String
+        switch source {
+        case .vocabulary: tool = "Correct Toward Vocabulary"
+        case .replacementRules: tool = "Apply Replacement Rules"
+        case .localModel: tool = "Correct with Local AI"
+        }
+        let rows = count == 1 ? "1 proposal" : "\(count) proposals"
+        return "\(tool) finished for \u{201C}\(title)\u{201D} after you left it. Open that meeting to review its \(rows)."
+    }
+
+    /// Apply Replacement Rules from the Improve menu (F179, F920, F1000): the pass, then its
+    /// proposals held for the meeting's review sheet — or a message when no rule matched.
+    func reviewReplacementRules(for id: UUID) async {
+        guard let proposals = await replacementRuleCorrections(for: id) else { return }
+        if proposals.isEmpty {
+            alertMessage = "None of your replacement rules matched this transcript."
+        } else {
+            holdProposals(proposals, source: .replacementRules, for: id)
+        }
+    }
+
+    /// Correct Toward Vocabulary from the Improve menu (F82, F536, F1000), in the same shape.
+    func reviewGlossaryCorrections(for id: UUID) async {
+        guard let proposals = await proposeGlossaryCorrections(for: id) else { return }
+        if proposals.isEmpty {
+            alertMessage = "No transcript spans look close to a vocabulary term."
+        } else {
+            holdProposals(proposals, source: .vocabulary, for: id)
+        }
+    }
+
     /// The sentences a review sheet's rows are about (F817), one per row: its line's words around
     /// the place applying it would change, found with the same evidence `applyGlossaryCorrections`
     /// applies with — so a sound-alike Chinese row, which can be another word or another person's

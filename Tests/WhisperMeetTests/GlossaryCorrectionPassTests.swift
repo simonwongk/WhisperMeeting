@@ -221,8 +221,14 @@ func reviewSheetIsKeyedBySet() throws {
     #expect(keyedBySet)
     let advancesOnDismiss = source.contains("onDismiss: { proposalReviews.advance() }")
     #expect(advancesOnDismiss)
+    // Since F1000 every pass hands its proposals to the model (`holdProposals`), and the view
+    // presents only what the model holds for it: one presentation, four hand-overs.
     let presentations = source.components(separatedBy: "proposalReviews.present(ProposalReview(").count - 1
-    #expect(presentations == 4, "Correct Toward Vocabulary, Apply Replacement Rules and both Correct with Local AI paths")
+    #expect(presentations == 1, "only openHeldProposals presents")
+    let handOvers = source.components(separatedBy: "await model.reviewGlossaryCorrections(for: meetingID)").count - 1
+        + source.components(separatedBy: "await model.reviewReplacementRules(for: meetingID)").count - 1
+        + source.components(separatedBy: "model.holdProposals(proposals, source: .localModel, for: meetingID)").count - 1
+    #expect(handOvers == 4, "Correct Toward Vocabulary, Apply Replacement Rules and both Correct with Local AI paths")
     let bareProposalState = source.contains("glossaryProposals")
     #expect(!bareProposalState)
 }
@@ -354,7 +360,8 @@ func reviewSheetReadsPrecomputedSentences() throws {
 @Test("Correct Toward Vocabulary goes through the background pass and its status line has Cancel (F536)")
 func menuUsesTheBackgroundPass() throws {
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
-    let callsThePass = source.contains("await model.proposeGlossaryCorrections(for: meetingID)")
+    // Through `reviewGlossaryCorrections`, which awaits `proposeGlossaryCorrections` (F1000).
+    let callsThePass = source.contains("await model.reviewGlossaryCorrections(for: meetingID)")
     #expect(callsThePass)
     let callsTheOldSyncPass = source.contains("model.glossaryCorrections(for:")
     #expect(!callsTheOldSyncPass)

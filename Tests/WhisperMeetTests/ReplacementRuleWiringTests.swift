@@ -333,7 +333,8 @@ func changedTranscriptDiscardsTheRulesPass() async throws {
 @Test("The Improve menu awaits the rules pass, disables the item while it runs, and the status line names it (F920)")
 func menuRunsTheRulesPassInTheBackground() throws {
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
-    let awaitsThePass = source.contains("await model.replacementRuleCorrections(for: meetingID)")
+    // Through `reviewReplacementRules`, which awaits `replacementRuleCorrections` (F1000).
+    let awaitsThePass = source.contains("await model.reviewReplacementRules(for: meetingID)")
     #expect(awaitsThePass)
     let callsItSynchronously = source.contains("= model.replacementRuleCorrections(for: meetingID)")
     #expect(!callsItSynchronously)
@@ -341,4 +342,77 @@ func menuRunsTheRulesPassInTheBackground() throws {
     #expect(disabledWhileRunning)
     let statusLineNamesIt = source.contains("model.replacementRuleRunID == meetingID")
     #expect(statusLineNamesIt)
+}
+
+@MainActor
+@Test("A rules pass that finishes after the user switched meetings keeps its proposals for that meeting and says so (F1000)")
+func rulesPassFinishingAfterASwitchIsKeptAndSaid() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ReplacementRuleWiringTests-switch-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+    model.store.addReplacementRule(heard: "jon", preferred: "Jonathan")
+    let id = meeting(model, lines: ["jon said hi"])
+    let other = meeting(model, lines: ["nothing here"])
+    let gate = RulesGate()
+    let real = model.replacementRulePass
+    model.replacementRulePass = { input in
+        gate.wait()
+        return real(input)
+    }
+
+    // The meeting is on screen when Apply Replacement Rules is chosen…
+    model.meetingDetailAppeared(id)
+    let pass = Task { await model.reviewReplacementRules(for: id) }
+    let running = await waitUntil { model.replacementRuleRunID == id }
+    try #require(running, "the pass never started")
+    // …and the user switches to another meeting before it finishes (the detail view is keyed by
+    // meeting, so the old one goes away with the sheet it would have opened — F1000).
+    model.meetingDetailDisappeared(id)
+    model.meetingDetailAppeared(other)
+    gate.open()
+    await pass.value
+
+    let message = try #require(model.alertMessage, "nothing said the pass finished")
+    #expect(message.contains("Apply Replacement Rules") && message.contains("1 proposal"))
+    #expect(model.takeHeldProposals(for: other) == nil)
+    // Back on the meeting, the sheet opens with the pass's rows, once.
+    let held = try #require(model.takeHeldProposals(for: id))
+    #expect(held.source == .replacementRules)
+    #expect(held.proposals == [GlossaryCorrection(segmentIndex: 0, from: "jon", to: "Jonathan", proposedLine: "jon said hi")])
+    #expect(model.takeHeldProposals(for: id) == nil)
+}
+
+@MainActor
+@Test("A rules pass that finishes while its meeting is on screen is handed over with no message (F1000)")
+func rulesPassFinishingOnScreenIsHandedOverQuietly() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ReplacementRuleWiringTests-onscreen-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+    model.store.addReplacementRule(heard: "jon", preferred: "Jonathan")
+    let id = meeting(model, lines: ["jon said hi"])
+    model.meetingDetailAppeared(id)
+    await model.reviewReplacementRules(for: id)
+    #expect(model.alertMessage == nil)
+    #expect(model.takeHeldProposals(for: id)?.proposals.count == 1)
+    // A pass that matches nothing says so, as the menu item always did, and holds nothing.
+    let none = meeting(model, lines: ["nothing here"])
+    model.meetingDetailAppeared(none)
+    await model.reviewReplacementRules(for: none)
+    #expect(model.alertMessage == "None of your replacement rules matched this transcript.")
+    #expect(model.takeHeldProposals(for: none) == nil)
+}
+
+@Test("The meeting view hands every finished pass to the model and opens what the model holds for it (F1000)")
+func meetingViewOpensHeldProposals() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    #expect(source.contains("await model.reviewReplacementRules(for: meetingID)"))
+    #expect(source.contains("await model.reviewGlossaryCorrections(for: meetingID)"))
+    #expect(source.contains("model.meetingDetailAppeared(meetingID)"))
+    #expect(source.contains("model.meetingDetailDisappeared(meetingID)"))
+    #expect(source.contains("model.takeHeldProposals(for: meetingID)"))
+    // No pass presents into the view's own queue directly any more: a view that went away took
+    // the sheet with it.
+    #expect(!source.contains("proposalReviews.present(ProposalReview(proposals: proposals"))
 }

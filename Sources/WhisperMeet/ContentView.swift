@@ -3082,9 +3082,22 @@ private struct TranscriptDetailView: View {
                 notesDraft = SharedFieldDraft(stored: store.meeting(id: meetingID)?.notes ?? "")
                 notesLoadedFor = meetingID
             }
+            // F1000: a pass that finished while another meeting was shown waits in the model.
+            model.meetingDetailAppeared(meetingID)
+            openHeldProposals()
         }
+        .onChange(of: model.heldProposals[meetingID]?.id) { openHeldProposals() }
         // Persist a pending notes edit if the view goes away before the debounce fires (F133).
-        .onDisappear { store.flushPendingEdits() }
+        .onDisappear {
+            store.flushPendingEdits()
+            model.meetingDetailDisappeared(meetingID)
+        }
+    }
+
+    /// Opens what the model holds for this meeting as a review sheet (F1000), or after the open one.
+    private func openHeldProposals() {
+        guard let held = model.takeHeldProposals(for: meetingID) else { return }
+        proposalReviews.present(ProposalReview(proposals: held.proposals, source: held.source))
     }
 
     /// Tags as directly manipulable chips (F171). Tags are labels for organizing/filtering — never
@@ -3328,7 +3341,7 @@ private struct TranscriptDetailView: View {
                     model.alertMessage = "The local model found nothing to correct against that reference."
                 }
             } else {
-                proposalReviews.present(ProposalReview(proposals: proposals, source: .localModel))
+                model.holdProposals(proposals, source: .localModel, for: meetingID)
             }
         }
     }
@@ -3970,15 +3983,9 @@ private struct TranscriptDetailView: View {
             .disabled(isSuggestingVocab || suggestVocabularyBlockedReason != nil)
             Button {
                 // F536: off the main actor, with progress and Cancel in the status line below the
-                // header. A cancelled pass returns nil and says nothing.
-                Task {
-                    guard let proposals = await model.proposeGlossaryCorrections(for: meetingID) else { return }
-                    if proposals.isEmpty {
-                        model.alertMessage = "No transcript spans look close to a vocabulary term."
-                    } else {
-                        proposalReviews.present(ProposalReview(proposals: proposals, source: .vocabulary))
-                    }
-                }
+                // header. A cancelled pass returns nil and says nothing. F1000: the model holds
+                // the result for this meeting, so switching meetings meanwhile loses nothing.
+                Task { await model.reviewGlossaryCorrections(for: meetingID) }
             } label: {
                 Label("Correct Toward Vocabulary…", systemImage: "wand.and.stars")
             }
@@ -3987,14 +3994,8 @@ private struct TranscriptDetailView: View {
             Button {
                 // F920: off the main actor, named in the status line below the header while it
                 // runs; nil when the transcript changed meanwhile, and the model has said so.
-                Task {
-                    guard let proposals = await model.replacementRuleCorrections(for: meetingID) else { return }
-                    if proposals.isEmpty {
-                        model.alertMessage = "None of your replacement rules matched this transcript."
-                    } else {
-                        proposalReviews.present(ProposalReview(proposals: proposals, source: .replacementRules))
-                    }
-                }
+                // F1000: held by the model for this meeting, as Correct Toward Vocabulary's is.
+                Task { await model.reviewReplacementRules(for: meetingID) }
             } label: {
                 Label("Apply Replacement Rules…", systemImage: "arrow.left.arrow.right")
             }
@@ -4011,7 +4012,7 @@ private struct TranscriptDetailView: View {
                                 model.alertMessage = "The local model found nothing to correct."
                             }
                         } else {
-                            proposalReviews.present(ProposalReview(proposals: proposals, source: .localModel))
+                            model.holdProposals(proposals, source: .localModel, for: meetingID)
                         }
                     }
                 } label: {
