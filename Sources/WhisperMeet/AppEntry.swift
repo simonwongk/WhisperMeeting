@@ -95,6 +95,10 @@ struct WhisperMeetApp: App {
         // F529, F672: what a quit does about a recording, through the one function the quit tests
         // call too (F810).
         lifecycle.wireQuitDuringRecording(to: model) { QuitDuringRecordingAlert.ask() }
+        // F620: a quit whose save is refused asks before the changes are lost.
+        lifecycle.wireQuitWithUnsavedChanges(to: model) { count, reason in
+            QuitWithUnsavedChangesAlert.ask(count: count, reason: reason)
+        }
         AppLifecycleDelegate.lifecycle = lifecycle
         AppLifecycleDelegate.flushFilesOpenedBeforeLaunchFinished()
         lifecycle.begin()
@@ -216,6 +220,16 @@ extension AppLifecycle {
     /// Those tests used to build their own copy of these closures, so setting the app's
     /// `isRecordingFinishing` back to the predicate F672 replaced left every one of them green: the
     /// round-2 review's mutation M6 (F810). Calling this, they test the app's own wiring.
+    /// F620: a quit saves first and, only when a save refused changes, asks before they are lost.
+    func wireQuitWithUnsavedChanges(to model: AppModel, ask: @escaping (Int, String?) -> Bool) {
+        changesUnsavedAfterSavingForQuit = { [weak model] in
+            guard let model else { return 0 }
+            model.flushPendingWrites()
+            return model.store.unsavedMeetingChangeCount
+        }
+        confirmQuitWithUnsavedChanges = { [weak model] count in ask(count, model?.store.storageErrorMessage) }
+    }
+
     func wireQuitDuringRecording(
         to model: AppModel,
         ask: @escaping () -> QuitDuringRecordingChoice

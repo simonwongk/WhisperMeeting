@@ -156,6 +156,15 @@ public final class AppLifecycle: ObservableObject {
     /// Stops the live recording and saves it as a meeting. Returns whether the app may quit now.
     public var onStopRecordingForQuit: (() async -> Bool)?
 
+    // MARK: - Quitting with changes a save refused (F620)
+
+    /// Saves what is pending and returns how many changes are still unsaved afterwards — the ones a
+    /// save refused. Called on every quit that is not about a live recording.
+    public var changesUnsavedAfterSavingForQuit: (() -> Int)?
+
+    /// Asks whether to quit anyway with `count` changes unsaved. True quits.
+    public var confirmQuitWithUnsavedChanges: ((Int) -> Bool)?
+
     /// True from a "Stop & Quit" until its one reply has been sent.
     public private(set) var isStoppingForQuit = false
     /// True while the question is on screen.
@@ -191,7 +200,7 @@ public final class AppLifecycle: ObservableObject {
         // launch to rebuild. So it takes the same single-reply path as Stop & Quit, whose stop
         // (`AppModel.stopRecordingBeforeQuit`) waits for the one under way instead of starting one.
         if isRecordingFinishing?() == true { return stopThenReply(reply) }
-        guard isRecordingLive?() == true else { return .terminateNow }
+        guard isRecordingLive?() == true else { return quitAfterSaving() }
         isAskingAboutQuit = true
         // Unwired means a wiring bug, not a user who wants to keep recording: saving and quitting is
         // the answer that neither loses the meeting nor traps the user in an app that will not quit.
@@ -199,6 +208,17 @@ public final class AppLifecycle: ObservableObject {
         isAskingAboutQuit = false
         guard choice == .stopAndQuit else { return .terminateCancel }
         return stopThenReply(reply)
+    }
+
+    /// An ordinary quit (F620): save what is pending, and only when a save refused changes ask before
+    /// they are lost. Synchronous, so it needs no `reply`. Unwired, it quits as before.
+    private func quitAfterSaving() -> NSApplication.TerminateReply {
+        let unsaved = changesUnsavedAfterSavingForQuit?() ?? 0
+        guard unsaved > 0 else { return .terminateNow }
+        isAskingAboutQuit = true
+        let quit = confirmQuitWithUnsavedChanges?(unsaved) ?? true
+        isAskingAboutQuit = false
+        return quit ? .terminateNow : .terminateCancel
     }
 
     /// The one asynchronous path: stop (or wait for the stop under way), then reply exactly once.
@@ -241,6 +261,34 @@ enum QuitDuringRecordingAlert {
         alert.addButton(withTitle: keepRecordingTitle)
         alert.addButton(withTitle: stopAndQuitTitle)
         return alert.runModal() == .alertSecondButtonReturn ? .stopAndQuit : .keepRecording
+    }
+}
+
+/// The question F620 asks before a quit loses changes a save refused. AppKit, like
+/// `QuitDuringRecordingAlert`: the count it is given and the answer it returns are the seam.
+@MainActor
+enum QuitWithUnsavedChangesAlert {
+    static func message(count: Int) -> String {
+        count == 1 ? "1 change could not be saved. Quit anyway?" : "\(count) changes could not be saved. Quit anyway?"
+    }
+    static let quitAnywayTitle = "Quit Anyway"
+    static let cancelTitle = "Cancel"
+
+    static func information(reason: String?) -> String {
+        let why = reason.map { " \($0)" } ?? ""
+        return "WhisperMeet tried to save your meeting changes before quitting and could not.\(why) If you quit now, those changes are lost. Cancel keeps WhisperMeet open."
+    }
+
+    /// Asks, modally. Cancel is the default: losing changes takes a deliberate click.
+    static func ask(count: Int, reason: String?) -> Bool {
+        NSApp.activate()
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = message(count: count)
+        alert.informativeText = information(reason: reason)
+        alert.addButton(withTitle: cancelTitle)
+        alert.addButton(withTitle: quitAnywayTitle)
+        return alert.runModal() == .alertSecondButtonReturn
     }
 }
 

@@ -1415,6 +1415,17 @@ final class MeetingStore: ObservableObject {
         return false
     }
 
+    /// How many meetings differ from what last reached disk, while a save has been refused (F620):
+    /// added, removed or changed since `lastPersistedMeetings`. At least 1 while `unsavedChanges`,
+    /// so a refused save is never counted as nothing; 0 otherwise.
+    var unsavedMeetingChangeCount: Int {
+        guard unsavedChanges else { return 0 }
+        let saved = Dictionary(lastPersistedMeetings.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let now = Dictionary(meetings.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let changed = Set(saved.keys).union(now.keys).filter { saved[$0] != now[$0] }
+        return max(1, changed.count)
+    }
+
     /// Why Back Up Library must wait for a read-only list, or nil when both loaded cleanly (F611).
     func backupRefusalForReadOnlyList() -> String? {
         for list in [EditableList.vocabulary, .replacementRules] where isListReadOnly(list) {
