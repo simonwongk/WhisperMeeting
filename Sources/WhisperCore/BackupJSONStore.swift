@@ -1147,10 +1147,10 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
     /// its bytes do not match the fingerprint in its name, or it is not a JSON array.
     private func elementCount(at url: URL, fingerprint: String) -> Int? {
         guard let bytes = try? io.read(url, .readHistoryEntry),
-              io.fingerprint(bytes) == fingerprint,
-              let elements = (try? JSONSerialization.jsonObject(with: bytes)) as? [Any]
+              io.fingerprint(bytes) == fingerprint
         else { return nil }
-        return elements.count
+        // Counted, not parsed (F854): a parse builds an object graph of the whole index to read one number.
+        return JSONArrayCount.topLevelElements(in: bytes)
     }
 
     /// Sweeps only OUR OWN stale temporaries — Foundation cleans up its own `.atomic` temps, and

@@ -289,8 +289,11 @@ public struct StoreHistory: Sendable {
     }
 
     /// The number of top-level elements in verified bytes that hold a JSON array, or nil (F854).
+    /// Counted from the bytes rather than parsed: Recover Library calls this on the main actor while
+    /// its sheet opens, and a parse built an object graph of every undescribed generation — hundreds
+    /// of MB at 1,000 meetings — to read one number from each.
     private static func elementCount(_ bytes: Data) -> Int? {
-        ((try? JSONSerialization.jsonObject(with: bytes)) as? [Any])?.count
+        JSONArrayCount.topLevelElements(in: bytes)
     }
 
     /// The bytes of one generation, verified against its own name first.
