@@ -4669,7 +4669,9 @@ final class AppModel: ObservableObject {
                 healthReport: artifact.healthReport,
                 // F292: the same field startup recovery uses for a sleep, so the meeting page and
                 // notes.md say why this recording is short whichever way it was saved.
-                recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil
+                recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil,
+                // F786: made now, so the zone the Mac is in now is the one it was held in.
+                createdTimeZone: TimeZone.current.identifier
             )
             // A result, not an edit (F662): saved even while a conflict banner is up, which used to
             // leave the meeting out of the list with its audio on disk and nothing said.
@@ -4776,7 +4778,8 @@ final class AppModel: ObservableObject {
                         markers: recoveredMarkers,
                         recoveryWarning: recoveryWarning,
                         recoverySource: recovered.source.rawValue,
-                        recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil
+                        recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil,
+                        createdTimeZone: TimeZone.current.identifier   // F786: this Stop, so now
                     ), as: .result)
                     // F477: this recovery path also upserts a meeting using `title`, so it must
                     // also clear the field the fallback read from — see the success path above.
@@ -6147,7 +6150,8 @@ final class AppModel: ObservableObject {
             status: .recorded,
             tags: Self.provenanceTags(for: source),
             source: source,
-            referenceSegments: (referenceSegments?.isEmpty ?? true) ? nil : referenceSegments
+            referenceSegments: (referenceSegments?.isEmpty ?? true) ? nil : referenceSegments,
+            createdTimeZone: TimeZone.current.identifier   // F786: imported now, in this zone
         ), as: .result)   // F662: the copy is done; saved even while a conflict banner is up
         isImporting = false
         refreshRuntime()

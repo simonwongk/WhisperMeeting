@@ -12,8 +12,8 @@ public enum MeetingNotesExporter {
     /// switching the Mac's language or 12/24-hour setting rewrote every notes.md, and a trip moved
     /// every meeting's recorded time with nothing in the file to say why. Now only a time-zone
     /// change alters the text, once per sidecar, and the offset says what changed: the instant is
-    /// the same either way. Staying in one zone for good would need the creation zone in the index,
-    /// a persisted field; not done here.
+    /// the same either way. A meeting whose creation zone is in the index is shown in that zone
+    /// for good (`MeetingRecord.createdTimeZone`, F786); the caller picks the zone.
     public static func dateText(for date: Date, timeZone: TimeZone) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")

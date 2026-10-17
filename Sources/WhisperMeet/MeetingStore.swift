@@ -270,6 +270,14 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// (`SubtitleParser` strips speaker labels). Nothing reads this yet: no view shows it, and Second
     /// Opinion compares engine against engine without it (F491). Optional so old indexes decode (F183).
     var referenceSegments: [TranscriptSegment]?
+    /// The time zone this Mac was in when the meeting was made, as a tz database identifier
+    /// ("Asia/Shanghai"), so notes.md can show the meeting at the time its participants saw (F786).
+    /// Set only where the meeting is made at the moment it happened — a recording's stop, an import;
+    /// nil for a meeting rebuilt or recovered at a later launch, whose zone nobody wrote down then.
+    /// A plain string, so an identifier this build's tz database lacks still decodes and round-trips;
+    /// `recordedTimeZone` reads it as unknown. Optional and append-only: an index without it decodes,
+    /// and the build before it skips the key and drops it on its next save (F188).
+    var createdTimeZone: String?
 
     init(
         id: UUID = UUID(),
@@ -301,7 +309,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         transcriptionEngine: MeetingTranscriptionEngine? = nil,
         requestedLanguage: String? = nil,
         source: MediaSource? = nil,
-        referenceSegments: [TranscriptSegment]? = nil
+        referenceSegments: [TranscriptSegment]? = nil,
+        createdTimeZone: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -333,6 +342,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.requestedLanguage = requestedLanguage
         self.source = source
         self.referenceSegments = referenceSegments
+        self.createdTimeZone = createdTimeZone
     }
 
     /// Hand-written so `transcriptionEngineRawValue` persists under its original on-disk name
@@ -365,6 +375,14 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         // moment the property existed without this line.
         case requestedLanguage
         case transcriptionEngineRawValue = "transcriptionEngine"
+        // F786: listed for the F304 reason above.
+        case createdTimeZone
+    }
+
+    /// `createdTimeZone` as a zone, or nil when it was never recorded or this Mac's tz database
+    /// does not know it — the caller then falls back to the Mac's current zone (F786).
+    var recordedTimeZone: TimeZone? {
+        createdTimeZone.flatMap(TimeZone.init(identifier:))
     }
 
     /// Markers sorted by offset (empty when none). Convenience for the UI and exports.
@@ -1055,7 +1073,9 @@ final class MeetingStore: ObservableObject {
     /// Returns whether a file was actually written. `nonisolated` — pure path/string/file work over a
     /// `Sendable` record — so the startup backfill can run it detached while the cheap per-edit
     /// debounce path calls it synchronously on the actor (F198).
-    private nonisolated static func writeSidecarIfStale(for meeting: MeetingRecord, root: URL) -> Bool {
+    nonisolated static func writeSidecarIfStale(
+        for meeting: MeetingRecord, root: URL, timeZone: TimeZone = .autoupdatingCurrent
+    ) -> Bool {
         guard !meeting.recordingPath.isEmpty else { return false }
         let directory = root
             .appendingPathComponent(meeting.recordingPath)
@@ -1067,7 +1087,7 @@ final class MeetingStore: ObservableObject {
         guard isWithinLibrary(directory, root: root),
               directory.standardizedFileURL != root.standardizedFileURL,
               FileManager.default.fileExists(atPath: directory.path) else { return false }
-        let composed = composeNotes(for: meeting)
+        let composed = composeNotes(for: meeting, timeZone: timeZone)
         let sidecarURL = directory.appendingPathComponent("notes.md")
         if let existing = try? String(contentsOf: sidecarURL, encoding: .utf8), existing == composed {
             return false
@@ -1142,13 +1162,15 @@ final class MeetingStore: ObservableObject {
     /// The one composition of a meeting's human-readable notes document (F198). The manual Export…
     /// button and the automatic sidecar (debounced flush and detached backfill alike) all route
     /// through here, so none can drift. `nonisolated` so the backfill can compose off the actor.
-    /// The date names its UTC offset (`MeetingNotesExporter.dateText`), so a time-zone change
-    /// rewrites each sidecar once, visibly, and the Mac's language or 12/24-hour setting no longer
-    /// changes the date at all (F568); `timeZone` is injectable only so a test can pin it.
+    /// The date names its UTC offset (`MeetingNotesExporter.dateText`), and the Mac's language or
+    /// 12/24-hour setting never changes it (F568). It is shown in the zone the meeting was made in
+    /// when that was recorded (F786), so a trip changes nothing; otherwise in `timeZone`, the Mac's
+    /// current zone, so a time-zone change rewrites that sidecar once, visibly. `timeZone` is
+    /// injectable only so a test can pin it.
     nonisolated static func composeNotes(for meeting: MeetingRecord, timeZone: TimeZone = .autoupdatingCurrent) -> String {
         MeetingNotesExporter.markdown(
             title: meeting.title,
-            dateText: MeetingNotesExporter.dateText(for: meeting.createdAt, timeZone: timeZone),
+            dateText: MeetingNotesExporter.dateText(for: meeting.createdAt, timeZone: meeting.recordedTimeZone ?? timeZone),
             durationSeconds: meeting.duration,
             languageCode: meeting.languageCode,
             summary: meeting.summary,

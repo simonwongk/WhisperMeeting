@@ -155,7 +155,8 @@ func theWireKeySetIsPinned() throws {
         summaryLanguageWarning: "sl",
         repeatsRemoved: 3,
         transcriptionEngine: .whisperLarge,
-        requestedLanguage: WhisperLanguage.chinese.rawValue
+        requestedLanguage: WhisperLanguage.chinese.rawValue,
+        createdTimeZone: "Asia/Shanghai"
     )
     let object = try #require(
         try JSONSerialization.jsonObject(with: encoder.encode(record)) as? [String: Any]
@@ -169,17 +170,18 @@ func theWireKeySetIsPinned() throws {
         "transcriptNormalized", "markers", "pinned", "notes", "tags", "alignmentWarning",
         "recoveryWarning", "recoverySource", "staleTranscriptWarning", "recoveryInterruption",
         "languageWarning", "summaryLanguageWarning", "repeatsRemoved", "transcriptionEngine", "requestedLanguage",
+        "createdTimeZone",
     ]
-    // 27 keys for 31 stored fields: `summary`, `healthReport`, `source` and `referenceSegments` are
+    // 28 keys for 32 stored fields: `summary`, `healthReport`, `source` and `referenceSegments` are
     // nil here, and a nil optional is omitted rather than written as null — so they are absent by
     // design, not by omission from `CodingKeys`.
     //
-    // These counts are the part that went stale, so they are stated rather than implied: 31 is what
+    // These counts are the part that went stale, so they are stated rather than implied: 32 is what
     // `Mirror` reports, which `everyStoredFieldIsEncoded` reads directly. If this literal disagrees
     // with the wire format again, that test is the one that will say which field.
     // (The prose count above was 23/27 before F188 added `schemaVersion`, 24/28 before F422 added
-    // `repeatsRemoved`, 25/29 before F471 added `requestedLanguage`, and 26/30 before F467 added
-    // `summaryLanguageWarning`. This line said "26 comes from Mirror" until F422; it was 28 at the
+    // `repeatsRemoved`, 25/29 before F471 added `requestedLanguage`, 26/30 before F467 added
+    // `summaryLanguageWarning`, and 27/31 before F786 added `createdTimeZone`. This line said "26 comes from Mirror" until F422; it was 28 at the
     // time.)
     #expect(Set(object.keys) == expected,
             "a persisted field changed its on-disk name or stopped being written")

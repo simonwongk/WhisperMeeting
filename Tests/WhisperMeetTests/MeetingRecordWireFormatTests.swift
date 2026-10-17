@@ -73,7 +73,8 @@ private func fullyPopulatedRecord() -> MeetingRecord {
             host: "example.com",
             fetchedAt: Date(timeIntervalSince1970: 1_700_000_000)
         ),
-        referenceSegments: [TranscriptSegment(speaker: nil, start: 0, end: 1, text: "hello")]
+        referenceSegments: [TranscriptSegment(speaker: nil, start: 0, end: 1, text: "hello")],
+        createdTimeZone: "Asia/Shanghai"
     )
 }
 

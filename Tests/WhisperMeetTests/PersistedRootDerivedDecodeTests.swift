@@ -382,7 +382,8 @@ struct PersistedRootDerivedDecodeTests {
                 uploadDate: date,
                 fetchedAt: date
             ),
-            referenceSegments: [segment]
+            referenceSegments: [segment],
+            createdTimeZone: "Asia/Shanghai"
         )
     }
 
