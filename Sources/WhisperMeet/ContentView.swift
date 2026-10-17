@@ -6,6 +6,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WhisperCore
 
+/// The settings domain of this process's library (F550, F746): `.standard` normally, a suite of its
+/// own under `WHISPERMEET_LIBRARY`. Every `@AppStorage` names it (`everyAppStorageNamesItsStore`).
+/// Opened once, as `AppModel`'s is, rather than on every view initialization.
+private let libraryDefaults = WhisperMeetLibrary.defaults()
+
 private enum SidebarItem: Hashable {
     case record
     case vocabulary
@@ -1431,6 +1436,9 @@ struct SettingsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var apiKeyDraft = ""
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// What the login item was last set to, or read as (F792), so putting the switch back after a
+    /// refusal is not taken for a new request.
+    @State private var launchAtLoginApplied = SMAppService.mainApp.status == .enabled
     /// Change: choosing a new trigger key (F521, F653).
     @StateObject private var triggerChooser = DictationTriggerChooser()
 
@@ -1912,15 +1920,21 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Toggle("Launch at login", isOn: $launchAtLogin)
+                    // F749: the login item is the app's, not this library's.
+                    .disabled(model.libraryIsMoved)
                     .onChange(of: launchAtLogin) { _, enabled in
-                        do {
-                            if enabled { try SMAppService.mainApp.register() }
-                            else { try SMAppService.mainApp.unregister() }
-                        } catch {
-                            model.alertMessage = "Could not update launch-at-login: \(error.localizedDescription)"
-                            launchAtLogin = (SMAppService.mainApp.status == .enabled)
-                        }
+                        // F792: through the model, which reports a refusal even with no library
+                        // window open. Putting the switch back re-runs this; `launchAtLoginApplied`
+                        // makes that a no-op rather than a second, opposite change.
+                        guard enabled != launchAtLoginApplied else { return }
+                        launchAtLoginApplied = model.setLaunchAtLogin(enabled)
+                        if launchAtLogin != launchAtLoginApplied { launchAtLogin = launchAtLoginApplied }
                     }
+                if model.libraryIsMoved {
+                    Text("Launch at login belongs to the app itself, not to this library, so it can't be changed while WhisperMeet is open on a library set by WHISPERMEET_LIBRARY.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 HStack {
                     Label(
                         dictation.isAccessibilityTrusted ? "Accessibility granted" : "Accessibility needed",
@@ -2974,10 +2988,12 @@ private struct TranscriptDetailView: View {
     // F220: the disclosure shown before every speaker analysis — the inverse of `confirmSummarize`,
     // which warns that content leaves this Mac.
     @State private var confirmDiarization = false
-    @AppStorage("summaryStyle") private var summaryStyle: SummaryStyle = .balanced
+    // F746: in the library's own settings domain, as everything else is since F550, so a rehearsal
+    // copy (`WHISPERMEET_LIBRARY`) neither reads nor changes the real library's choice.
+    @AppStorage("summaryStyle", store: libraryDefaults) private var summaryStyle: SummaryStyle = .balanced
     // F178: the meeting template reshapes the summary's structure (independent of the length/emphasis
     // that `summaryStyle` controls). Persisted like the style; local-only.
-    @AppStorage("summaryTemplate") private var summaryTemplate: MeetingTemplate = .general
+    @AppStorage("summaryTemplate", store: libraryDefaults) private var summaryTemplate: MeetingTemplate = .general
     @State private var transcriptMode: TranscriptMode = .read
     @State private var vocabularySuggestions: [String]?
     @State private var proposalReviews = ProposalReviewQueue()

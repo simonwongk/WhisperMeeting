@@ -456,6 +456,15 @@ final class AppModel: ObservableObject {
         AppModel.liveWindowFacts()
     }
 
+    /// The app's login item, for Settings' Launch at login (F792). A seam so a test never registers
+    /// the real app.
+    var loginItem: LoginItemControl = .mainApp
+
+    /// Whether `WHISPERMEET_LIBRARY` moved this process's library (F749): a rehearsal copy. Read once;
+    /// a test sets it. Launch at login belongs to the app bundle, not to a library, so a rehearsal
+    /// must not switch it.
+    var libraryIsMoved: Bool = WhisperMeetLibrary.isMoved()
+
     /// Where the windows stand for the user right now, or nil with no `NSApp` (F528).
     private func currentWindowPresence() -> WindowlessAlert.WindowPresence? {
         windowFacts().map { WindowlessAlert.presence(of: $0.windows, appIsActive: $0.appIsActive) }

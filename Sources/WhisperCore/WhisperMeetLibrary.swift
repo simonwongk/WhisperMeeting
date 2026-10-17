@@ -40,8 +40,8 @@ public enum WhisperMeetLibrary {
     /// setting by setting, so a moved library starts from default settings and keeps its own.
     ///
     /// Only what is handed this value moves: `AppModel`'s and `DictationController`'s production
-    /// initializers. `ContentView`'s two `@AppStorage` values (summary style and template) read
-    /// `.standard` directly and are still shared.
+    /// initializers, and since F746 `ContentView`'s `@AppStorage` values (summary style and template),
+    /// which `everyAppStorageNamesItsStore` holds to it.
     ///
     /// `openSuite` is for tests; nil opens the real suite. A suite opened by this name is a plist in the user's real
     /// `~/Library/Preferences`, and `removePersistentDomain` empties that file without deleting it
@@ -85,6 +85,13 @@ public enum WhisperMeetLibrary {
             hash = hash &* 0x0000_0100_0000_01b3
         }
         return "WhisperMeet.library-" + String(format: "%016llx", hash)
+    }
+
+    /// Whether `WHISPERMEET_LIBRARY` moved the library (F749): the same predicate the files and the
+    /// settings use, so a control that must not act in a rehearsal copy agrees with them about
+    /// whether this is one.
+    public static func isMoved(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        movedRoot(environment: environment) != nil
     }
 
     /// The root `WHISPERMEET_LIBRARY` names, or nil when it is unset, blank or relative. One

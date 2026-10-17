@@ -239,10 +239,10 @@ and `Models/`, and since F550 its settings. They are kept in a preferences domai
 directory's path, named `WhisperMeet.library-` and 16 hex digits, which the script prints. The
 rehearsal therefore starts with default settings, in which the watched folder and dictation are off.
 Unless you turn the watched folder on inside the rehearsal, it cannot take a file from your watched
-folder, and its settings changes do not reach your real ones. Three exceptions remain: the summary
-style and meeting template are still shared; so is the Claude API key, which is in the Keychain; and
-so is *Launch at login*, which registers the app itself as a login item (`SMAppService`), so
-switching it in the rehearsal switches it for your real copy.
+folder, and its settings changes do not reach your real ones. One exception remains: the Claude API
+key, which is in the Keychain, is shared. *Launch at login* registers the app itself as a login item
+(`SMAppService`), not a library, so it is switched off in the rehearsal: the switch is disabled there
+and says why.
 The path must be absolute. Setting `HOME` does **not** do this, because macOS resolves Application
 Support from the account, not from `HOME`.
 
