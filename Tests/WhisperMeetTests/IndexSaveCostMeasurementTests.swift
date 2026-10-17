@@ -104,6 +104,71 @@ func indexSaveCostAtScale() throws {
     report("debounced notes flush: \(ms(flush))")
 }
 
+/// F907 — what the week-later shred of one deleted meeting costs the launch at the same scale, opt-in
+/// for the same reasons:
+///
+/// ```
+/// F907_MEASURE=1 swift test … --filter shredCostAtScale
+/// ```
+///
+/// The history is what the shipping retention keeps after a run of ordinary saves: the newest three
+/// generations, the high-water pin, and the backup (an age anchor needs a generation older than an
+/// hour, which a fixture made in seconds cannot have, so the count is stated, not assumed).
+@MainActor
+@Test(
+    "Shred-on-delete cost at a 1,000-meeting library (F907)",
+    .enabled(if: ProcessInfo.processInfo.environment["F907_MEASURE"] == "1")
+)
+func shredCostAtScale() throws {
+    let environment = ProcessInfo.processInfo.environment
+    let meetingCount = environment["F526_MEETINGS"].flatMap(Int.init) ?? 1_000
+    let segmentCount = environment["F526_SEGMENTS"].flatMap(Int.init) ?? 700
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F907Bench-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    var records = syntheticLibrary(meetings: meetingCount, segments: segmentCount)
+    let seed = BackupJSONStore<[MeetingRecord]>(
+        primaryURL: root.appendingPathComponent("meetings.json"),
+        backupURL: root.appendingPathComponent("meetings.backup.json"),
+        recordCount: { $0.count }
+    )
+    for save in 0..<6 {
+        records[save].title += " (edit \(save))"
+        try seed.save(records)
+    }
+    let store = MeetingStore(rootDirectory: root, transcriptWriteDebounce: 3_600)
+    try #require(store.meetings.count == meetingCount && store.health == .complete)
+    let doomed = store.meetings[meetingCount / 2].id
+    try #require(store.delete(ids: [doomed]) == [doomed])
+    let history = root.appendingPathComponent("meetings.history")
+    let generations = ((try? FileManager.default.contentsOfDirectory(atPath: history.path)) ?? [])
+        .filter { $0.hasSuffix(".json") }.count
+    let bytes = try Data(contentsOf: root.appendingPathComponent("meetings.json")).count
+    report("library: \(meetingCount) meetings x \(segmentCount) segments, \(megabytes(bytes)) index, \(generations) history generations + backup")
+
+    // Components on one generation's bytes, each alone.
+    let index = try Data(contentsOf: root.appendingPathComponent("meetings.json"))
+    let other: Set<String> = [store.meetings[0].id.uuidString]
+    var parsed: Any?
+    let parse = try measure { parsed = try JSONSerialization.jsonObject(with: index) }
+    report("JSONSerialization parse of the index: \(ms(parse))")
+    let reserialize = try measure {
+        _ = try JSONSerialization.data(withJSONObject: parsed as Any, options: [.prettyPrinted, .sortedKeys])
+    }
+    report("JSONSerialization pretty+sorted re-serialize: \(ms(reserialize))")
+    parsed = nil
+    let shredOne = try measure { _ = JSONArrayShred.removingElements(withIDs: other, from: index) }
+    report("JSONArrayShred.removingElements, one id, one generation: \(ms(shredOne))")
+
+    let week = Int(MeetingStore.shredGracePeriod)
+    var shredded: [UUID] = []
+    let shred = try measure { shredded = store.processPendingShreds(now: Int(Date().timeIntervalSince1970) + week + 60) }
+    try #require(shredded == [doomed], "the shred must actually run")
+    report("week-later shred of one deleted meeting (processPendingShreds, main actor): \(ms(shred))")
+}
+
 /// `meetings` transcribed meetings of `segments` segments each.
 private func syntheticLibrary(meetings: Int, segments: Int) -> [MeetingRecord] {
     (0..<meetings).map { m in

@@ -3715,8 +3715,6 @@ final class AppModel: ObservableObject {
         // F753: an indexed capture whose `stop()` failed to write `source-tracks.json` gets it from
         // the alignment its session kept. A restore cannot begin meanwhile (F612).
         await retryMissingSourceTrackManifests()
-        // F295: deletions older than the grace window lose their text from the saved history.
-        store.processPendingShreds()
         // F609: what a delete set aside and could not remove — or a crash left between its rename
         // and its removal — goes now; anything that still will not go is said.
         if let remnants = store.sweepSetAsideRecordings() { messages.append(remnants) }
@@ -4199,6 +4197,12 @@ final class AppModel: ObservableObject {
             // to nobody. It is the notice that tells a user their recording came back.
             report(summary)
         }
+        // F295: deletions older than the grace window lose their text from the saved history. Last
+        // (F907): it rewrites every retained generation on the main actor, so the recordings above
+        // and the notice that says they came back no longer wait behind it. After the orphan sweep is
+        // also the safer order: a deleted meeting the sweep re-adopted is live again, and the shred
+        // then cancels its deletion rather than scrubbing it.
+        store.processPendingShreds()
     }
 
     func installLocalWhisper() {
