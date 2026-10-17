@@ -453,7 +453,7 @@ enum ForgetHistoryNotice {
     static let caption = "Deleting a meeting removes its recording at once. Its title, transcript and notes stay in the saved index history for a week and are then removed. That history is what Recover Library restores from if the library can no longer be read; there is no undo in WhisperMeet for deleting a meeting. Forget History removes the saved history now, without waiting. Your meetings and recordings are not touched."
 
     static func dialogMessage(_ inventory: MeetingStore.ForgetHistoryInventory) -> String {
-        var text = "This deletes the earlier copies of your meeting index that Recover Library restores from, including any deleted meeting's title, transcript and notes still in them. Your meetings, recordings and current index are not touched, and the index's backup copy stays until your next save replaces it."
+        var text = "This deletes the earlier copies of your meeting index that Recover Library restores from, including any deleted meeting's title, transcript and notes still in them, and first refreshes the index's backup copy so it holds only what the index holds now. Your meetings, recordings and current index are not touched."
         var kept: [String] = []
         if inventory.conflictCopies > 0 {
             kept.append("\(copies(inventory.conflictCopies, "conflict copy", "conflict copies")) — changes another copy of WhisperMeet saved at the same moment, which exist nowhere else")
@@ -494,6 +494,9 @@ enum ForgetHistoryNotice {
         kept += outcome.keptPreRestoreSnapshots
         if !kept.isEmpty {
             text += " Kept in the library folder: \(kept.joined(separator: ", "))."
+        }
+        if !outcome.backupRefreshed {
+            text += " The index's backup copy could not be refreshed, so it may still hold a meeting removed by your last change until the next save replaces it."
         }
         return text
     }
@@ -2831,6 +2834,8 @@ final class MeetingStore: ObservableObject {
 
     /// What Forget History did, and what it left, so the UI reports exactly that (F239, F457).
     struct ForgetHistoryOutcome: Equatable {
+        /// Whether the save that refreshes `meetings.backup.json` landed first (F580).
+        var backupRefreshed = false
         let removedGenerations: Int
         let removedConflictCopies: Int
         let keptConflictCopies: Int
@@ -2980,9 +2985,9 @@ final class MeetingStore: ObservableObject {
     /// generation automatically. That week is protection against losing the library, not an undo
     /// for one delete: Recover Library, which restores from these generations, is offered only while
     /// the library cannot be read (F457, the user's answer of 2026-09-24). This command does not
-    /// wait: it removes every generation at once, for every meeting. It does not rewrite
-    /// `meetings.backup.json`, the previous generation, so a meeting deleted by the most recent save
-    /// is still there until the next save rotates it out.
+    /// wait: it removes every generation at once, for every meeting. Since F580 it first saves once,
+    /// which rotates the current index into `meetings.backup.json`, so a meeting deleted by the most
+    /// recent save is gone from the backup copy too; if that save is refused it says so.
     ///
     /// **Refused while the library is read-only (F457).** Those generations are exactly what Recover
     /// Library restores from then, and this used to delete them under a dialog that said nothing was
@@ -3004,12 +3009,22 @@ final class MeetingStore: ObservableObject {
     @discardableResult
     func forgetIndexHistory(includingConflictCopies: Bool = false) -> ForgetHistoryOutcome? {
         guard mutationIsAllowed() else { return nil }
+        // F580 (the user's decision of 2026-10-16): refresh `meetings.backup.json` first. It is the
+        // index one save behind, so after a delete it still held the deleted meeting's text until some
+        // later save. One ordinary save rotates the current index into it; the generation that save
+        // keeps is forgotten with the rest just below. Not over an outstanding lost race, whose
+        // offer is the user's to answer — and if the save is refused, the history is still forgotten
+        // and the result says the backup copy was not refreshed, rather than refusing the whole command.
+        let backupRefreshed = conflictOffer == nil && persistMeetings()
         do {
             let forgotten = try meetingFiles.forgetHistory(includingConflictBranches: includingConflictCopies)
-            storageErrorMessage = restingStorageMessage   // F553's notice stays until read (F669)
+            if backupRefreshed {
+                storageErrorMessage = restingStorageMessage   // F553's notice stays until read (F669)
+            }
             let removedConflicts = forgotten.filter { $0.hasPrefix("conflict-") }.count
             let left = forgetHistoryInventory()
             return ForgetHistoryOutcome(
+                backupRefreshed: backupRefreshed,
                 removedGenerations: forgotten.count - removedConflicts,
                 removedConflictCopies: removedConflicts,
                 keptConflictCopies: left.conflictCopies,
