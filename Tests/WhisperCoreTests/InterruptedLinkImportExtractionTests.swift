@@ -418,6 +418,50 @@ func realFFmpegWithItsInputStuckIsStoppedAtItsLimit() async throws {
     print("REAL_FFMPEG: \(ffmpeg.path) with its read blocked: the conversion returned with its input \(writerDone.isSet ? "closed" : "still held open")")
 }
 
+@Test(
+    "The installed ffmpeg, its input read blocked, is stopped by the output-stall bound with no time limit (F986)",
+    .enabled(if: ProcessInfo.processInfo.environment["REAL_FFMPEG"] == "1")
+)
+func realFFmpegWithItsInputStuckIsStoppedByItsOutputStall() async throws {
+    // F453's round-2 FIFO probe, under F912's output clock instead of the time limit: the first 150 KB
+    // of a real WebM, then the FIFO held open, so ffmpeg writes what it decoded and blocks in its read.
+    // No `timeLimit`, so only the output's own clock can end the conversion before the input closes.
+    let ffmpeg = try #require(MediaDownloadRuntime.findFFmpeg(), "REAL_FFMPEG=1 needs an installed ffmpeg")
+    let (folder, download, partial) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let before = try Data(contentsOf: partial)
+    let source = folder.appendingPathComponent("source.webm")
+    try await makeOpusWebM(at: source, seconds: 60, ffmpeg: ffmpeg)
+    try FileManager.default.removeItem(at: download)
+    try #require(mkfifo(download.path, 0o600) == 0, "could not make the FIFO")
+
+    let writer = ProcessGroupRunner()
+    let writerDone = Finished()
+    Task {
+        _ = try? await writer.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "exec > \"$1\"; head -c 150000 \"$2\"; sleep 15", "sh", download.path, source.path],
+            environment: ["PATH": "/usr/bin:/bin"],
+            stallTimeout: 0
+        )
+        writerDone.mark()
+    }
+    defer { writer.cancel() }
+    let started = ProcessInfo.processInfo.systemUptime
+
+    await #expect(throws: MediaDownloadError.extractionStalled(1)) {
+        try await InterruptedLinkImportExtraction.finish(
+            download: download, ffmpeg: ffmpeg, stallTimeout: 30, outputStallTimeout: 1
+        )
+    }
+    let elapsed = ProcessInfo.processInfo.systemUptime - started
+
+    #expect(!writerDone.isSet, "ffmpeg ran until its input closed: the output clock did not stop it")
+    #expect(try Data(contentsOf: partial) == before, "the half-written WAV changed")
+    #expect(temporaryFiles(in: folder).isEmpty, "a temp file was left: \(temporaryFiles(in: folder))")
+    print("REAL_FFMPEG: \(ffmpeg.path) with its read blocked, outputStallTimeout 1 s: stopped after \(String(format: "%.2f", elapsed)) s with its input \(writerDone.isSet ? "closed" : "still held open")")
+}
+
 // MARK: - Two conversions of one folder (F945)
 
 /// Polls `condition` until it holds or 30 s pass; the caller `#require`s the result.
