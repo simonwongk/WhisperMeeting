@@ -34,7 +34,7 @@ private func makeModel(squatting folders: [String]) throws -> (model: AppModel, 
 private func nextStorageMessage(_ store: MeetingStore) async -> String? {
     let deadline = Date().addingTimeInterval(30)
     while store.storageErrorMessage == nil, Date() < deadline {
-        await Task.yield()
+        try? await Task.sleep(nanoseconds: 10_000_000)
     }
     return store.storageErrorMessage
 }
@@ -194,4 +194,52 @@ func aBudgetTrimIsNoticed() throws {
     #expect(notice == MeetingStore.historyTrimmedNotice(count: 1, for: .meetings), "\(notice)")
     #expect(model.windowlessAlertCount == before + 1)
     #expect(!model.store.unsavedChanges, "the save itself succeeded")
+
+    // Once per session (the lane review's finding 3): a library past the ceiling trims on most saves,
+    // and every queued copy would be another modal alert. Before each later save an hour-old
+    // generation is planted in the history, as a ledger that lost track of it would leave one, so
+    // each of those saves trims an hour anchor again — and is required to, so a save that happened
+    // not to trim cannot pass for one that stayed quiet.
+    var planted = 0
+    func plantedURL() -> URL {
+        let bytes = Data("[{\"planted\":\(planted)}]".utf8)
+        return URL(fileURLWithPath: history)
+            .appendingPathComponent("g-\(String(format: "%09d", planted))-\(StoreFingerprint.of(bytes)).json")
+    }
+    func plantAnHourOldGeneration() throws {
+        planted += 1
+        let url = plantedURL()
+        try Data("[{\"planted\":\(planted)}]".utf8).write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -5_000)], ofItemAtPath: url.path)
+    }
+    func trimmedAgain() -> Bool { !FileManager.default.fileExists(atPath: plantedURL().path) }
+    let id = UUID()
+    try plantAnHourOldGeneration()
+    model.store.upsert(MeetingRecord(id: id, title: "Fourth", status: .recorded))
+    try #require(trimmedAgain(), "fixture: the second save did not trim")
+    try plantAnHourOldGeneration()
+    model.store.update(id: id) { $0.title = "Fourth, renamed" }
+    try #require(trimmedAgain(), "fixture: the third save did not trim")
+    #expect(model.store.storageErrorMessage == notice, "a later trimming save changed what is on screen")
+    #expect(model.windowlessAlertCount == before + 1, "a later trimming save posted the notice again")
+    model.store.clearStorageError()
+    try plantAnHourOldGeneration()
+    model.store.update(id: id) { $0.title = "Fourth, renamed again" }
+    try #require(trimmedAgain(), "fixture: the fourth save did not trim")
+    #expect(model.store.storageErrorMessage == nil, "the trim notice came back after it was read")
+    #expect(model.windowlessAlertCount == before + 1)
+}
+
+@MainActor
+@Test("The trim notice names no control a writable library does not show (F679)")
+func theTrimNoticeNamesNoHiddenControl() {
+    // It follows a successful save, so the library is writable, and Recover Library appears only while
+    // the library cannot be read (`ContentView`, `AppModel.requestLibraryRecovery`) — the reason
+    // F553's notice "names no control".
+    for store in [MeetingStore.HistoryStore.meetings, .vocabulary, .replacementRules] {
+        for count in [1, 3] {
+            let notice = MeetingStore.historyTrimmedNotice(count: count, for: store)
+            #expect(!notice.contains("Recover Library"), "\(store): \(notice)")
+        }
+    }
 }

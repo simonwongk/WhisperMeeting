@@ -3579,12 +3579,13 @@ final class MeetingStore: ObservableObject {
     }
 
     /// The user-facing words for `.historyTrimmedByBudget` (F679): an hour, day or week undo point
-    /// went for space alone. Says what is still kept, because that is what the user can act on.
+    /// went for space alone. Says what is still kept, and names no control: it follows a successful
+    /// save, so the library is writable, and Recover Library appears only while it is not.
     static func historyTrimmedNotice(count: Int, for store: HistoryStore) -> String {
         let versions = count == 1 ? "1 saved version" : "\(count) saved versions"
         switch store {
         case .meetings:
-            return "Earlier versions of the meeting index have reached the space WhisperMeet keeps for them, so \(versions) from more than an hour ago \(count == 1 ? "was" : "were") removed to make room. Recover Library still has the most recent versions and the one with the most meetings. Your recordings and the current index are not affected."
+            return "Earlier versions of the meeting index have reached the space WhisperMeet keeps for them, so \(versions) from more than an hour ago \(count == 1 ? "was" : "were") removed to make room. The most recent versions, and the one with the most meetings, are still kept. Your recordings and the current index are not affected."
         case .vocabulary, .replacementRules:
             let (list, file) = Self.historyNoticeNames(store)
             return "Earlier versions of \(file) have reached the space WhisperMeet keeps for them, so \(versions) of your \(list) from more than an hour ago \(count == 1 ? "was" : "were") removed to make room. The most recent versions are still kept."
