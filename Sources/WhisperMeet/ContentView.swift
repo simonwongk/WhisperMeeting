@@ -2286,6 +2286,10 @@ private struct LinkImportSheet: View {
         // of pushing the buttons out of it (F539).
         .frame(width: 460)
         .frame(minHeight: 340)
+        // F836: while this sheet is open, a link import's "no engine installed" notice waits for it
+        // to close instead of being raised on the window's alert behind it.
+        .onAppear { model.linkImportSheetOpened() }
+        .onDisappear { model.linkImportSheetClosed() }
         // Long media is confirmed, never capped: a legitimate 4-hour conference recording stays possible.
         .alert(
             "This is a long recording",

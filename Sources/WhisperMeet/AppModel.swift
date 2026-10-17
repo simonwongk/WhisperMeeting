@@ -592,6 +592,11 @@ final class AppModel: ObservableObject {
     /// Every link import started through `startLinkImport` that has not ended, so Quit can stop them
     /// (F893). Each removes itself when it ends.
     private var runningLinkImports: [UUID: Task<LinkImportOutcome, Never>] = [:]
+    /// How many Add from a Link sheets are open, in any window (F836). While one is, a link import's
+    /// no-engine notice waits in `noticeAfterLinkImportSheet` for it to close.
+    private var openLinkImportSheets = 0
+    /// The notice a link import finished with while its sheet was open (F836).
+    private var noticeAfterLinkImportSheet: String?
     /// Interrupted link imports whose recovery conversion outlasted the launch's wait and goes on in
     /// the background (F912), by meeting id, so Quit can stop them. Each removes itself when it ends.
     var deferredLinkImportConversions: [UUID: Task<Void, Never>] = [:]
@@ -6145,10 +6150,30 @@ final class AppModel: ObservableObject {
         refreshRuntime()
         if isSelectedEngineInstalled {
             beginTranscription(id: id)
+        } else if source != nil, openLinkImportSheets > 0 {
+            // F836: a link import finishes while its Add from a Link sheet is still open, and the
+            // sheet closes a moment later. The window's alert is behind the sheet; the notice waits
+            // for the sheet to close (`linkImportSheetClosed`).
+            noticeAfterLinkImportSheet = transcriptionUnavailableMessage
         } else {
             alertMessage = transcriptionUnavailableMessage
         }
         return id
+    }
+
+    /// The Add from a Link sheet appeared (F836).
+    func linkImportSheetOpened() {
+        openLinkImportSheets += 1
+    }
+
+    /// The Add from a Link sheet went away (F836): a notice a link import finished with while it was
+    /// open is raised now, in the window the sheet was covering.
+    func linkImportSheetClosed() {
+        openLinkImportSheets = Swift.max(0, openLinkImportSheets - 1)
+        if let notice = noticeAfterLinkImportSheet {
+            noticeAfterLinkImportSheet = nil
+            alertMessage = notice
+        }
     }
 
     /// Imports files handed over from outside the app (F181), and says so when it cannot.
