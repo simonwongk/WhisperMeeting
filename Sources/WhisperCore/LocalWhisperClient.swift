@@ -753,6 +753,11 @@ func armedExitStream(for process: Process) -> AsyncStream<Void> {
 /// parser reports a bar only when it changed, so each download update is movement; a bar at 100 %
 /// ends the download and the window, because what openai-whisper does next — hash the file, load it —
 /// is not the download's to time; and any other phase after the download ends it too.
+///
+/// "Changed" is the parser's: the whole percent or the estimate of the time left. On a slow connection
+/// the percent can stand still for longer than the window, and the moving estimate is what keeps the
+/// download alive (`aSlowDownloadWithAMovingEstimateIsNotStopped`). Not watched, failing open: a second
+/// download in the same run after a checksum mismatch, since the first one's 100 % ended the window.
 final class ModelDownloadStallWatch: @unchecked Sendable {
     private let lock = NSLock()
     private let stallTimeout: TimeInterval

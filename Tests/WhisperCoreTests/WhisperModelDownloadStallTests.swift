@@ -88,6 +88,27 @@ func aFinishedDownloadIsNotAStall() async throws {
     #expect(result.text == "Hello.")
 }
 
+// The review of F901: on a slow connection (under ~160 KB/s for large-v3, about 1 % per 180 s) the
+// whole percent stands still for longer than the window, and movement rests on the rest of tqdm's line —
+// the estimate of the time left, which `WhisperProgressParser` reads and reports when it changes. Here
+// the percent and the byte count never change, and only the estimate does, every half second.
+@Test("A slow download whose percent stands still but whose time left keeps changing is not stopped (F901)")
+func aSlowDownloadWithAMovingEstimateIsNotStopped() async throws {
+    let dir = try scratch("F901-slow"); defer { try? FileManager.default.removeItem(at: dir) }
+    let whisper = try stubWhisper(in: dir, """
+    for i in {0..24}; do printf ' 42%%|####2     | 650M/1.51G [00:%02d<%02d:00, 160kiB/s]\\r' $((i / 5)) $((89 - i / 5)) >&2; sleep 0.1; done
+    printf '100%%|##########| 1.51G/1.51G [00:12<00:00, 120MiB/s]\\n' >&2
+    printf '%s' '\(transcript)' > "$out/$name.json"
+    """)
+    let audio = dir.appendingPathComponent("meeting.wav")
+    try shortReadableWAV().write(to: audio)
+
+    // 2.5 s at 42 % against a 1 s window: stopped unless a changed estimate counts as movement.
+    let result = try await client(whisper, in: dir, stall: 1).transcribe(recordingAt: audio)
+
+    #expect(result.text == "Hello.")
+}
+
 @Test("A download whose bar keeps moving runs past the window (F901 control)")
 func aMovingDownloadIsNotStopped() async throws {
     let dir = try scratch("F901-moving"); defer { try? FileManager.default.removeItem(at: dir) }
