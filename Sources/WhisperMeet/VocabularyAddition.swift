@@ -86,3 +86,15 @@ enum ReplacementRuleAddition: Equatable, Sendable {
         }
     }
 }
+
+/// Import Documents…'s sentences beyond the store's own account (F822).
+enum VocabularyImportMessage {
+    /// Said when the documents held more candidates than they offer, or nil when none was left out.
+    /// Each document offers its first `VocabularyExtractor.maxCandidatesPerText` in document order,
+    /// so a glossary is cut at the same place it is read, never by alphabet.
+    static func notOffered(_ count: Int) -> String? {
+        guard count > 0 else { return nil }
+        let limit = VocabularyExtractor.maxCandidatesPerText
+        return "\(count) more candidate term\(count == 1 ? " was" : "s were") found but not offered: each document offers its first \(limit)."
+    }
+}

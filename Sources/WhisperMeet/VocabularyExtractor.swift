@@ -23,6 +23,16 @@ enum VocabularyExtractor {
         candidates(in: try rawText(from: url))
     }
 
+    /// The most candidates one document or transcript offers (F822).
+    static let maxCandidatesPerText = 200
+
+    /// What a text offers: the first `maxCandidatesPerText` candidates in the order it holds them,
+    /// sorted alphabetically for display, and how many more it held (F822).
+    struct CandidateList: Equatable {
+        var terms: [String]
+        var notOffered: Int
+    }
+
     /// Reads a document's full plain text — the same per-type reading as `extract`, but returning the
     /// raw text instead of extracted candidate terms. Used for F170 reference documents, where the
     /// user wants the model guided by the document's actual spellings (including ordinary words), not
@@ -299,18 +309,29 @@ enum VocabularyExtractor {
     /// Extracts candidate terms from several files, skipping (never aborting on) any file that cannot
     /// be read, so one bad file in a batch does not throw away the good files' terms (F49). Returns
     /// the merged, first-seen-deduplicated terms and the URLs that failed.
-    static func extractBatch(from urls: [URL]) -> (terms: [String], failed: [URL]) {
+    static func extractBatch(from urls: [URL]) -> BatchExtraction {
         var terms: [String] = []
         var failed: [URL] = []
+        var notOffered = 0
         for url in urls {
-            if let extracted = try? extract(from: url) {
-                terms.append(contentsOf: extracted)
+            if let text = try? rawText(from: url) {
+                let list = candidateList(in: text)
+                terms.append(contentsOf: list.terms)
+                notOffered += list.notOffered
             } else {
                 failed.append(url)
             }
         }
         var seen = Set<String>()
-        return (terms.filter { seen.insert($0).inserted }, failed)
+        return BatchExtraction(terms: terms.filter { seen.insert($0).inserted }, failed: failed, notOffered: notOffered)
+    }
+
+    /// What Import Documents… read: the merged candidates, the files that could not be read, and how
+    /// many candidates the documents held beyond the ones each offers (F822).
+    struct BatchExtraction {
+        var terms: [String]
+        var failed: [URL]
+        var notOffered: Int
     }
 
     /// Extracts candidate proper nouns / key terms from free text.
@@ -318,8 +339,13 @@ enum VocabularyExtractor {
     ///   candidate terms — useful for glossaries and bullet lists, but wrong for transcripts, where
     ///   each spoken line would become a bogus term. Transcript suggestions pass `false`.
     static func candidates(in text: String, includeLineHeuristic: Bool = true) -> [String] {
-        guard !text.isEmpty else { return [] }
-        var terms = Set<String>()
+        candidateList(in: text, includeLineHeuristic: includeLineHeuristic).terms
+    }
+
+    /// `candidates`, with how many more the text held than it offers (F822).
+    static func candidateList(in text: String, includeLineHeuristic: Bool = true) -> CandidateList {
+        guard !text.isEmpty else { return CandidateList(terms: [], notOffered: 0) }
+        var terms = CandidateCollector()
 
         let tagger = NLTagger(tagSchemes: [.nameType])
         tagger.string = text
@@ -357,7 +383,7 @@ enum VocabularyExtractor {
             // document became a candidate: the, and, of, we, will, 我们, 明天. Only a name the
             // tagger actually classified as a person, place, or organisation belongs in Vocabulary.
             if tag == .personalName || tag == .placeName || tag == .organizationName {
-                terms.insert(String(text[range]))
+                terms.insert(String(text[range]), at: range.lowerBound)
             } else if !includeLineHeuristic, tag == .otherWord,
                       looksLikeTranscriptJargon(
                           String(text[range]),
@@ -366,7 +392,7 @@ enum VocabularyExtractor {
                           lineOccurrences: lineOccurrences,
                           lexicalTagger: lexicalTagger
                       ) {
-                terms.insert(String(text[range]))
+                terms.insert(String(text[range]), at: range.lowerBound)
             }
             return true
         }
@@ -400,21 +426,24 @@ enum VocabularyExtractor {
                     for rawPart in line.components(separatedBy: enumerationSeparators) {
                         let part = rawPart.trimmingCharacters(in: .whitespacesAndNewlines)
                         if part.count >= 2, part.count <= 48 {
-                            terms.insert(part)
+                            terms.insert(part, at: rawLine.startIndex)
                         }
                     }
                 } else if line.count >= 2, line.count <= 48 {
-                    terms.insert(line)
+                    terms.insert(line, at: rawLine.startIndex)
                 }
             }
         }
 
-        return terms
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.count >= 2 && $0.count <= 80 }
+        // F822: the first `maxCandidatesPerText` in the order the text holds them, then sorted for
+        // display. Cut after the alphabetical sort, as it was, a bilingual glossary lost its Chinese
+        // terms first (CJK sorts after Latin) and nothing said so.
+        let inTextOrder = terms.firstSeen
+            .sorted { ($0.value.position, $0.value.order) < ($1.value.position, $1.value.order) }
+            .map(\.key)
+        let offered = inTextOrder.prefix(maxCandidatesPerText)
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-            .prefix(200)
-            .map { $0 }
+        return CandidateList(terms: offered, notOffered: max(0, inTextOrder.count - maxCandidatesPerText))
     }
 
     /// Function words that open a sentence capitalized and so read, to the capitalized-phrase
@@ -452,7 +481,7 @@ enum VocabularyExtractor {
     /// two or more words. A single word is not this rule's to suggest: on the document path F518
     /// keeps single `.otherWord` terms out, and on the transcript path `looksLikeTranscriptJargon`
     /// already judges the word on its own ("Kestrel", capitalized after "Our", is mid-sentence).
-    private static func addCapitalizedPhraseMatches(from text: String, to terms: inout Set<String>) {
+    private static func addCapitalizedPhraseMatches(from text: String, to terms: inout CandidateCollector) {
         guard let expression = try? NSRegularExpression(
             pattern: #"\b[A-Z][\p{L}\p{M}'’-]+(?:\s+[A-Z][\p{L}\p{M}'’-]+){1,3}\b"#
         ) else { return }
@@ -465,7 +494,7 @@ enum VocabularyExtractor {
                 phrase = phrase[end...].drop(while: \.isWhitespace)
             }
             if phrase.split(whereSeparator: \.isWhitespace).count >= 2 {
-                terms.insert(String(phrase))
+                terms.insert(String(phrase), at: phrase.startIndex)
             }
         }
     }
@@ -479,13 +508,25 @@ enum VocabularyExtractor {
     private static func addMatches(
         pattern: String,
         from text: String,
-        to terms: inout Set<String>
+        to terms: inout CandidateCollector
     ) {
         guard let expression = try? NSRegularExpression(pattern: pattern) else { return }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         for match in expression.matches(in: text, range: range) {
             guard let range = Range(match.range, in: text) else { continue }
-            terms.insert(String(text[range]))
+            terms.insert(String(text[range]), at: range.lowerBound)
+        }
+    }
+
+    /// Candidates with where each was first found in the text (F822).
+    struct CandidateCollector {
+        private(set) var firstSeen: [String: (position: String.Index, order: Int)] = [:]
+
+        mutating func insert(_ candidate: String, at position: String.Index) {
+            let term = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard term.count >= 2, term.count <= 80 else { return }
+            if let known = firstSeen[term], known.position <= position { return }
+            firstSeen[term] = (position, firstSeen[term]?.order ?? firstSeen.count)
         }
     }
 }

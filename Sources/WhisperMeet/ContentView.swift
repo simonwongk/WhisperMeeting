@@ -2953,6 +2953,10 @@ private struct VocabularyView: View {
             if !result.failed.isEmpty {
                 message += " \(result.failed.count) file\(result.failed.count == 1 ? "" : "s") could not be read and were skipped."
             }
+            // F822: a long document's candidates past its first 200 are counted, not dropped unsaid.
+            if let notOffered = VocabularyImportMessage.notOffered(result.notOffered) {
+                message += " " + notOffered
+            }
             importMessage = message
         }
     }

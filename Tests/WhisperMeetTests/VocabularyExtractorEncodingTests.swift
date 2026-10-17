@@ -154,3 +154,35 @@ func westernCP1252DocumentStillDecodesCorrectly() throws {
     #expect(raw.contains("caf\u{00E9}"))
     #expect(raw.contains("Wasn\u{2019}t"))
 }
+
+/// F822 — a document offers at most 200 candidates; they used to be the alphabetically first 200, so a
+/// bilingual glossary lost its Chinese terms first (CJK sorts after Latin), with nothing said.
+@Test("A long bilingual glossary offers its first 200 candidates in document order and counts the rest (F822)")
+func longGlossaryKeepsDocumentOrderAndCountsTheRest() throws {
+    let dir = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("glossary.txt")
+    // 150 lines, each an English term and its Chinese one joined by 、: 300 candidates.
+    let lines: [String] = (1...150).map { String(format: "Term%03d、术语%03d", $0, $0) }
+    try (lines.joined(separator: "\n") + "\n").data(using: .utf8)!.write(to: url)
+
+    let result = VocabularyExtractor.extractBatch(from: [url])
+    let chinese = result.terms.filter { $0.hasPrefix("术语") }
+    let latin = result.terms.filter { $0.hasPrefix("Term") }
+    // The first hundred lines, both halves; alphabetically it was all 150 Latin terms and 50 Chinese.
+    #expect(result.terms.count == 200)
+    #expect(chinese.count == 100 && latin.count == 100)
+    #expect(chinese.contains("术语001") && chinese.contains("术语100") && !chinese.contains("术语101"))
+    #expect(result.notOffered == 100)
+    #expect(VocabularyImportMessage.notOffered(result.notOffered)
+        == "100 more candidate terms were found but not offered: each document offers its first 200.")
+    #expect(VocabularyImportMessage.notOffered(0) == nil)
+}
+
+@Test("Import Documents… says how many candidates were not offered (F822)")
+func importDocumentsSaysWhatWasNotOffered() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    let start = try #require(source.range(of: "private func importDocuments("))
+    let body = String(source[start.upperBound...].prefix(2_000))
+    #expect(body.contains("VocabularyImportMessage.notOffered(result.notOffered)"))
+}
