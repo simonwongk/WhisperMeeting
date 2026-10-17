@@ -29,6 +29,7 @@ public enum MeetingNotesExporter {
         durationSeconds: TimeInterval,
         languageCode: String?,
         summary: MeetingSummary?,
+        summaryNote: String? = nil,
         transcriptText: String,
         notes: String? = nil,
         markers: [RecordingMarker] = [],
@@ -81,6 +82,12 @@ public enum MeetingNotesExporter {
         if let summary {
             lines.append("## Summary")
             lines.append("")
+            // A summary written from text the transcript no longer has (F838): said first, beside
+            // the summary it qualifies, as the recording caveats are above everything they qualify.
+            if let summaryNote = summaryNote?.trimmingCharacters(in: .whitespacesAndNewlines), !summaryNote.isEmpty {
+                lines.append("_\(summaryNote)_")
+                lines.append("")
+            }
             let body = summary.summary.trimmingCharacters(in: .whitespacesAndNewlines)
             if !body.isEmpty {
                 lines.append(body)

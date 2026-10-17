@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 import WhisperCore
@@ -278,6 +279,12 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
     /// `recordedTimeZone` reads it as unknown. Optional and append-only: an index without it decodes,
     /// and the build before it skips the key and drops it on its next save (F188).
     var createdTimeZone: String?
+    /// The SHA-256 of the `transcriptText` this meeting's summary was written from, hex (F838), so a
+    /// transcript changed since — a hand edit, a correction, a re-transcription — marks the summary
+    /// as written from other text (`staleSummaryNote`). A digest and never the text, so nothing the
+    /// user removed is kept by it. Nil for a summary written before F838, which is never marked.
+    /// Optional and append-only (F188); the build before it skips the key.
+    var summaryTranscriptDigest: String?
 
     init(
         id: UUID = UUID(),
@@ -310,7 +317,8 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         requestedLanguage: String? = nil,
         source: MediaSource? = nil,
         referenceSegments: [TranscriptSegment]? = nil,
-        createdTimeZone: String? = nil
+        createdTimeZone: String? = nil,
+        summaryTranscriptDigest: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -343,6 +351,7 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         self.source = source
         self.referenceSegments = referenceSegments
         self.createdTimeZone = createdTimeZone
+        self.summaryTranscriptDigest = summaryTranscriptDigest
     }
 
     /// Hand-written so `transcriptionEngineRawValue` persists under its original on-disk name
@@ -375,9 +384,31 @@ struct MeetingRecord: Codable, Identifiable, Sendable, Equatable {
         // moment the property existed without this line.
         case requestedLanguage
         case transcriptionEngineRawValue = "transcriptionEngine"
-        // F786: listed for the F304 reason above.
+        // F786, F838: listed for the F304 reason above.
         case createdTimeZone
+        case summaryTranscriptDigest
     }
+
+    /// The hex SHA-256 of a transcript's text, as `summaryTranscriptDigest` stores it (F838).
+    static func transcriptDigest(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Said beside a summary written from a transcript that has changed since, on the meeting page
+    /// and in notes.md (F838); nil otherwise.
+    ///
+    /// A note and never a change: the summary and its quotes are the user's, and a re-summarize is
+    /// one press away. Compared on the stored text, so it holds for a hand edit, an applied
+    /// correction, a Replace, a re-transcription — any path that rewrites `transcriptText`.
+    var staleSummaryNote: String? {
+        guard summary != nil, let summaryTranscriptDigest,
+              summaryTranscriptDigest != Self.transcriptDigest(transcriptText) else { return nil }
+        return Self.staleSummaryNoteText
+    }
+
+    static let staleSummaryNoteText = "The transcript has changed since this summary was written, so the "
+        + "summary and its quotes may still describe or quote words that are no longer in it. "
+        + "Re-summarize to bring it up to date."
 
     /// `createdTimeZone` as a zone, or nil when it was never recorded or this Mac's tz database
     /// does not know it — the caller then falls back to the Mac's current zone (F786).
@@ -1174,6 +1205,7 @@ final class MeetingStore: ObservableObject {
             durationSeconds: meeting.duration,
             languageCode: meeting.languageCode,
             summary: meeting.summary,
+            summaryNote: meeting.staleSummaryNote,
             transcriptText: meeting.transcriptText,
             notes: meeting.notes,
             markers: meeting.orderedMarkers,
@@ -2354,6 +2386,32 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    private struct StaleSummaryInput: Equatable {
+        let text: String
+        let digest: String?
+        let hasSummary: Bool
+    }
+
+    /// Each meeting's last stale-summary answer (F838), kept and cleared beside `transcriptEditMemos`.
+    private var staleSummaryMemos: [UUID: LastValueMemo<StaleSummaryInput, String?>] = [:]
+
+    /// `MeetingRecord.staleSummaryNote` for a view body (F838), worked out again only when the text,
+    /// the digest or the summary's presence changes: a SHA-256 of a six-hour transcript is not free,
+    /// and the detail view renders on every Notes keystroke and progress update (F541's reason).
+    func staleSummaryNote(for meeting: MeetingRecord) -> String? {
+        let memo: LastValueMemo<StaleSummaryInput, String?>
+        if let existing = staleSummaryMemos[meeting.id] {
+            memo = existing
+        } else {
+            memo = LastValueMemo()
+            staleSummaryMemos[meeting.id] = memo
+        }
+        let input = StaleSummaryInput(
+            text: meeting.transcriptText, digest: meeting.summaryTranscriptDigest, hasSummary: meeting.summary != nil
+        )
+        return memo.value(for: input) { _ in meeting.staleSummaryNote }
+    }
+
     /// The meetings something is writing into off the main actor — Shrink, Rebuild Audio, the launch
     /// notes.md backfill — which a delete refuses rather than racing (F870).
     nonisolated let folderWriters = MeetingFolderWriters()
@@ -2665,7 +2723,10 @@ final class MeetingStore: ObservableObject {
     private func shredFromHistory(_ ids: [UUID], now: Int = Int(Date().timeIntervalSince1970)) {
         // The edited-check memo holds a copy of each transcript it answered for (F541). Every path
         // that deletes a meeting comes through here, so its copy goes at once rather than at quit.
-        for id in ids { transcriptEditMemos[id] = nil }
+        for id in ids {
+            transcriptEditMemos[id] = nil
+            staleSummaryMemos[id] = nil   // F838: holds a transcript copy too
+        }
         var queue = pendingShredQueue
         for id in ids {
             queue.deletedAt[id] = now
@@ -4218,6 +4279,7 @@ final class MeetingStore: ObservableObject {
             // A reload replaces every record, so no memo can describe one (F541): a meeting a
             // restore removed would otherwise keep its transcript copy in memory until quit.
             transcriptEditMemos.removeAll()
+            staleSummaryMemos.removeAll()   // F838: the same reason
             meetingsToken = result.token
             // What the sentences need beyond the health (F844, F881). The empty-version test is the
             // one `keepIndexOnDisk()` refuses on.

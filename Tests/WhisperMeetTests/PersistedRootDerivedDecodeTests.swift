@@ -383,7 +383,8 @@ struct PersistedRootDerivedDecodeTests {
                 fetchedAt: date
             ),
             referenceSegments: [segment],
-            createdTimeZone: "Asia/Shanghai"
+            createdTimeZone: "Asia/Shanghai",
+            summaryTranscriptDigest: MeetingRecord.transcriptDigest("hello")
         )
     }
 

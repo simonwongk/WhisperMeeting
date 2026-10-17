@@ -3443,7 +3443,10 @@ private struct TranscriptDetailView: View {
                 }
                 .transition(.gentleFade(reduceMotion: reduceMotion))
             } else if let summary = meeting.summary {
-                summaryBody(summary, transcript: meeting.transcriptText, languageWarning: meeting.summaryLanguageWarning)
+                summaryBody(
+                    summary, transcript: meeting.transcriptText,
+                    languageWarning: meeting.summaryLanguageWarning, staleNote: store.staleSummaryNote(for: meeting)
+                )
                     .transition(.gentleFade(reduceMotion: reduceMotion))
             } else if let hint = model.summaryUnavailableHint {
                 Text(hint)
@@ -3458,7 +3461,9 @@ private struct TranscriptDetailView: View {
     }
 
     @ViewBuilder
-    private func summaryBody(_ summary: MeetingSummary, transcript: String, languageWarning: String?) -> some View {
+    private func summaryBody(
+        _ summary: MeetingSummary, transcript: String, languageWarning: String?, staleNote: String?
+    ) -> some View {
         let coverageInput = SummaryCoverageInput(summary: summary, transcript: transcript, terms: store.vocabulary)
         VStack(alignment: .leading, spacing: 14) {
             // F467 Part 2: the same "original language only" net F32's `languageWarning` is for
@@ -3472,6 +3477,17 @@ private struct TranscriptDetailView: View {
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .bannerSurface(.red)
+                    .accessibilityElement(children: .combine)
+            }
+            // F838: the transcript changed after this summary was written. Beside the summary, never
+            // inside it (F306's rule), and a note rather than a change: the summary is the user's.
+            if let staleNote {
+                Label(staleNote, systemImage: "clock.arrow.circlepath")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .bannerSurface(.orange)
                     .accessibilityElement(children: .combine)
             }
             Text(summary.summary)

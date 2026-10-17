@@ -6964,6 +6964,8 @@ final class AppModel: ObservableObject {
                     from: meeting.summary?.actionItems ?? [], onto: resolved.actionItems
                 )
                 meeting.summary = merged
+                // F838: of the text this summary was written from, which a later edit can leave.
+                meeting.summaryTranscriptDigest = MeetingRecord.transcriptDigest(transcript)
                 // "Original language only" advisory for summaries (F467 Part 2), the same
                 // structural net F32's `languageWarning` is for transcripts. Always recomputed
                 // against THIS summary, never left over from a previous one — a re-summarize that

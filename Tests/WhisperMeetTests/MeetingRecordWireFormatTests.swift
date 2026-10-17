@@ -74,7 +74,8 @@ private func fullyPopulatedRecord() -> MeetingRecord {
             fetchedAt: Date(timeIntervalSince1970: 1_700_000_000)
         ),
         referenceSegments: [TranscriptSegment(speaker: nil, start: 0, end: 1, text: "hello")],
-        createdTimeZone: "Asia/Shanghai"
+        createdTimeZone: "Asia/Shanghai",
+        summaryTranscriptDigest: MeetingRecord.transcriptDigest("hello")
     )
 }
 
