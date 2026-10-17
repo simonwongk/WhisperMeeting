@@ -3492,12 +3492,18 @@ final class AppModel: ObservableObject {
                     when = ""
                 } else {
                     comeBack = one ? "will come back as a recovered recording" : "will come back as recovered recordings"
-                    when = store.isDegraded ? ", once the library opens normally" : ", the next time WhisperMeet opens"
+                    when = store.isDegraded ? " once the library opens normally" : " the next time WhisperMeet opens"
                 }
-                let without = one ? "without its title, notes or transcript" : "without their titles, notes or transcripts"
+                // Round 2: not "without its title". The sweep reads back the title typed while
+                // recording from `session.json` (F298); what does not come back is the transcript,
+                // the notes, and a title changed after Stop.
+                let without = one ? "without its notes or transcript" : "without their notes or transcripts"
+                let title = one
+                    ? "a title typed while it was recording comes back with it"
+                    : "a title typed while recording comes back with each"
                 message += one
-                    ? " 1 recording made since that backup is not in it. It stays on disk and \(comeBack), \(without)\(when)."
-                    : " \(recordings) recordings made since that backup are not in it. They stay on disk and \(comeBack), \(without)\(when)."
+                    ? " 1 recording made since that backup is not in it. It stays on disk and \(comeBack)\(when), \(without); \(title)."
+                    : " \(recordings) recordings made since that backup are not in it. They stay on disk and \(comeBack)\(when), \(without); \(title)."
             }
             let others = pending.plan.otherFilesNotInBackup.count
             if others > 0 {
@@ -3558,7 +3564,9 @@ final class AppModel: ObservableObject {
     /// this sentence can exist.
     ///
     /// It counts recordings, not files, and says they come back as recovered recordings (F699): the
-    /// launch's orphan sweep lists them again, and the user chose keeping that over hiding them.
+    /// launch's orphan sweep lists them again, and the user chose keeping that over hiding them. They
+    /// come back without notes or transcript, but with a title typed while recording, which the sweep
+    /// reads from `session.json` (F298; corrected in round 2).
     /// `libraryIsReadOnly` because a restore that repairs a read-only library re-runs that sweep
     /// at once, so "the next time WhisperMeet opens" would be wrong there.
     static func restoreConfirmationMessage(
@@ -3571,8 +3579,8 @@ final class AppModel: ObservableObject {
         if recordings > 0 {
             let when = libraryIsReadOnly ? "as soon as the restored library opens" : "the next time WhisperMeet opens"
             lines.append(recordings == 1
-                ? "1 recording in your library is not in this backup. It will stay on disk, and will come back as a recovered recording, without its title, notes or transcript, \(when)."
-                : "\(recordings) recordings in your library are not in this backup. They will stay on disk, and will come back as recovered recordings, without their titles, notes or transcripts, \(when).")
+                ? "1 recording in your library is not in this backup. It will stay on disk, and will come back as a recovered recording \(when), without its notes or transcript. A title typed while it was recording comes back with it; a title changed after that does not."
+                : "\(recordings) recordings in your library are not in this backup. They will stay on disk, and will come back as recovered recordings \(when), without their notes or transcripts. A title typed while recording comes back with each; a title changed after that does not.")
         }
         let others = plan.otherFilesNotInBackup.count
         if others > 0 {

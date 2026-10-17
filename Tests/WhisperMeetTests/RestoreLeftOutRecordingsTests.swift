@@ -13,9 +13,10 @@ import Testing
 // straight away, when the library was read-only and the restore re-ran startup recovery.
 //
 // The user chose (A) on 2026-10-16: keep the re-listing, and make the copy say it — counting
-// recordings rather than files, and saying they come back as recovered recordings, without their
-// titles, notes or transcripts. These tests pin the count against recordings and check the copy
-// against the behaviour on both paths.
+// recordings rather than files, and saying they come back as recovered recordings. Round 2 corrected
+// what they come back without: their notes and transcripts, but not a title typed while recording,
+// which the orphan sweep reads back from `session.json` (F298). These tests pin the count against
+// recordings and check the copy against the behaviour on both paths.
 
 /// A library backed up with one meeting, then given one new recording of three files, and one extra
 /// file inside the backed-up meeting's folder.
@@ -54,6 +55,12 @@ private func makeLibrary(
         .write(to: newerFolder.appendingPathComponent("meeting.wav"))
     try Data(count: 64).write(to: newerFolder.appendingPathComponent("system-audio.f32"))
     try Data(count: 64).write(to: newerFolder.appendingPathComponent("microphone-audio.f32"))
+    // Its session sidecar, as a capture leaves it: the title typed while recording (F298), which the
+    // orphan sweep gives back to the recovered meeting (F699 round 2).
+    try RecordingSessionSidecar.write(
+        RecordingSession(id: newer, startedAt: Date(timeIntervalSince1970: 1_790_000_000), title: "Budget review", markers: []),
+        in: newerFolder
+    )
     // And one file the backup lacks inside a folder it has: not a recording that comes back.
     try Data("later".utf8).write(to: keptFolder.appendingPathComponent("added-later.txt"))
 
@@ -87,7 +94,7 @@ func restorePlanCountsRecordingsNotFiles() async throws {
 
     await model.requestLibraryRestore(from: generation)
     let pending = try #require(model.pendingLibraryRestore)
-    try #require(pending.plan.notInBackup.count == 4, "precondition: \(pending.plan.notInBackup)")
+    try #require(pending.plan.notInBackup.count == 5, "precondition: \(pending.plan.notInBackup)")
 
     let expectedRecordings: [String] = [newer.uuidString]
     let expectedOthers: [String] = ["Recordings/\(kept.uuidString)/added-later.txt"]
@@ -96,10 +103,11 @@ func restorePlanCountsRecordingsNotFiles() async throws {
 
     let message = AppModel.restoreConfirmationMessage(pending)
     #expect(message.hasPrefix("1 recording in your library is not in this backup."), "\(message)")
-    #expect(message.contains("come back as a recovered recording, without its title, notes or transcript, the next time WhisperMeet opens"), "\(message)")
+    #expect(message.contains("will come back as a recovered recording the next time WhisperMeet opens, without its notes or transcript. A title typed while it was recording comes back with it"), "\(message)")
+    #expect(!message.contains("without its title"), "a title typed while recording does come back: \(message)")
     #expect(message.contains("1 other file(s) in your library are not in this backup. They will be left on disk."), "\(message)")
     #expect(!message.contains("will not list them"), "the promise the launch broke is gone")
-    #expect(!message.contains("4 file(s) in your library"), "files are not recordings")
+    #expect(!message.contains("5 file(s) in your library"), "files are not recordings")
 }
 
 @Test("After a restore, the recording the backup lacked comes back at the next launch, as the alert says (F699)")
@@ -115,7 +123,8 @@ func leftOutRecordingComesBackAtNextLaunch() async throws {
 
     let alert = model.alertMessage ?? ""
     #expect(alert.contains("1 recording made since that backup is not in it."), "\(alert)")
-    #expect(alert.contains("come back as a recovered recording, without its title, notes or transcript, the next time WhisperMeet opens"), "\(alert)")
+    #expect(alert.contains("will come back as a recovered recording the next time WhisperMeet opens, without its notes or transcript; a title typed while it was recording comes back with it."), "\(alert)")
+    #expect(!alert.contains("without its title"), "\(alert)")
     #expect(!alert.contains("not listed in the restored index"), "\(alert)")
     // True of this session: the restored index does not list it yet.
     #expect(model.store.meetings.map(\.id) == [kept])
@@ -132,6 +141,7 @@ func leftOutRecordingComesBackAtNextLaunch() async throws {
     #expect(ids == [kept, newer], "the copy promised the recording back: \(ids)")
     let back = try #require(relaunched.store.meetings.first { $0.id == newer })
     #expect(back.transcriptText.isEmpty, "a recovered recording, without the transcript it had")
+    #expect(back.title == "Budget review", "the copy says a title typed while recording comes back: \(back.title)")
     // Nothing the restore left on disk was removed.
     let folder = relaunched.store.rootDirectory.appendingPathComponent("Recordings/\(newer.uuidString)")
     for name in ["meeting.wav", "system-audio.f32", "microphone-audio.f32"] {
@@ -149,13 +159,13 @@ func readOnlyRestoreAddsTheLeftOutRecordingBackNow() async throws {
     await model.requestLibraryRestore(from: generation)
     let pending = try #require(model.pendingLibraryRestore, "refused: \(model.alertMessage ?? "no message")")
     let message = AppModel.restoreConfirmationMessage(pending, libraryIsReadOnly: true)
-    #expect(message.contains("come back as a recovered recording, without its title, notes or transcript, as soon as the restored library opens"), "\(message)")
+    #expect(message.contains("will come back as a recovered recording as soon as the restored library opens, without its notes or transcript."), "\(message)")
     await model.performLibraryRestore(confirmed: true)?.value
     try #require(!model.store.isDegraded, "still read-only after the restore: \(model.store.health)")
 
     let alert = model.alertMessage ?? ""
     #expect(alert.contains("1 recording made since that backup is not in it."), "\(alert)")
-    #expect(alert.contains("being added back now as a recovered recording, without its title, notes or transcript"), "\(alert)")
+    #expect(alert.contains("being added back now as a recovered recording, without its notes or transcript; a title typed while it was recording comes back with it."), "\(alert)")
 
     // The restore starts the re-run and does not await it, so the listing is this wait's own subject.
     let deadline = Date().addingTimeInterval(30)
