@@ -41,424 +41,74 @@ The letters below still stand for what needs your hands (F294, F201, F230, F428,
 
 ## Where to start
 
-Twelve entries, over the cap of five. (2026-10-12: Wave 6's sitting added as #2.) (2026-10-16: Wave 7's sitting added as #3.) (2026-10-12: the speaker-label letter answered in chat and moved to Settled.) (2026-10-12: Wave 5's sitting added as #1 and the rest renumbered; its four questions were answered the same day.) (2026-10-09: F891 answered — you said no to every app I named, and the next slow dictation showed the GPU idle; the cause was idle weights paging out, fixed by a press-down wake-up. Settled below.) (2026-10-08: Wave 4's sitting added as #12.) (2026-10-07: Wave 3's sitting and questions added as #11.) (2026-10-02: F805 added — the click-through for Shrink.) (2026-09-30: F392 added — it was `blocked` with no letter, so you had never been asked; F361 folded into F201 as step 6 rather than a letter of its own.) (F355 answered 2026-09-25: the buzz is gone. F352 · F351 settled: F352 asked for a choice F295 had already shipped and you confirmed; F351 closed on your no.) Rather than drop one of your unanswered questions to get under
-the line, here they are in the order I would answer them. Every one is optional and nothing rots.
+**Rebuilt 2026-10-17 (whisper-27), from your answers in chat.** Twelve letters had piled up, about 4½ hours of checks. You
+chose a short list, so there is now **one** letter, about 30 minutes. The other sittings, and the tests you skipped or have no
+equipment for, are closed in `TICKET_LOG.md` as "checked by code only"; one line each is under Settled. The old letters' full
+text is in this file's git history.
 
-| | Entry | Time | Why this order |
-|---|---|---|---|
-| 1 | **F904** | ~1 h | Wave 5's sitting on the installed build (its four questions were answered 2026-10-12). Step 2, quitting while a recording saves, takes ~3 min. |
-| 2 | **F981** | ~30 min | Wave 6's sitting: stop and quit, link imports, Shrink on imports, rules and vocabulary. Step 1 takes 3 minutes. |
-| 3 | **F1010** | ~30 min | Wave 7's sitting: stereo Shrink's refusals, greyed controls' reasons, rules and vocabulary, link imports. Step 1 is the one that matters most. |
-| 4 | **F294** | ~2 min | One menu-bar recording. Confirms that a windowless session's notices actually arrive. |
-| 5 | **F353** | ~3 min | Press Restore Library once, on a real container. Wrongly retired earlier today — the case F288 named was never the one checked. |
-| 6 | **F201** | ~15 min | A microphone and the installed app. Dictation refinement has never been watched with real speech. Step 6 (one dictation during a call) is F361's; step 7 (hold and toggle on a new build) is F731's. |
-| 7 | **F230** | ~20 min | VoiceOver, keyboard and Dynamic Type on the speaker screens. Narrowed since it was written — two of its seven checks are now covered by tests. |
-| 8 | **F428** | ~2 min | Copy on your iPhone, dictate on the Mac, paste — once more, with F516 installed. The log now says what macOS handed over. |
-| 9 | **F392** | ~5 min | You said yes 2026-10-12: press the button (490 MB). Unblocks measuring Ask's search by meaning, which ships on constants nobody has measured. |
-| 10 | **F805** | ~5 min | Shrink a throwaway import on the new build and check that it still plays. Shrink is the one new action that deletes audio, and no test can click it. |
-| 11 | **F807 · F845 · F685** | ~45 min | Wave 3's screen checks in one sitting and one silent dictation (its four questions were answered 2026-10-07). Nothing urgent; the batch is tested headlessly and reviewed. |
-| 12 | **F889** | ~40 min | Wave 4's screen checks: recovery and safety copies, two app copies, transcripts, dictation. Step 1 (the Claude key, 1 min) is worth doing first. |
+| | Entry | Time |
+|---|---|---|
+| 1 | **The short list** (F392 · F805 · F353 · F294 · F201) | ~30 min |
 
 ---
 
-## F294 — Confirm a menu-bar-only session gets its notices
-
-*2026-09-26:* the lid-close recording of 2026-09-25 was done **with the main window open** (you
-confirmed), so it says nothing about this question; the ask below still stands as written.
-
-**Status:** `blocked`. This ask used to live under the F257 letter, and F257 closed on 2026-09-17 —
-so the question has been filed under a closed ticket since. It belongs to F294.
-
-**What I need from you:** one recording, about two minutes.
-
-Close the main window entirely. Start a recording from the menu bar, let it run a moment, then stop
-it. What I need to know is whether the notification actually arrived on screen — the first one
-especially, because a first run evaluates the post while macOS is still showing you the permission
-prompt, and that first notification is the one this whole path exists to deliver.
-
-If you want to exercise more of it in the same two minutes: close the lid while it records. A
-recording that ends because the capture died now goes through the same notification channel, so one
-lid close covers both.
-
-**One correction to what this letter used to say.** It claimed "the code work is done". That is not
-true, and I should not have written it: two code-only items are still parked behind this physical
-run — notification authorization at *post* time (a different bug from the ordering fix that landed),
-and the alert sites that are still window-only. Neither needs you. They are on the ticket, and any
-agent can take them; the run below is the only part that is genuinely yours.
-
----
-
-## F353 — Press Restore Library once, on a real backup container
-
-**Status:** `blocked`. **This letter was wrongly retired earlier today and is back.** I moved F288
-to Settled on the strength of its heading ("done without you, 2026-09-17") and its `fixed` outcome,
-without reading its Gaps. Its Gaps say the opposite: the case the letter named was never looked at,
-and the button was never pressed. whisper-62 caught it within the hour. The residual now has its own
-ticket, **F353**, which it should have had when F288 closed.
-
-**What I need from you:** about three minutes on the restore screen.
-
-Two things went unchecked when F288 closed:
-
-1. **Restore Library was never actually pressed.** The apply path is covered by tests
-   (`BackupRestoreApplyTests`), but on screen the confirmation was cancelled both times. So the
-   screen has never been driven through to the end.
-2. **The container case — the one F288's letter was written to check — was not the one tested.** An
-   unrelated folder was used instead. So the case that matters is the case with no evidence.
-
-Choose a real backup container, read the plan the screen shows you, and **accept** the confirmation
-rather than cancelling. What I need to know is whether the screen told the truth about what it was
-about to do — the plan it previews against what you find afterwards.
-
-If you would rather not run a real restore, say so and this closes `wontfix` with that as the
-reason; it is a reasonable answer and better than an open question nobody will ask again.
-
----
-
-## F201 — Fifteen minutes with a microphone
-
-**Status:** `blocked`. Dictation refinement has never been exercised with real speech in the
-installed app. The numbers say it works — 75 % of attempts refine on your Mac — but what nobody has
-watched is the pill and the paste.
-
-**What I need from you:** one dictation session, about fifteen minutes.
-
-Settings → refinement on, then hold the hotkey for each of these:
-
-1. One short English dictation.
-2. One Mandarin dictation.
-3. One over 60 words — this **must skip** refinement.
-4. Two back-to-back — the second should skip, busy.
-5. One after five idle minutes — falling back to raw is acceptable.
-6. One during a phone or FaceTime call. The call puts the built-in microphone in its voice mode,
-   which is what crashed the app twice in September (F356). It should transcribe correctly — that
-   is **F361**, and it is the only part of it a test cannot do. Say "skip 6" if you would rather not.
-7. Once a build from 2026-10-01 or later is installed (`Scripts/install-app.sh`; it includes F403 and
-   F404, which changed how a dictation starts the microphone): one dictation in hold mode and one in
-   toggle mode. Both should start listening and transcribe as before. That is **F731**: no test can
-   press a real microphone, so this is the only check of the new start path.
-
-Then check that the history records the raw text and the outcome for each. Tell me what looked
-wrong, or say "skip" and it stays open.
-
----
-
-## F230 — Watch the speaker-analysis screens once, with VoiceOver on
-
-**Status:** `blocked`, and **narrower than when this was written**. Two of the seven checks below
-are now covered by tests — cancel-mid-run leaving no `diarization.json`
-(`DiarizationWiringTests.diarizationCancellationWritesNothing`) and the single-voice copy
-(`DiarizationWiringTests` + `SpeakerReviewSurfaceTests`) — so they are struck. What is left is the
-part no test can reach.
-
-**What I need from you:** about twenty minutes with the app, VoiceOver on for part of it.
-
-The fixtures exist:
-
-```bash
-Scripts/bench/diarization/make-ui-fixtures.sh audio ~/Desktop/ui-fixtures
-Scripts/bench/diarization/make-ui-fixtures.sh models off   # then `on` to put it back
-```
-
-Both fixtures are synthetic speech and belong to nobody; delete the meetings afterwards.
-
-1. **The model-absent copy**: `models off`, open the speaker-analysis screen, read the installer
-   text, then `models on`.
-2. **Import a fixture and leave it untranscribed** to reach the no-transcript state.
-3. **VoiceOver on** (⌘F5): a transcript row for an anonymous speaker should *say* "inferred". The
-   text is asserted by tests; that VoiceOver speaks it is not.
-4. **Keyboard only** (Tab / arrows): every control on those screens reachable without the mouse.
-5. **Dynamic Type large** and **Reduce Motion on**: nothing clipped, nothing that only animates.
-
-The reason this is yours: spoken output, focus order and type scaling are things only a person can
-confirm, and the accessibility claims are the ones that most deserve confirming rather than
-asserting.
-
----
-
-## F428 — Copy on your iPhone, dictate on the Mac, then paste
-
-**Status:** `blocked`. Tried once on 2026-09-24 with F425: no more "raw transcript" (that was the test
-suite, F427), but the iPhone's text still did not come back. F516 rebuilt the mechanism the way Wispr
-Flow, Superwhisper and VoiceInk do it — the clipboard is copied at the moment of pasting, not when
-you start speaking — and it now writes the clipboard's *types* (never its content) to the log, so
-one more try tells us exactly what macOS hands WhisperMeet for an iPhone item.
-
-*2026-09-26:* you tried it (five dictations, 12:05–12:07) and I read the log: at every paste the
-Mac's clipboard held **zero items** — the iPhone's copy never reached the Mac at all, so there was
-nothing for the restore to give back, and it put the empty clipboard back over the dictation. That
-is why nothing pastes afterwards. It does not yet say whether Universal Clipboard itself is down on
-this Mac or whether the item needs a read this code does not do.
-
-*Same day, later:* you tried the plain paste into Notes — **nothing**. So it is not WhisperMeet.
-From the Mac side (settings and system log only): Handoff is on, Bluetooth and Wi‑Fi are on, the Mac
-sees your iPhone and advertises its own clipboard to it, but the file macOS uses for the *incoming*
-clipboard was last written **2026-09-21 21:55** — the last time an iPhone copy reached this Mac,
-three days before the F516 build existed.
-
-**What I need from you (on the iPhone, in this order, then one paste test after each):**
-1. 设置 ▸ 通用 ▸ 隔空播放与接力（或"隔空播放与连续互通"）▸ **接力** — 关掉，再打开。
-2. 控制中心里确认 **Wi‑Fi 是开着的**（用蜂窝数据也要开着 Wi‑Fi；通用剪贴板走的是点对点 Wi‑Fi）。蓝牙关一次再开。
-3. 设置 ▸ 最上方你的名字 — 和 Mac 是同一个 Apple ID，且已开双重认证。
-4. 都还不行：iPhone 重启一次；再不行，Mac 上 系统设置 ▸ 通用 ▸ 隔空投送与接力 ▸ 接力 关再开。
-Once a plain paste works again, do the dictation step once and I read the log line myself.
-
-*Earlier one-step ask:* copy some text on your iPhone, then paste it straight into any app on the
-Mac — Notes, say — without dictating in between.
-
-- **Nothing pastes** — Universal Clipboard is not reaching this Mac right now; WhisperMeet is not
-  in the path. The usual causes: 系统设置 ▸ 通用 ▸ 隔空投送与接力 ▸ "允许在这台 Mac 和 iCloud 设备之间使用接力"
-  off on either device, different Apple IDs, Bluetooth or Wi‑Fi off, or the two devices not both
-  awake and near; toggling Bluetooth off and on on both usually brings it back. Once a plain
-  paste works, do the dictation step once more and I read the log again.
-- **The iPhone's text pastes** — then do: copy on iPhone → dictate into a text box → wait two
-  seconds → paste elsewhere, and tell me what came out. The log will now say whether the Mac saw
-  the iPhone item (`1 item(s): …is-remote-clipboard…`) or, as today, nothing.
-
-*Earlier ask, for the record:* with the build that includes F516 installed, copy some text on your
-iPhone, dictate a sentence into a text box on the Mac, wait two seconds, paste somewhere else — and
-tell me what the paste gave you. I will read the log line myself.
-
-- **Your iPhone's text** — fixed; F428 closes.
-- **The dictation again** — the log will say why (for example, that the iPhone item never reached
-  the Mac's clipboard before the paste, which no paste-based dictation app can work around).
-- **A macOS prompt** asking whether WhisperMeet may read the clipboard — Allow keeps the restore
-  working; Don't Allow turns it off and dictation still pastes.
-
----
-
-## F392 — Add search by meaning, or tell me not to
-
-**Status:** `blocked`. Ask Meetings can also search by meaning, using an on-device model
-(`intfloat/multilingual-e5-small`, about 490 MB). Two constants decide what it returns, and neither
-has ever been measured: the similarity floor (0.70) and the rank-fusion constant (60). The set of
-test questions to measure them against is committed; the model is not installed on this Mac. Putting
-it there is a download into WhisperMeet's own runtime, and it also switches Ask to searching by
-meaning for you, so it is your action to start, not a test's. That is why no agent has done it.
-
-**What I need from you:** you said **yes** on 2026-10-12, in chat. In the sidebar, open **Ask Meetings** and press **Add Search by
-Meaning (490 MB)**, then tell me it has finished.
-
-The download comes once from Hugging Face. After that, searching runs on this Mac and nothing about
-your meetings is uploaded (the button's own help text says the same). Once it is installed, an agent
-runs the measurement against the committed questions only, never your meetings, in a few minutes.
-The same run gives F396 the per-language numbers it is waiting for.
-
----
-
-## F805 — Shrink a throwaway meeting once, on the new build
-
-**Status:** `blocked`. The build installed on 2026-10-02 shows each meeting's disk use and adds **Shrink…**. Shrink
-replaces a meeting's audio with one compressed file of about 15 MB an hour, and deletes the original permanently.
-Tests cover the steps and their order, but the target cannot click its own buttons, so the screens have never been
-used.
-
-**What I need from you:** about five minutes, on a meeting you don't need. Never use a real one: Shrink cannot be
-undone.
-
-1. **Import a throwaway file:** a copy of any voice memo, or a 30-second recording you make for this. Let it transcribe.
-2. **On its page:** the header should show a size such as "1.2 MB" next to the date and length. Press **Shrink…**. The
-   dialog should give the size before and after, and say the original is deleted permanently. Press **Shrink**.
-3. **Afterwards:** it should report "Shrunk … from … to …". It should still **play**, and **Transcribe Again** should
-   still work.
-4. **Settings → Meeting library → Show Storage…:** meetings should be listed largest first, with a total. A meeting that
-   can't be shrunk should say why under its title.
-
-Tell me what looked wrong, or "fine". One more choice is yours: 32 kbps is kept, and 24 kbps scored the same on the
-test clips while saving about 4 MB more an hour. Say "24" if you want the smaller one.
-
----
-
-## F807 · F845 · F685 — Wave 3: one sitting at the screen, and four questions
-
-**Status:** `blocked` (F807, F845, F685, F682). The 2026-09-28 → 10-07 batch fixed about 70 tickets in recording, quit, menu
-bar, dictation paste and privacy, hotkeys, installers, backups, history and vocabulary. Each was tested headlessly and
-reviewed by a second agent; what only a person can see is collected here. Install the batch's build first (I will tell you
-when it is installed). Use bench clips or throwaway imports, never a real meeting.
-
-**What I need from you:** one sitting of about 45 minutes (split it as you like).
-
-1. **Quitting and the menu bar (F529, F672, F673, F543, F528, F674) — ~10 min.** Start a recording, talk for 20 s, press ⌘Q:
-   "Stop and save the recording before quitting?" should appear; choose Keep Recording, then ⌘Q again and Stop & Quit.
-   Relaunch: the meeting is saved and ready to transcribe, not "interrupted". Also try ⌘Q while "Finishing…" shows. With
-   the window closed, the menu-bar icon shows a recording; ⌘/ opens Keyboard Shortcuts.
-2. **Two windows (F564, F675) — ~3 min.** ⌘N for a second window on the same meeting; rename in one, close the other: the
-   name stays. Type notes in both: nothing is lost.
-3. **Settings (F565, F520, F567) — ~5 min.** The screen-recording row has **Allow…**. Start any model install and press its
-   **Cancel**: it says it was cancelled and the old version still works.
-4. **Dictation (F521, F523, F537, F585, F586, F600, F601, F656) — ~15 min.** Settings ▸ Quick Dictation ▸ Change: Esc cancels,
-   Tab/Space are refused. Dictate into a password field: the pill says "Not pasted — secure input" with **Copy**, and nothing
-   is on the clipboard until you press it. Dictate into Terminal, iTerm2 or Ghostty if you use them (F682 needs the log line
-   each one writes). Turn VoiceOver on (⌘F5) and dictate once: the outcome is spoken once.
-5. **One silent press (F845) — 1 min.** In a quiet room, press the dictation key and say nothing: nothing should be pasted.
-   This checks the new −60 dBFS floor against your real microphone.
-6. **Second Opinion, links, vocabulary, Ask (F605, F661, F539, F602, F536, F455, F842) — ~10 min.** A refused Replace shows
-   its alert over the sheet. Add from a Link with a bad URL shows the error inside the sheet. Correct Toward Vocabulary
-   shows a progress bar and Cancel. Edit a transcript, then Ask about the removed words: they are not found. Export SRT:
-   cue times keep their milliseconds.
-7. **Optional, with care (F685):** only if you want an F-key as your dictation trigger (yours is Right ⌘, which this does not
-   affect). Steps and the mouse-only escape are in F685.
-
-**Four questions — answered 2026-10-07:** replacement rules will also apply to Quick Dictation (F821); a deleted meeting's
-copy in the restore safety folders is wiped after its week (F664); the "two versions" screen gets a "Keep the version on disk"
-button (F833); and both quit choices stay as they are — logout asks first, Stop & Quit leaves the meeting ready to transcribe
-(F529, F673). The three changes are on the board for the next batch.
-
----
-
-## F889 — Wave 4: one sitting at the screen (its hardware check was closed 2026-10-12)
-
-**Status:** `blocked` (F889, F857). The 2026-10-07 → 10-08 batch fixed 33 tickets in the library's recovery and restore
-safety copies, two copies of the app on one library, transcripts and Ask, dictation and recording. Each was tested headlessly
-and reviewed by a second agent; what only a person can see is collected here. Most steps use a **scratch library**, never your
-real one — when you are ready, tell me "set up the Wave 4 sitting" and I will prepare a scratch copy of the app you can open
-with one command.
-
-**What I need from you:** one sitting of about 40 minutes on the installed Wave 4 build (split it as you like). Step 6 is closed:
-you have no multi-input device (2026-10-12).
-
-1. **Claude key (F442) — 1 min, on your real app.** Settings ▸ Claude: if a key is saved it reads "API key saved"; quit and
-   relaunch, and it still does. (The tests now never touch your Keychain; this proves the shipped app still does.)
-2. **Two versions and safety copies (F833, F855) — ~10 min, scratch.** A library whose index was swapped for another copy's
-   shows "Two versions of the meeting library were found"; **Keep the Version on Disk** in Settings opens it again. After a
-   Restore…, Settings ▸ Meeting library lists "Restore of <date> · <size>" with **Remove…**, which asks before deleting.
-3. **Two copies of the app (F662, F667, F669) — ~10 min, scratch.** With the conflict banner up in one copy, a recording you
-   stop there appears in the list at once and the banner stays.
-4. **Transcripts (F831, F658, F873, F870) — ~8 min.** Improve ▸ Apply Replacement Rules… → Apply → Edit ▸ Undo puts the line
-   back. Second Opinion shows no Replace on a row whose reading runs into its neighbour. A meeting from before 17 September that
-   you never edited shows its quality flags again. Deleting a meeting while Shrink runs on it says it is still being written.
-5. **Dictation (F821, F823, F846) — ~8 min.** Add a replacement rule "Jon → Jonathan" and dictate "ask Jon about it":
-   "Jonathan" is pasted; dictate an email address containing "jon": it is left alone. In a noisy room, hold the key and say
-   nothing: "Didn’t catch that", nothing pasted. (The first-download pill needs a library
-   without the dictation model; I will include it in the scratch setup.)
-6. **Answered 2026-10-12 — no such device; F857 closed.** ~~**Optional hardware (F857):** only if you own a multi-input audio interface (or a microphone that sends two or more    channels). Record ~30 s into its second or later input and dictate once: both should be audible and transcribed. Before this    batch an interleaved multi-channel microphone recorded nothing at all (F875). With one live input on an N-input interface the    level is about 1/N — please note the level, not just whether it is audible. If you have no such device, say so and I close    F857 as not planned.~~
-
----
-
-## F904 — Wave 5: one sitting at the screen (its four questions were answered 2026-10-12)
-
-**Status:** `blocked` (F904). The 2026-10-08 → 10-11 batch closed 55 tickets (52 fixed, 2 partly — each with its follow-up filed — and 1 not to be done) across link imports and
-recovery, long recordings, the first dictation-model download, transcript tools, the dictation trigger key, imports and the
-watched folder, Shrink's safety checks, quitting while a recording saves, and two copies of the app on one library. Each was
-tested headlessly and reviewed by a second agent. What only you can decide or see is collected here. The sitting uses a
-**scratch library**, never your real one, except where a step says otherwise. When you are ready, tell me "set up the Wave 5
-sitting" and I will prepare a scratch copy of the app that opens with one command.
-
-**What I need from you:** when convenient, one sitting of about an hour on the installed Wave 5 build. Every step is optional,
-and nothing here is urgent.
-
-**Four questions — answered 2026-10-12.** A (F913): replacement rules keep fixing capitals only at a sentence start — closed, no change.
-B (F942): Shrink keeps refusing recordings with several tracks or more than two channels, and mixing every track for transcription and
-Shrink comes later (F942, now open work; it also settles F953). C (F932): the warning will name the track and say the rest is still
-recording, instead of telling you to stop (F932, open work). D (F899): no Intel Mac — closed.
-
-**The sitting** (about an hour; split it as you like).
-
-1. **Link imports and a restart (F453, F911): ~20 min, needs a long YouTube video.** Stop during "Checking the link…":
-   nothing is left behind. Force-quit during a three-hour import's extraction and relaunch: the import is reported as
-   "still being written" and appears later at full length. Restart the Mac during an hour-long import's extraction: after
-   logging in, the meeting appears at its full length, and its Shrink button is unavailable with a reason naming the
-   download.
-2. **Quitting while a recording saves (F812): ~3 min.** Record ten minutes, press Stop & Transcribe, and press ⌘Q while it
-   says "Finishing…". The app quits once the save ends, and at the next launch the meeting is ready to transcribe, not
-   "interrupted".
-3. **Dictation trigger key (F691, F683, F684, F687, F924, F925): ~10 min, on your real app.** Choosing a key stops when you
-   click away. Choosing your own F-key again keeps it. After a failed dictation, the menu-bar menu shows "Last dictation
-   failed: …" under Quick Dictation; I chose that place, so say if you'd rather see it elsewhere.
-   - **F924:** note how wide the menu gets with that line, which decides its cap or shape.
-   - **F925:** while choosing a key, press ⌘-Tab, then ⌃-→. Does the trigger become ⌘ or ⌃?
-4. **Transcript tools (F858, F819, F820, F817, F743, F839, F850): ~10 min.** A "bill → invoice" rule changes "Bill" only
-   at a sentence start. Correct Toward Vocabulary handles ".NET" and "Acme Inc." without doubling the full stop. Chinese
-   sound-alike rows arrive unticked, each with its sentence, and Select All leaves them alone. An exported .srt shows
-   "a < b" literally in VLC and IINA. Ask on a Qwen meeting without timestamps gives short passages.
-5. **Imports and the watched folder (F705, F804, F711, F801): ~8 min.**
-   - A Finder alias dropped into the watched folder imports the real recording.
-   - A Finder-locked file imports and deletes cleanly, and your file stays locked.
-   - With no window open, an unreadable file in the watched folder brings a notification; with a window open, an alert
-     and no notification.
-   - Optional, if you have a movie with two audio tracks: since Wave 6 both are transcribed; Shrink still refuses it, saying shrinking
-     isn't available yet for several tracks (F980).
-6. **Two copies of the app, and the library's sentences (F863, F865, F844, F881, F887): ~15 min, scratch.** A segment re-run
-   under the conflict banner says to answer the banner first. Keep This List respects the other copy's newer save. A
-   missing index is called missing, not damaged. An emptied index over finished recordings offers Recover Library…
-7. **First dictation-model download (F859, F826): ~10 min plus a 1.6 GB download, scratch.** The banner, model row and menu
-   show the percentage rising, and a parallel setup script waits instead of fighting it.
-8. **Optional, if you have them:** a recording over 45 minutes transcribed with Whisper (F533: one rising percentage,
-   continuous timestamps past 45:00). Memory in Activity Monitor after stopping an hour-long recording should not jump by
-   the size of both tracks (F910). Typing notes on a large library should not stall (F526). On a read-only scratch
-   library, opening an old meeting brings no alert (F479).
-
-The exact steps for each are in that ticket's entry in `docs/TICKET_LOG.md`.
-
----
-
-## F981 — Wave 6: a short sitting at the screen
-
-**Status:** `blocked` (F981). The 2026-10-12 batch closed 28 tickets: recording stops and quits, link imports and their recovery, Shrink on
-link imports, mixing every track of a recording for transcription, the dictation model download and history timings, and replacement-rule and
-vocabulary-correction fixes. Each was tested headlessly and reviewed by a second agent (Shrink twice). What only you can see is here. Use a
-scratch library where a step says so — tell me "set up the Wave 6 sitting" and I will prepare one.
-
-**What I need from you:** when convenient, about 30 minutes on the installed Wave 6 build. Every step is optional.
-
-1. **Stopping and quitting (F928, F929) — 3 min, real app.** Record a few seconds, press ⌘Q and choose **Stop & Quit**: the app quits within a
-   few seconds, and on reopening the meeting is there under its title, ready to transcribe. Record again and press **Stop & Transcribe**: it reads
-   "Finishing…" briefly, then transcribes. Record again, **Cancel** → **Discard**: nothing is added.
-2. **Link imports (F895, F893) — ~10 min, a long YouTube video.** After "Downloading audio… 100%" the sheet says "Fetching captions…", never
-   "Checking the link…" again. Start another and press ⌘Q while it downloads, then in Terminal `pgrep -fl 'yt-dlp|ffmpeg'` prints nothing. With two
-   windows (File ▸ New Window), Cancel in the second window's sheet leaves the first window's import running.
-3. **Shrink (F941, F942) — ~5 min, scratch.** Shrink a link import: it works now. A recording with two audio tracks (a call saved one side per
-   track) transcribes with both sides; its **Shrink…** is greyed with "shrinking it isn't available yet", and the recording is kept (F980 will
-   make it safe to shrink these).
-4. **Replacement rules and vocabulary (F938, F950, F940, F971) — ~10 min, scratch.** A rule "bill → invoice" leaves "Mr. Bill" alone. With
-   "jon → Jonathan", the line "Zoë and Jon. Jon left." becomes "Zoë and Jon. Jonathan left." A vocabulary term "Bank of New York" fixes "Bank of
-   New Yolk" whole. Open one meeting in two windows, Apply a correction in one, then Apply in the other: the second says which corrections were
-   skipped because their line changed.
-
----
-
-## F1010 — Wave 7: a sitting at the screen, and what Shrink now keeps
-
-**Status:** `blocked` (F1010). The 2026-10-13 to 10-16 batch closed 58 tickets. They cover Shrink's stereo safety, reasons for greyed controls,
-the recording window's warnings, library save conflicts and recovery, link-import leftovers, vocabulary and Chinese corrections, test hygiene
-and doc comments. Each was tested headlessly and reviewed by a second agent; stereo Shrink was reviewed four times. What only you can see
-is here. Use a scratch library where a step says so; tell me "set up the Wave 7 sitting" and I will prepare one.
-
-**What Shrink now does with stereo, under your rule "Refuse any with cancellation" (F1001).** These are kept full size with a reason,
-though nothing in them would be lost:
-- stereo from two microphones 25 cm or more apart with two talkers;
-- stereo widened with a short delay (a Haas effect);
-- files whose channels are laid out as LFE, mid/side or unusual positions.
-
-Ordinary stereo with a talker per channel still shrinks. In 59 ordinary test files, one more is refused than before: a single talker on
-echo-free microphones a metre apart.
-
-Still not caught, so these are shrunk and the original removed:
-- a side voice about 11 dB or more quieter that talks over the main voice throughout;
-- a side voice alone for under a fifth of a second;
-- a few narrowband cases beside spaced microphones (F1009).
-
-**What I need from you:** when convenient, about 30 minutes on the installed Wave 7 build. Every step is optional.
-
-1. **Stereo Shrink (F1001, F800) — 5 min, scratch.** Import a stereo WAV whose left channel is A + B and right A − B, and press
-   **Shrink…**. It says the recording could not be shrunk because the left and right channels cancel at about 0:00, and nothing is removed.
-   An ordinary stereo import (a talker per channel) shrinks. On a meeting Shrink refuses, the reason is written in small grey text under
-   the button, not only as a tooltip.
-2. **Greyed controls say why (F832, F843) — 5 min.** Queue Transcribe Again on a meeting while another transcription runs: its greyed
-   "Transcribe Again…" has a footnote in the Improve menu saying it is already queued. With a transcription queued, Settings ▸ Restore a
-   backup names the queued meeting. Please say whether macOS shows a tooltip on the greyed menu item.
-3. **Rules and vocabulary (F967, F920, F914–F916, F921, F968, F972) — 10 min, scratch.**
-   - A rule "jon → Jonathan" turns "Jon met jon" into "Jonathan met Jonathan" in one Apply.
-   - Vocabulary "Kestrel" on "the Kestrol/Falcon build and the Kestrol release" changes only the second Kestrol.
-   - "Bank of New York" fixes "Bank of New Yor k".
-   - With "张伟" and "预算", "张薇明天来开会" gets no row, and "这个预选不够" gets "预选 → 预算", unticked.
-4. **Link imports (F975, F961) — 10 min, a real link.** With two windows open, press Download in the second while the first still says
-   "Checking the link…": the second says to finish the current import first, and Start Recording is greyed meanwhile. Quit during
-   "Downloading audio… 100%", relaunch and press ⌘Q within a few seconds: Activity Monitor shows no `ffmpeg` afterwards.
+## F392 · F805 · F353 · F294 · F201 — The short list: five checks, about 30 minutes
+
+**Status:** `blocked` (F392, F841, F805, F353, F294, F201, F731, F845, F428, F682). Agents can't see your screen, speak into
+your microphone or click your buttons, so these are the checks only you can do. Do them in any order, whenever it suits you,
+and tell me what looked wrong, or just "fine". Say "skip" for any step you'd rather not do.
+
+**What I need from you:** about 30 minutes for the five checks below.
+
+1. **Turn on search by meaning (F392) — 5 min.** In the sidebar, open **Ask Meetings** and press **Add Search by Meaning
+   (490 MB)**. Tell me when it has finished. It downloads once; after that, searching stays on this Mac. An agent then measures
+   how well it works using test questions only, never your meetings.
+
+2. **Shrink a throwaway meeting (F805) — 5 min. Never use a real meeting.**
+   - Import a copy of any voice memo (or record 30 seconds just for this) and let it transcribe.
+   - On its page, the header shows a size such as "1.2 MB". Press **Shrink…** and read the dialog: it should show the size
+     before and after. Press **Shrink**.
+   - Afterwards it should say "Shrunk … from … to …". The meeting should still **play**, and **Transcribe Again…** should
+     still work.
+   - Settings → Meeting library → **Show Storage…**: meetings are listed largest first, with a total.
+   - Once a build with F1040 is installed, the original goes to the Trash instead of being deleted: check that it is there.
+
+3. **Restore a backup once (F353) — 5 min. Your library stays the same if you follow this order.**
+   - Settings → Meeting library → **Back up library…** — make a fresh backup now.
+   - Then press **Restore…** and choose *the backup you just made*.
+   - Read what the screen says it will do, then press **Restore**. Don't cancel: pressing it is the part nobody has tried.
+   - Tell me whether what it said matches what happened. The backup is only a minute old, so your library should look exactly
+     the same afterwards.
+
+4. **A recording with no window open (F294) — 2 min.** Close the main window completely. Start a recording from the
+   **menu-bar icon**, wait a few seconds, then stop it from the menu bar. Did a notification appear on screen? The first one
+   matters most.
+
+5. **A dictation session (F201, F731, F845, F428, F682) — 15 min.** In Settings, turn on **Refine with local AI (grammar
+   cleanup)**. Then:
+   - Dictate one short English sentence, and one in Mandarin.
+   - Dictate something over 60 words. It should paste without being polished.
+   - Dictate twice quickly, back to back.
+   - Set **Trigger mode** to **Hold to talk** and dictate once; then to **Toggle on/off** and dictate once. Both should work.
+     Put it back the way you like it afterwards.
+   - In a quiet room, press the key and say nothing. Nothing should be pasted.
+   - Copy some text on your iPhone, dictate one sentence on the Mac, wait two seconds, then paste somewhere else. Did you get
+     the iPhone's text back?
+   - Dictate once into the terminal app you use.
+
+   Tell me anything that looked wrong. I read the app's own log for the rest (never your transcript text).
 
 ---
 
 ## Settled — nothing needed from you
+
+**Closed 2026-10-17, from your answers in chat — checked by code only.** You chose the short list above, so these were closed
+in `TICKET_LOG.md`: the Wave 3 to Wave 7 sittings (F807, F889, F904, F981, F1010), the speaker screens' VoiceOver check (F230),
+F174's visual checks, and a dictation during a call (F361). You skipped switching off Accessibility while the app runs (F685).
+You have no network drive (F1031, F1035) and no older M1 or M2 Mac (F760), and you don't use an F-key trigger (F861). The two
+Wave 5 design questions were answered instead: a short menu-bar error line (F924), and a confirmation when ⌘ or ⌃ alone is
+chosen as the dictation key (F925). If something looks wrong in use, tell any session and it becomes a new ticket.
+
 
 **F299 · F347 · F349 — answered 2026-10-12, in chat.** F349: "Yes, counts only" — a session runs the cluster-count sweep over two of
 your meetings, read-only, printing counts per setting and never any words — done the same day: both meetings hold 3 speakers from 0.50
