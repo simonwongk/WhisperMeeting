@@ -3176,12 +3176,14 @@ private struct TranscriptDetailView: View {
                               : "Mix the raw microphone and system tracks again, in case more audio survived than the first recovery found.")
                     }
                     // F704: a recording imported as a link before F494. Its own sibling, for F306's
-                    // reason, and shown only while the original it links to is still there.
-                    if model.linkedRecordingOriginal(id: meetingID) != nil {
+                    // reason, and shown only while the original it links to is still there — as last
+                    // checked off the main actor (round 2; the `.task` below), never stat'ed here.
+                    if model.linkedRecordingOffers[meetingID] != nil {
                         Button("Copy Linked Recording Into Library") {
                             Task { await model.copyLinkedRecordingIntoLibrary(id: meetingID) }
                         }
                         .buttonStyle(.link)
+                        .disabled(model.copyingLinkedRecordingIDs.contains(meetingID))
                         .help("This recording is a link to a file elsewhere. Copy that file into the library, so the meeting keeps playing if the original moves and is included in backups. The original is not changed.")
                     }
                     tagsEditor
@@ -3197,6 +3199,9 @@ private struct TranscriptDetailView: View {
                 .frame(maxWidth: 860, alignment: .leading)
                 .padding(32)
                 .frame(maxWidth: .infinity)
+                // F704 round 2: whether this meeting's recording is a link to copy in, checked off
+                // the main actor when the meeting is shown.
+                .task(id: meetingID) { await model.refreshLinkedRecordingOffer(id: meetingID) }
                 // The status-card → transcript swap when transcription completes is the app's
                 // payoff moment — cross-fade and settle instead of hard-cutting (F116). Under
                 // Reduce Motion the layout spring is dropped; the cross-fade itself survives via

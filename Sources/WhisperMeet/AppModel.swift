@@ -1679,6 +1679,18 @@ final class AppModel: ObservableObject {
         RecordingFolderLiveness.holderNames(of: $0.path)
     }
 
+    /// F704 round 2: the original each meeting's linked recording points at, as last checked off the
+    /// main actor (`refreshLinkedRecordingOffer(id:)`). The meeting page reads this, never the
+    /// filesystem: the original can sit on a share that has stopped answering, and a `stat` there can
+    /// block for the share's timeout.
+    @Published var linkedRecordingOffers: [UUID: URL] = [:]
+    /// Meetings whose linked recording is being copied in, so a second click is turned away and the
+    /// button is disabled meanwhile.
+    @Published var copyingLinkedRecordingIDs: Set<UUID> = []
+    /// Asks what a recording links to (`AppModel.linkedOriginal(of:)`). Injectable in the F47 shape, so
+    /// a test can see where it runs.
+    var linkedRecordingProbe: @Sendable (URL) -> URL? = { AppModel.linkedOriginal(of: $0) }
+
     /// Writes one indexed capture's missing `source-tracks.json` from the alignment its session kept
     /// (F753), returning whether it wrote one. Injectable in the F47 shape; defaults to the real core
     /// (`SourceTrackManifest.writeFromCapturedAlignment`), which writes nothing it cannot measure.
@@ -8855,7 +8867,7 @@ extension AppModel {
     /// Maps integrity results into user-facing advisory lines. Presentation only.
     static func integrityMessages(_ results: [LibraryIntegrityResult]) -> [String] {
         results.flatMap { result in
-            result.findings.map { describe($0, title: result.meeting.title) }
+            result.findings.map { describe($0, title: result.meeting.title, alongside: result.findings) }
         }
     }
 
@@ -8890,7 +8902,9 @@ extension AppModel {
         return []
     }
 
-    private static func describe(_ finding: IntegrityFinding, title: String) -> String {
+    /// `alongside` is every finding for the same recording, for the one sentence that depends on
+    /// another: a link whose original is gone is offered no copy, so its line names none (F704 round 2).
+    private static func describe(_ finding: IntegrityFinding, title: String, alongside: [IntegrityFinding] = []) -> String {
         switch finding {
         case .recordingMissing:
             return "“\(title)”: the recording file is missing from disk. The meeting entry was kept; its audio could not be found."
@@ -8910,7 +8924,11 @@ extension AppModel {
             // the original again — and deleting the entry removes only the alias's bytes.
             return "“\(title)”: the recording file is a Finder alias — a pointer to a file somewhere else — not audio. It was imported from an alias by an earlier version of WhisperMeet, so this meeting has no audio of its own. If the original recording still exists, import it again; this entry can then be deleted."
         case .recordingIsSymbolicLink:
-            // F704: an import of a link before F494 kept the link. Named with what to do, and where.
+            // F704: an import of a link before F494 kept the link. Named with what to do, and where —
+            // unless the original is gone, when the meeting page offers nothing (round 2).
+            if alongside.contains(.recordingMissing) {
+                return "“\(title)”: the recording file is a link to a file somewhere else, and that file is no longer there. It was imported from a link by an earlier version of WhisperMeet, so this meeting has no audio of its own. If you still have the original recording, import it again; this entry can then be deleted."
+            }
             return "“\(title)”: the recording file is a link to a file somewhere else, not a copy. It was imported from a link by an earlier version of WhisperMeet, so it plays only while the original stays where it is, and backups leave it out. Open the meeting and choose Copy Linked Recording Into Library to keep a copy of its own."
         case .sourceTrackManifestMissing:
             // "Missing or unreadable", not "failed to write": the folder alone cannot say why.
