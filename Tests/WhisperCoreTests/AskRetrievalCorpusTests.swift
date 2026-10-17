@@ -20,6 +20,13 @@ import Testing
 // the user's decision to make in Settings and not a test's to start. So the keyword baseline and
 // the fusion mechanics run here, and the floor/`k` sweep the ticket asks for is one command away
 // once that model exists. F392 carries it.
+//
+// **F396: the set is bilingual now, as the model and the product are.** Meetings 6 and 7 are
+// Mandarin, written in Mandarin, and each pair names its language: none for the English 24, "zh" for
+// a Mandarin question over a Mandarin passage, "en-zh" for an English question over a Mandarin one.
+// Recall is reported per language, so a floor fitted on English alone cannot hide what it does to
+// Mandarin. The English numbers stay on their own six-meeting pool, so 0.250/0.292 still mean what
+// F350 measured; the Mandarin and cross-language questions are asked of the whole bilingual library.
 
 private struct RetrievalCorpus: Decodable {
     struct Meeting: Decodable {
@@ -31,6 +38,10 @@ private struct RetrievalCorpus: Decodable {
         let question: String
         let meeting: Int
         let segment: Int
+        /// nil for the English 24 (F350); "zh" or "en-zh" (F396).
+        let language: String?
+
+        var languageGroup: String { language ?? "en" }
     }
 
     let meetings: [Meeting]
@@ -75,11 +86,33 @@ private func recall(at depth: Int, ranked: [[CitedResult]], expected: [(UUID, In
     return Double(hits) / Double(expected.count)
 }
 
-@Test("The committed pair set is well formed and every marked passage exists (F350)")
+/// The six English meetings F350 measured on, which the English questions are still ranked over.
+private let englishMeetingCount = 6
+
+/// The share of a question's retrieval tokens its passage also has: what BM25 sees of the pair.
+///
+/// `RetrievalTokenizer` gives Mandarin every character AND every bigram (F180), so a guard on it
+/// reads Mandarin the way keyword search does — which is the property this guard is about. Checked
+/// before relying on it (F396): a Mandarin echo of its passage scores 0.93 and the eight Mandarin
+/// paraphrases 0.07–0.14, so shared single characters (的, 了, 是) do not push a paraphrase near the
+/// 0.5 line, and a bigram-only variant was not needed.
+private func echoOverlap(question: String, passage: String) -> Double {
+    let asked = Set(RetrievalTokenizer.tokens(question))
+    guard !asked.isEmpty else { return 0 }
+    return Double(asked.intersection(Set(RetrievalTokenizer.tokens(passage))).count) / Double(asked.count)
+}
+
+@Test("The committed pair set is well formed and every marked passage exists (F350, F396)")
 func theCorpusIsWellFormed() throws {
     let (corpus, searchable) = try loadCorpus()
     #expect(corpus.pairs.count >= 20, "the ticket asks for 20+ pairs, found \(corpus.pairs.count)")
-    #expect(searchable.count == 6)
+    #expect(searchable.count == 8)
+    let groups = Dictionary(grouping: corpus.pairs, by: \.languageGroup).mapValues(\.count)
+    #expect(groups == ["en": 24, "zh": 8, "en-zh": 6], "got \(groups)")
+    // An English question is over an English meeting, every other over a Mandarin one.
+    for pair in corpus.pairs {
+        #expect((pair.languageGroup == "en") == (pair.meeting < englishMeetingCount), "\(pair.question)")
+    }
     #expect(searchable.allSatisfy { $0.segments.count == 8 })
     for pair in corpus.pairs {
         let meeting = try #require(searchable.indices.contains(pair.meeting) ? searchable[pair.meeting] : nil)
@@ -91,7 +124,7 @@ func theCorpusIsWellFormed() throws {
     #expect(marked.count == corpus.pairs.count)
 }
 
-@Test("The questions are paraphrases, which is what makes the set worth having (F350)")
+@Test("The questions are paraphrases, which is what makes the set worth having (F350, F396)")
 func theQuestionsDoNotEchoTheirPassages() throws {
     // The property that makes this a test of *meaning* rather than of BM25. A question sharing
     // most of its content words with the answer is answered by keyword search and measures
@@ -100,20 +133,33 @@ func theQuestionsDoNotEchoTheirPassages() throws {
     let (corpus, searchable) = try loadCorpus()
     var worst = (overlap: 0.0, question: "")
     for pair in corpus.pairs {
-        let question = Set(RetrievalTokenizer.tokens(pair.question))
-        let passage = Set(RetrievalTokenizer.tokens(searchable[pair.meeting].segments[pair.segment].text))
-        guard !question.isEmpty else { continue }
-        let overlap = Double(question.intersection(passage).count) / Double(question.count)
+        let overlap = echoOverlap(question: pair.question, passage: searchable[pair.meeting].segments[pair.segment].text)
         if overlap > worst.overlap { worst = (overlap, pair.question) }
     }
     #expect(worst.overlap <= 0.5, "\"\(worst.question)\" shares \(worst.overlap) of its tokens with its answer")
 }
 
+@Test("The echo guard sees a Mandarin echo, and passes a Mandarin paraphrase (F396)")
+func theEchoGuardReadsMandarin() {
+    let passage = "晚的原因是应用商店审核把隐私说明退回了一次。"
+    // A question that repeats its passage's words is an echo, in Mandarin as in English.
+    #expect(echoOverlap(question: "应用商店审核把隐私说明退回了吗？", passage: passage) > 0.5)
+    // A paraphrase sharing only single characters (是 and 因 here) is not.
+    let paraphrase = "安卓上线推迟是因为什么？"
+    #expect(echoOverlap(question: paraphrase, passage: passage) <= 0.5)
+    // A cross-language question shares nothing lexical at all, which is why only meaning can find it.
+    #expect(echoOverlap(question: "Why was the Android release late?", passage: passage) == 0)
+}
+
 @Test("Keyword recall on the committed set, which is the baseline meaning has to beat (F350)")
 func keywordRecallIsMeasuredAndRecorded() throws {
-    let (corpus, searchable) = try loadCorpus()
-    let expected = corpus.pairs.map { (meetingID($0.meeting), $0.segment) }
-    let ranked = corpus.pairs.map {
+    let (corpus, allMeetings) = try loadCorpus()
+    // F350's English 24 over F350's six English meetings (F396): BM25's IDF depends on the pool, so
+    // ranking them over the bilingual library would quietly move the numbers recorded below.
+    let pairs = corpus.pairs.filter { $0.languageGroup == "en" }
+    let searchable = Array(allMeetings.prefix(englishMeetingCount))
+    let expected = pairs.map { (meetingID($0.meeting), $0.segment) }
+    let ranked = pairs.map {
         MeetingRetrieval.rank(query: $0.question, in: searchable, limit: 20)
     }
     let at1 = recall(at: 1, ranked: ranked, expected: expected)
@@ -135,6 +181,41 @@ func keywordRecallIsMeasuredAndRecorded() throws {
     #expect(at3 >= at1, "recall cannot fall as the window widens")
     #expect(at1 <= 0.6, "recall@1 \(at1) — if keyword search alone answers most of these, the questions echo their passages")
     print("F350 keyword baseline: recall@1 = \(at1), recall@3 = \(at3), n = \(expected.count)")
+}
+
+@Test("Keyword recall per language over the bilingual library, recorded beside the English baseline (F396)")
+func keywordRecallPerLanguage() throws {
+    let (corpus, searchable) = try loadCorpus()
+    var report: [String] = []
+    var byGroup: [String: (at1: Double, at3: Double)] = [:]
+    for group in ["en", "zh", "en-zh"] {
+        let pairs = corpus.pairs.filter { $0.languageGroup == group }
+        let expected = pairs.map { (meetingID($0.meeting), $0.segment) }
+        let ranked = pairs.map { MeetingRetrieval.rank(query: $0.question, in: searchable, limit: 20) }
+        let at1 = recall(at: 1, ranked: ranked, expected: expected)
+        let at3 = recall(at: 3, ranked: ranked, expected: expected)
+        byGroup[group] = (at1, at3)
+        report.append("\(group): recall@1 = \(at1), recall@3 = \(at3), n = \(pairs.count)")
+    }
+    print("F396 keyword recall over all 8 meetings — " + report.joined(separator: "; "))
+    // Measured 2026-10-17: en 0.250 / 0.292 (n = 24, unchanged by the Mandarin meetings — BM25 found
+    // no English token in them); **zh 0.000 / 0.875** (n = 8); **en-zh 0.000 / 0.000** (n = 6).
+    //
+    // The Mandarin shape is the opposite of the English one. English keyword search finds the right
+    // passage first or not at all; Mandarin keyword search puts it in the top three for seven of eight
+    // questions and first for none. `RetrievalTokenizer` emits every character as well as every
+    // bigram, so a paraphrase still shares single characters with its passage, which is a likely
+    // reason (not traced passage by passage) that it ranks near the top but under another one that
+    // shares as many. So for Mandarin the keyword list carries the
+    // right passage near the top, where fusion (`RankFusion.k`) decides whether it surfaces; for an
+    // English question over Mandarin speech only meaning can find it at all.
+    let crossLanguage = try #require(byGroup["en-zh"])
+    // Structural, not a tuning claim: an English question shares no token with a Mandarin passage,
+    // so keyword search cannot find one. Every such answer Ask gives comes from search by meaning,
+    // which is why the floor F392 sweeps has to be fitted on these pairs and not on English alone.
+    #expect(crossLanguage.at3 == 0)
+    let mandarin = try #require(byGroup["zh"])
+    #expect(mandarin.at3 >= mandarin.at1, "recall cannot fall as the window widens")
 }
 
 @Test("The scorer separates a perfect ranking from a useless one (F350)")

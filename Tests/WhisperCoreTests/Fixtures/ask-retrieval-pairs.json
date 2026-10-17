@@ -9,7 +9,13 @@
     "natural phrasing allows. That is the point: a question that repeats the passage's own words",
     "is answered by BM25 alone and measures nothing about search by meaning. It also means the",
     "keyword-only recall reported by the scorer is expected to be LOW — that is the baseline the",
-    "semantic half has to beat, not a defect."
+    "semantic half has to beat, not a defect.",
+    "",
+    "F396. Meetings 6 and 7 are Mandarin, written in Mandarin, not translated from the English six.",
+    "Pairs carry a \"language\": absent is an English question over an English passage (the F350",
+    "24), \"zh\" a Mandarin question over a Mandarin passage, \"en-zh\" an English question over a",
+    "Mandarin passage, which the product allows and where a shared floor is most likely to fail.",
+    "The Mandarin questions are paraphrases too: they avoid their passage's character bigrams."
   ],
   "meetings": [
     {
@@ -88,6 +94,32 @@
         "I have a call with their account team on Wednesday morning.",
         "Do not mention the competing quote until they put something in writing.",
         "We need a decision before the board meeting in two weeks."
+      ]
+    },
+    {
+      "title": "产品发布复盘",
+      "segments": [
+        "上周的发布总体顺利，但安卓版本晚了两天才上架。",
+        "晚的原因是应用商店审核把隐私说明退回了一次。",
+        "客服那边说，新用户最常问的是怎么导出数据。",
+        "我们决定下个版本把导出按钮放到设置页的第一屏。",
+        "服务器在发布当晚峰值时段扩容了三倍，没有出现宕机。",
+        "市场部的预算还剩百分之四十，要留到年底的促销活动。",
+        "小王负责在周五之前整理一份用户反馈的汇总。",
+        "下次复盘定在两周以后，地点还是三楼会议室。"
+      ]
+    },
+    {
+      "title": "招聘与团队安排",
+      "segments": [
+        "后端组目前还缺两个人，简历筛选已经进行了一半。",
+        "面试流程从四轮压缩到三轮，最后一轮由技术总监来面。",
+        "新同事入职第一周先跟着导师熟悉代码库。",
+        "实习生的工资按照去年的标准上调百分之十。",
+        "李经理下个月开始休产假，她的项目暂时交给老陈。",
+        "远程办公的政策不变，每周至少来公司两天。",
+        "团建活动改到十一月，大家投票选了去爬山。",
+        "年终评估表要在十二月十五号之前交给人事部。"
       ]
     }
   ],
@@ -211,6 +243,90 @@
       "question": "How much work would it be to move off them?",
       "meeting": 5,
       "segment": 4
+    },
+    {
+      "question": "安卓上线推迟是因为什么？",
+      "meeting": 6,
+      "segment": 1,
+      "language": "zh"
+    },
+    {
+      "question": "用户想把资料拿出来的功能要挪到哪里？",
+      "meeting": 6,
+      "segment": 3,
+      "language": "zh"
+    },
+    {
+      "question": "那天晚上流量最高的时候系统扛住了吗？",
+      "meeting": 6,
+      "segment": 4,
+      "language": "zh"
+    },
+    {
+      "question": "推广的钱还有多少没花？",
+      "meeting": 6,
+      "segment": 5,
+      "language": "zh"
+    },
+    {
+      "question": "招人要经过几次谈话，最终由谁拍板？",
+      "meeting": 7,
+      "segment": 1,
+      "language": "zh"
+    },
+    {
+      "question": "谁要请长假，她手上的工作谁接？",
+      "meeting": 7,
+      "segment": 4,
+      "language": "zh"
+    },
+    {
+      "question": "在家上班的规定有变化吗？",
+      "meeting": 7,
+      "segment": 5,
+      "language": "zh"
+    },
+    {
+      "question": "公司集体出游定了去哪里？",
+      "meeting": 7,
+      "segment": 6,
+      "language": "zh"
+    },
+    {
+      "question": "What do customers most often ask support about?",
+      "meeting": 6,
+      "segment": 2,
+      "language": "en-zh"
+    },
+    {
+      "question": "Who is compiling the user feedback, and by when?",
+      "meeting": 6,
+      "segment": 6,
+      "language": "en-zh"
+    },
+    {
+      "question": "How many backend positions are still open?",
+      "meeting": 7,
+      "segment": 0,
+      "language": "en-zh"
+    },
+    {
+      "question": "What does a new hire do in their first week?",
+      "meeting": 7,
+      "segment": 2,
+      "language": "en-zh"
+    },
+    {
+      "question": "How much are intern salaries going up?",
+      "meeting": 7,
+      "segment": 3,
+      "language": "en-zh"
+    },
+    {
+      "question": "When are the year-end review forms due?",
+      "meeting": 7,
+      "segment": 7,
+      "language": "en-zh"
     }
   ]
 }
