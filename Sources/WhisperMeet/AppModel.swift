@@ -1346,6 +1346,8 @@ final class AppModel: ObservableObject {
         isDiarizationInstalled = isDiarizationModelInstalled()
         hasClaudeAPIKey = claudeKeyStore.read() != nil
         refreshRecordingPreflight()
+        // F713: a lost race's re-read can drop a meeting whose job is running.
+        store.afterConflictReread = { [weak self] in self?.stopJobsOfMeetingsNoLongerListed() }
     }
 
     var isRuntimeInstalled: Bool {
@@ -6564,7 +6566,8 @@ final class AppModel: ObservableObject {
     /// job of a meeting that was still listed, and where the library took the write, a cancelled
     /// transcription was saved onto it as "cancelled".
     ///
-    /// Gone is an id `store.delete` returns, or one asked for that the library no longer lists. The
+    /// Gone is an id `store.delete` returns, or one asked for that a writable library no longer lists
+    /// (`isNoLongerListed`; a read-only one lists nothing for certain, F732). The
     /// second is what a lost race can leave: the store re-reads the library, and when the other copy
     /// had deleted the same meeting it is gone from this one too, along with its detail view, which
     /// holds every Cancel for its jobs. Not gone is a row the conflict offer can bring back
@@ -6574,11 +6577,52 @@ final class AppModel: ObservableObject {
     ///
     /// Stopping after the delete changes nothing for the ids that did go: each cancel only signals its
     /// task, whose epilogue runs later either way, and a queued job is dropped in this same turn.
-    func deleteMeetings(ids: [UUID]) {
+    ///
+    /// Returns the meetings that are gone, so the delete dialog deselects only those and a refused
+    /// delete leaves its meeting open (F714). A stale requested id that was already unlisted is gone
+    /// too, and deselecting it is right.
+    @discardableResult
+    func deleteMeetings(ids: [UUID]) -> Set<UUID> {
         let removed = store.delete(ids: ids)
+        let gone = Set(removed).union(ids.filter(isNoLongerListed))
+        stopJobs(ofMeetingsGone: gone)
+        return gone
+    }
+
+    /// Stops the jobs of meetings a conflict re-read no longer lists (F713). Any mutator's lost race
+    /// re-reads the library — a rename, a tag, a pin, a result's save, the debounced flush — and when
+    /// the other copy had deleted a meeting whose job is running, the meeting left the list with its
+    /// detail view, which holds every Cancel, and the job held the engine or the summary slot until it
+    /// ended on its own with a result nothing could save. Called by the store after every re-read
+    /// (`MeetingStore.afterConflictReread`); the same rule as `deleteMeetings`' own.
+    func stopJobsOfMeetingsNoLongerListed() {
+        var running = Set(transcription.pending)
+        if let active = transcription.activeID { running.insert(active) }
+        running.formUnion(summarizationTasks.keys)
+        let auxiliary: [UUID?] = [
+            secondOpinionRunningID, segmentReTranscriptionRunningID, diarizationRunningID,
+            glossaryCorrectionRun?.meetingID,
+        ]
+        running.formUnion(auxiliary.compactMap { $0 })
+        stopJobs(ofMeetingsGone: running.filter(isNoLongerListed))
+    }
+
+    /// Whether a meeting has left the library, as far as its jobs are concerned (F666, F713): not
+    /// listed, and not a row the conflict offer can bring back (`conflictOffer.delta`, or `unsavedNew`,
+    /// which either answer saves). Never while the library is read-only: an index that did not load
+    /// lists nothing for certain, so an unlisted meeting there is not a deleted one, and its job is
+    /// left to finish (F187) — a deferral the next writable load resolves, where stopping it could not
+    /// be undone.
+    private func isNoLongerListed(_ id: UUID) -> Bool {
+        guard !store.isDegraded, store.meeting(id: id) == nil else { return false }
         let offer = store.conflictOffer
-        let offeredBack = Set(((offer?.delta ?? []) + (offer?.unsavedNew ?? [])).map(\.id))
-        let gone = Set(removed).union(ids.filter { store.meeting(id: $0) == nil && !offeredBack.contains($0) })
+        return !((offer?.delta ?? []) + (offer?.unsavedNew ?? [])).contains { $0.id == id }
+    }
+
+    /// Stops every job that belongs to one of `gone`: its transcription, its summary, and a second
+    /// opinion, segment re-run, speaker analysis or Correct Toward Vocabulary pass running on it
+    /// (F512, F715). Each cancel only signals its task, and a queued transcription is dropped.
+    private func stopJobs(ofMeetingsGone gone: Set<UUID>) {
         for id in gone {
             cancelTranscription(id: id)
             cancelSummarization(id: id)
@@ -6586,6 +6630,7 @@ final class AppModel: ObservableObject {
         if let running = secondOpinionRunningID, gone.contains(running) { cancelSecondOpinion() }
         if let running = segmentReTranscriptionRunningID, gone.contains(running) { cancelSegmentReTranscription() }
         if let running = diarizationRunningID, gone.contains(running) { cancelSpeakerDiarization() }
+        if let running = glossaryCorrectionRun?.meetingID, gone.contains(running) { cancelGlossaryCorrections() }
     }
 
     /// - Parameter cloudUploadConfirmed: The product spec's "an explicit, confirmed Summarize

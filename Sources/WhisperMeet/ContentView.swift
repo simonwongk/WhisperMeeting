@@ -244,11 +244,12 @@ struct ContentView: View {
                 guard !doomed.isEmpty else { return }
                 // Only the list mutation animates (rows collapse); the selection swap stays outside
                 // the transaction so the detail column changes instantly (F116).
-                withAnimation(reduceMotion ? nil : .uiSpring) {
+                let gone = withAnimation(reduceMotion ? nil : .uiSpring) {
                     model.deleteMeetings(ids: doomed.map(\.id))
                 }
-                let removed = Set(doomed.map { SidebarItem.meeting($0.id) })
-                selection.subtract(removed)
+                // Only what the delete removed (F714): a refused or lost delete leaves its meeting
+                // selected, rather than closing its detail pane as if it had gone.
+                selection.subtract(gone.map { SidebarItem.meeting($0) })
                 if selection.isEmpty { selection = [.record] }
                 pendingDeletion = []
             }

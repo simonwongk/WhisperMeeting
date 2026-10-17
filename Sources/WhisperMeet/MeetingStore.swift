@@ -2015,6 +2015,9 @@ final class MeetingStore: ObservableObject {
     @discardableResult
     private func beginConflictRecovery(note: String? = nil, savingNewMeetings: Bool = true) -> RecoveryWords? {
         guard let report = writeConflict else { return nil }
+        // Once the list, the offer and the held rows are settled — at every return below, including a
+        // nested recovery's — so the app can stop the jobs of meetings this re-read dropped (F713).
+        defer { afterConflictReread?() }
         let outstanding = conflictOffer
         let losing = meetings
         // Every saved copy of each id, not one. A hand-edited index can hold one id twice, and since
@@ -3789,6 +3792,11 @@ final class MeetingStore: ObservableObject {
         guard noticedHistoryFacts.insert(fact).inserted else { return }
         historyNoticesAwaitingDismissal.append(notice)
     }
+
+    /// Called at the end of every conflict re-read (`beginConflictRecovery`), once the list and the
+    /// offer are settled (F713). `AppModel` sets it to stop the jobs of meetings the re-read no longer
+    /// lists: the store reports, the app decides what that means for its jobs. Nil until then.
+    var afterConflictReread: (@MainActor () -> Void)?
 
     /// Runs just before each save of the meeting index or of a list, so a test can put another copy's
     /// commit between two saves this store makes inside one call — the save `beginConflictRecovery()`

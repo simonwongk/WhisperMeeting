@@ -349,3 +349,290 @@ func lostRestoringSaveLeavesTheOfferedRowsTranscriptionRunning() async throws {
     #expect(meeting.status == .completed)
     #expect(meeting.transcriptText.contains("The transcript the job produced."))
 }
+
+// MARK: - F714: the dialog deselects only what the delete removed
+
+// `deleteMeetings` answers with the meetings no longer listed, so the dialog can keep a refused
+// meeting selected rather than closing its detail pane as if it had been deleted.
+@MainActor
+@Test("A refused delete reports nothing gone, a standing one reports what went, and a stale id is gone (F714)")
+func deleteReportsWhatIsGone() throws {
+    let (model, _, ids) = try makeModel([.completed, .completed])
+    let (kept, deleted) = (ids[0], ids[1])
+    let stale = UUID()
+    model.store.setRecordingDirectoryAside = { folder in
+        guard !folder.lastPathComponent.contains(kept.uuidString) else { throw FolderStuck() }
+        return try MeetingStore.moveAsideForDeletion(folder)
+    }
+
+    let gone = model.deleteMeetings(ids: [kept, deleted, stale])
+
+    try #require(model.store.meeting(id: kept) != nil, "fixture: the kept folder's meeting was meant to stay")
+    let expected: Set<UUID> = [deleted, stale]
+    #expect(gone == expected)
+}
+
+// The view cannot be rendered here (F174), so the dialog's use of the answer is asserted on its source.
+@Test("The delete dialog deselects what deleteMeetings reports gone, not every requested row (F714)")
+func deleteDialogUsesTheReportedRows() throws {
+    let view = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    #expect(view.contains("let gone = withAnimation(reduceMotion ? nil : .uiSpring) {"),
+            "the dialog no longer keeps deleteMeetings' answer")
+    #expect(view.contains("selection.subtract(gone.map { SidebarItem.meeting($0) })"),
+            "the dialog deselects something other than what was deleted")
+    #expect(!view.contains("Set(doomed.map { SidebarItem.meeting($0.id) })"),
+            "the dialog still deselects every requested row")
+}
+
+// MARK: - F732: the paths that share F666's logic, each with a test of its own
+
+/// A transcription started on the library's first meeting, held at the gate.
+@MainActor
+private func runningTranscription() async throws -> (AppModel, URL, [UUID], GatedProbe) {
+    let (model, root, ids) = try makeModel([.recorded, .recorded])
+    let probe = GatedProbe()
+    gateEngine(model, probe)
+    model.beginTranscription(id: ids[0])
+    try await waitUntil("the transcription to start") { probe.started }
+    return (model, root, ids, probe)
+}
+
+/// Releases the job and requires it to have finished on its own, not been stopped.
+@MainActor
+private func expectFinishedUnstopped(_ model: AppModel, _ probe: GatedProbe, _ id: UUID,
+                                     sourceLocation: SourceLocation = #_sourceLocation) async throws {
+    probe.release()
+    try await waitUntil("the transcription to end") { !model.hasActiveTranscription }
+    #expect(!probe.cancelled, "a delete that did not happen stopped the meeting's transcription", sourceLocation: sourceLocation)
+    #expect(model.store.meeting(id: id)?.errorMessage != cancelledMessage, sourceLocation: sourceLocation)
+}
+
+@MainActor
+@Test("A delete refused during a library restore leaves the meeting's transcription running (F732)")
+func restoreRefusedDeleteLeavesTranscriptionRunning() async throws {
+    let (model, _, ids, probe) = try await runningTranscription()
+    model.store.beginLibraryRestore()
+
+    #expect(model.deleteMeetings(ids: [ids[0]]).isEmpty)
+    try #require(model.store.meeting(id: ids[0]) != nil, "the delete was meant to be refused")
+
+    model.store.endLibraryRestore()
+    try await expectFinishedUnstopped(model, probe, ids[0])
+}
+
+@MainActor
+@Test("A delete refused while a conflict offer is outstanding leaves the meeting's transcription running (F732)")
+func conflictOfferRefusedDeleteLeavesTranscriptionRunning() async throws {
+    let (model, root, ids, probe) = try await runningTranscription()
+    try foreignWriterRetitles(in: root)
+    model.store.update(id: ids[1]) { $0.title = "Renamed here" }
+    try #require(model.store.conflictOffer != nil, "fixture: the rename was meant to lose and be offered back")
+
+    #expect(model.deleteMeetings(ids: [ids[0]]).isEmpty)
+    try #require(model.store.meeting(id: ids[0]) != nil, "the delete was meant to be refused")
+
+    try await expectFinishedUnstopped(model, probe, ids[0])
+}
+
+@MainActor
+@Test("A delete refused by a read-only library leaves the meeting's transcription running (F732)")
+func readOnlyRefusedDeleteLeavesTranscriptionRunning() async throws {
+    let (model, root, ids, probe) = try await runningTranscription()
+    // The wipe shape: another copy saves an empty list beside finished recordings, this session's
+    // next save loses to it, and the re-read loads read-only. The meeting is unlisted then, and that
+    // is not a deletion: an index that did not load cannot say what was deleted (F187).
+    try foreignWriterCommits(in: root) { _ in [] }
+    model.store.update(id: ids[1]) { $0.title = "Renamed here" }
+    try #require(model.store.isDegraded, "fixture: the library was meant to become read-only")
+
+    #expect(model.deleteMeetings(ids: [ids[0]]).isEmpty)
+
+    try await expectFinishedUnstopped(model, probe, ids[0])
+}
+
+@MainActor
+@Test("A delete whose save fails without a race leaves the meeting's transcription running (F732)")
+func failedSaveDeleteLeavesTranscriptionRunning() async throws {
+    let (model, root, ids, probe) = try await runningTranscription()
+    // The index cannot be staged: an ordinary failure, as a full disk is.
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: root.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path) }
+
+    #expect(model.deleteMeetings(ids: [ids[0]]).isEmpty)
+    try #require(model.store.meeting(id: ids[0]) != nil, "the delete was meant to fail")
+    try #require(model.store.writeConflict != nil && model.store.writeConflict?.isRace != true,
+                 "fixture: the save was meant to fail, and not as a race")
+
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+    try await expectFinishedUnstopped(model, probe, ids[0])
+}
+
+@MainActor
+@Test("Deleting a stale, already-unlisted id stops no other meeting's job (F732)")
+func staleIdDeleteStopsNothingElse() async throws {
+    let (model, _, ids, probe) = try await runningTranscription()
+    let stale = UUID()
+
+    let expected: Set<UUID> = [stale]
+    #expect(model.deleteMeetings(ids: [stale]) == expected)
+
+    try await expectFinishedUnstopped(model, probe, ids[0])
+}
+
+// MARK: - F715: a Correct Toward Vocabulary pass is a per-meeting job too
+
+/// A glossary pass held until released, recording whether it was told to stop.
+private final class GlossaryGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _started = false
+    private var _released = false
+    private var _cancelled = false
+    var started: Bool { lock.withLock { _started } }
+    var cancelled: Bool { lock.withLock { _cancelled } }
+    func release() { lock.withLock { _released = true } }
+
+    /// Blocks its (GCD) thread until released or cancelled, for at most 60 s.
+    func run(_ isCancelled: () -> Bool) -> [GlossaryCorrection]? {
+        lock.withLock { _started = true }
+        let deadline = Date().addingTimeInterval(60)
+        while Date() < deadline {
+            if isCancelled() {
+                lock.withLock { _cancelled = true }
+                return nil
+            }
+            if lock.withLock({ _released }) { return [] }
+            usleep(2_000)
+        }
+        return []
+    }
+}
+
+@MainActor
+private func runningGlossaryPass() async throws
+    -> (AppModel, URL, [UUID], GlossaryGate, Task<[GlossaryCorrection]?, Never>) {
+    let (model, root, ids) = try makeModel([.completed, .completed])
+    _ = model.store.addVocabulary(["Kubernetes"])
+    let gate = GlossaryGate()
+    model.glossaryCorrectionPass = { _, isCancelled, _ in gate.run(isCancelled) }
+    let id = ids[0]
+    let pass = Task { @MainActor in await model.proposeGlossaryCorrections(for: id) }
+    try await waitUntil("the glossary pass to start") { gate.started && model.glossaryCorrectionRun?.meetingID == id }
+    return (model, root, ids, gate, pass)
+}
+
+@MainActor
+@Test("A standing delete stops the meeting's Correct Toward Vocabulary pass, and says nothing about it (F715)")
+func standingDeleteStopsTheGlossaryPass() async throws {
+    let (model, _, ids, gate, pass) = try await runningGlossaryPass()
+
+    model.deleteMeetings(ids: [ids[0]])
+    try #require(model.store.meeting(id: ids[0]) == nil, "the delete was meant to stand")
+
+    gate.release()
+    _ = await pass.value
+    #expect(gate.cancelled, "the deleted meeting's glossary pass was not stopped")
+    #expect(model.alertMessage != AppModel.transcriptChangedDuringCorrectionMessage,
+            "a deleted meeting was reported as a transcript that changed")
+}
+
+@MainActor
+@Test("A refused delete leaves the meeting's Correct Toward Vocabulary pass running (F715)")
+func refusedDeleteLeavesTheGlossaryPassRunning() async throws {
+    let (model, _, ids, gate, pass) = try await runningGlossaryPass()
+    model.store.setRecordingDirectoryAside = { _ in throw FolderStuck() }
+
+    model.deleteMeetings(ids: [ids[0]])
+    try #require(model.store.meeting(id: ids[0]) != nil, "the delete was meant to be refused")
+
+    gate.release()
+    let proposals = await pass.value
+    #expect(!gate.cancelled, "a delete that did not happen stopped the meeting's glossary pass")
+    #expect(proposals != nil)
+}
+
+@MainActor
+@Test("A delete lost to a copy that also deleted the meeting stops its Correct Toward Vocabulary pass (F715)")
+func lostRaceToACopyThatAlsoDeletedItStopsTheGlossaryPass() async throws {
+    let (model, root, ids, gate, pass) = try await runningGlossaryPass()
+    try foreignWriterCommits(in: root) { $0.filter { $0.id != ids[0] } }
+
+    model.deleteMeetings(ids: [ids[0]])
+    try #require(model.store.meeting(id: ids[0]) == nil, "the re-read was meant to show the other copy's delete")
+
+    gate.release()
+    _ = await pass.value
+    #expect(gate.cancelled, "the meeting is gone from the library, and its glossary pass was not stopped")
+}
+
+// MARK: - F713: a meeting a conflict re-read drops, outside any delete
+
+// Any mutator's lost race re-reads the library. When the other copy had deleted a meeting whose job is
+// running, the meeting leaves the list, and its detail view, which holds every Cancel, goes with it.
+@MainActor
+@Test("A rename's lost race that drops a meeting the other copy deleted stops that meeting's transcription (F713)")
+func renameRaceThatDropsAMeetingStopsItsTranscription() async throws {
+    let (model, root, ids, probe) = try await runningTranscription()
+    let (doomed, renamed) = (ids[0], ids[1])
+    try foreignWriterCommits(in: root) { $0.filter { $0.id != doomed } }
+
+    model.store.update(id: renamed) { $0.title = "Renamed here" }
+    try #require(!model.store.isDegraded, "the re-read was meant to leave a writable library")
+    try #require(model.store.meeting(id: doomed) == nil, "the re-read was meant to show the other copy's delete")
+    let offer = model.store.conflictOffer
+    let offeredBack = Set(((offer?.delta ?? []) + (offer?.unsavedNew ?? [])).map(\.id))
+    try #require(!offeredBack.contains(doomed), "fixture: the dropped meeting was offered back")
+
+    // Never released: the job ends by being stopped, or when the probe gives up on its own.
+    try await waitUntil("the transcription to end") { !model.hasActiveTranscription }
+    #expect(probe.cancelled, "the meeting is gone from the library, and its transcription was not stopped")
+}
+
+// The same re-read must not stop the job of a meeting it still lists.
+@MainActor
+@Test("A rename's lost race leaves a still-listed meeting's transcription running (F713)")
+func renameRaceLeavesAListedMeetingsTranscriptionRunning() async throws {
+    let (model, root, ids, probe) = try await runningTranscription()
+    try foreignWriterRetitles(in: root)
+
+    model.store.update(id: ids[1]) { $0.title = "Renamed here" }
+    try #require(model.store.conflictOffer != nil, "fixture: the rename was meant to lose")
+    model.store.keepConflictedEdit()
+
+    try await expectFinishedUnstopped(model, probe, ids[0])
+}
+
+// Part (2), narrowed by F667: "Use the Other Copy" no longer drops a kept-folder row held by the offer,
+// it saves it, so its job must keep running and its result land.
+@MainActor
+@Test("Use the Other Copy keeps a held kept-folder row listed and its transcription running (F713)")
+func discardKeepsTheHeldRowsTranscriptionRunning() async throws {
+    let (model, root, ids) = try makeModel([.recorded])
+    let id = ids[0]
+    let probe = GatedProbe()
+    gateEngine(model, probe)
+    model.beginTranscription(id: id)
+    try await waitUntil("the transcription to start") { probe.started }
+
+    let theirs = MeetingRecord(id: UUID(), title: "The other copy's meeting", recordingPath: "none", status: .recorded)
+    let alsoTheirs = MeetingRecord(id: UUID(), title: "The other copy's second meeting", recordingPath: "none", status: .recorded)
+    model.store.setRecordingDirectoryAside = { _ in
+        try foreignWriterCommits(in: root) { $0 + [theirs] }
+        throw FolderStuck()
+    }
+    var saves = 0
+    model.store.beforeIndexSaveForTesting = {
+        saves += 1
+        if saves == 3 { try? foreignWriterCommits(in: root) { $0 + [alsoTheirs] } }
+    }
+    model.deleteMeetings(ids: [id])
+    model.store.beforeIndexSaveForTesting = nil
+    let held: [UUID] = model.store.conflictOffer?.unsavedNew.map(\.id) ?? []
+    let expected: [UUID] = [id]
+    try #require(held == expected, "fixture: the kept row was meant to be held by the offer")
+
+    model.store.discardConflictedEdit()
+    try #require(model.store.meeting(id: id) != nil, "Use the Other Copy dropped the held row")
+
+    try await expectFinishedUnstopped(model, probe, id)
+    #expect(model.store.meeting(id: id)?.transcriptText.contains("The transcript the job produced.") == true)
+}
