@@ -616,9 +616,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         return _stream
     }
 
+    #if DEBUG
     /// Records a capture-stream failure without the delegate's identity guard. No production code
     /// calls it; it is internal so `StreamFailurePowerAssertionTests` and the other death tests can
     /// drive it without an `SCStream` (F254). The delegate's own path is `recordStreamStop` (F484).
+    /// DEBUG-only since F726: an unguarded way to mark the live capture dead has no business in the
+    /// shipped app, and `recordStreamStop` is the one door a release build has.
     ///
     /// It deliberately does **not** end the recording activity, which is what it used to do. That
     /// single line put the Mac to sleep five seconds after a lid close, twice, on the user's own
@@ -641,12 +644,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     func handleStreamFailure(_ error: Error) {
         captureQueue.sync { recordStreamDeath(error) }
     }
+    #endif
 
     /// The body of `handleStreamFailure`, for callers already on `captureQueue`.
     ///
     /// F364 split these apart rather than making one function guess. The delegate reaches this from
-    /// inside a `captureQueue.async`, where the syncing accessors would deadlock; the tests and the
-    /// internal seam reach `handleStreamFailure` from off the queue, where the stored properties
+    /// inside a `captureQueue.async`, where the syncing accessors would deadlock; the tests reach
+    /// the DEBUG-only `handleStreamFailure` (F726) from off the queue, where the stored properties
     /// would race. Both are real callers, so both need their own door.
     private func recordStreamDeath(_ error: Error) {
         dispatchPrecondition(condition: .onQueue(captureQueue))
@@ -1186,8 +1190,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// still delivering, padded the timeline with silence for audio that had been captured, recorded
     /// the fabricated outage in the manifest, and ended the meeting after three cycles telling the
     /// user the capture "stopped unexpectedly". `_streamDied` is set true only by
-    /// `recordStreamDeath` — reached from `stream(_:didStopWithError:)`, and from the test-only
-    /// `handleStreamFailure` — and by the restart's own failure path, which puts back the death the
+    /// `recordStreamDeath` — reached from `stream(_:didStopWithError:)`, and from the DEBUG-only
+    /// `handleStreamFailure` (F726) — and by the restart's own failure path, which puts back the death the
     /// restart had cleared. So it means a death and nothing else (F402 corrected who sets it).
     ///
     /// Read from `streamDiedMirror`, not through `captureQueue.sync` (F401). The 1 Hz health tick
