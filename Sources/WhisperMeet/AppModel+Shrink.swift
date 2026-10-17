@@ -258,7 +258,8 @@ extension AppModel {
         }
         defer { store.folderWriters.end(id) }
         shrinkRunningID = id
-        defer { shrinkRunningID = nil }
+        // F1028: a transcription asked for meanwhile waits in the queue behind this meeting's Shrink; pumped once it ends.
+        defer { shrinkRunningID = nil; resumeTranscriptionQueue() }
         let before = MeetingStoragePlan.totalBytes(disk.entries)
 
         if !MeetingStoragePlan.isResume(disk) {

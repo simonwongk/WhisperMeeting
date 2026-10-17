@@ -6649,6 +6649,9 @@ final class AppModel: ObservableObject {
         // The third and last holder of the auxiliary flag.
         if isRunningAuxiliaryEngine { return "Waiting for the segment re-run to finish." }
         if isDictationActive() { return "Waiting for Quick Dictation to finish." }
+        if let shrinking = shrinkRunningID, transcription.pending.first == shrinking {
+            return "Waiting for Shrink to finish with this meeting."
+        }
         return "Waiting to start."
     }
 
@@ -6674,6 +6677,9 @@ final class AppModel: ObservableObject {
         // every write.
         guard !isRunningAuxiliaryEngine, !isDictationActive(), !store.isRestoringLibrary,
               !isInstallingRecognitionRuntime else { return }
+        // F1028: and while Shrink is replacing the recording of the meeting next in line, which would otherwise hand the
+        // engine the file Shrink is about to delete. Shrink's end pumps the queue (`shrinkOne`).
+        if let shrinking = shrinkRunningID, transcription.pending.first == shrinking { return }
         guard let next = transcription.startNext() else { return }
         // A pending id never has a live task (tasks exist only for the active job and are cleared
         // before finishActive), so this holds by construction — asserted rather than guarded, so a
