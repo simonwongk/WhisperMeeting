@@ -1688,11 +1688,19 @@ final class AppModel: ObservableObject {
             ffmpeg: MediaDownloadRuntime.findFFmpeg(),
             outputStallTimeout: AppModel.linkImportConversionStallLimit
         )
+    ///
+    /// A conversion whose output keeps growing is bounded too (F989): `timeLimit` is derived from the
+    /// download's own length (`InterruptedLinkImportExtraction.conversionTimeLimit`), read the way
+    /// recovery reads it elsewhere (AVAudioFile), or from its size when that cannot open it.
     }
 
+        let downloadBytes = (try? FileManager.default.attributesOfItem(atPath: download.path)[.size] as? NSNumber)?.int64Value
     /// How long startup recovery waits for one interrupted link import's conversion before leaving
     /// it to finish in the background (F912). `linkImportConversionTimeLimit` in the app; a test
     /// shortens it.
+            timeLimit: InterruptedLinkImportExtraction.conversionTimeLimit(
+                downloadSeconds: DecodedAudio.declaredDuration(of: download), downloadBytes: downloadBytes
+            ),
     var linkImportConversionWait: TimeInterval = AppModel.linkImportConversionTimeLimit
 
     /// Runs one reviewed source-tracks rebuild (F267/F459). Injectable in the same F47 shape as

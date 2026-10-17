@@ -273,6 +273,36 @@ extension InterruptedLinkImportExtraction {
     /// this value, and `abandonedTemporaryFileAge` is derived from it, so the two cannot drift apart.
     public static let outputStallLimit: TimeInterval = 60
 
+    /// The absolute bound on a recovery conversion (F989), beside `outputStallLimit`.
+    ///
+    /// F912 replaced the launch's 30 s kill with the output-stall expiry, so a conversion whose
+    /// output keeps growing — a corrupt input that decodes forever — ran until quit. This is the
+    /// expiry for that one, derived from the download it converts rather than chosen as a clock:
+    /// four times the download's length plus a minute, when its length can be read. ffmpeg converts
+    /// audio many times faster than real time, so only a runaway reaches it, and stopping it ends as
+    /// every stopped conversion does — `extractionTimedOut`, the import listed with its download kept.
+    ///
+    /// When the length cannot be read (a WebM that AVFoundation cannot open), the longest the
+    /// download could play is derived from its size at `lowestPlausibleDownloadBytesPerSecond`, so
+    /// the bound is generous for any real download and still finite. Saturates rather than traps
+    /// on a size or a length nobody would see.
+    public static func conversionTimeLimit(downloadSeconds: TimeInterval?, downloadBytes: Int64?) -> TimeInterval {
+        let length: TimeInterval
+        if let downloadSeconds, downloadSeconds.isFinite, downloadSeconds > 0 {
+            length = downloadSeconds
+        } else {
+            length = Double(max(0, downloadBytes ?? 0)) / lowestPlausibleDownloadBytesPerSecond
+        }
+        return conversionTimeLimitFactor * length + conversionTimeLimitMargin
+    }
+
+    /// See `conversionTimeLimit`.
+    static let conversionTimeLimitFactor: TimeInterval = 4
+    static let conversionTimeLimitMargin: TimeInterval = 60
+    /// 4 kbit/s: below the lowest audio bitrate a site serves (Opus speech starts near 6 kbit/s), so
+    /// a length derived from a download's size at this rate is longer than the download can play.
+    static let lowestPlausibleDownloadBytesPerSecond: Double = 500
+
     /// How long a conversion's temp file must have gone without growing before the sweep on a volume
     /// without `flock` may take it for abandoned (F976): ten times `outputStallLimit`, after which a
     /// conversion whose output stops growing is killed by its own watch, so a file this old has no run

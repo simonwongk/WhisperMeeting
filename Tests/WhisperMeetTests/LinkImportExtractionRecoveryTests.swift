@@ -227,6 +227,11 @@ func theLaunchConversionIsGivenItsTimeLimit() throws {
     let seam = source[declaration.lowerBound..<closureEnd.upperBound]
     #expect(seam.contains("outputStallTimeout: AppModel.linkImportConversionStallLimit"), "\(seam)")
     #expect(!seam.contains("timeLimit: AppModel.linkImportConversionTimeLimit"), "the launch's limit kills the conversion again: \(seam)")
+    // F989: and an absolute expiry for a conversion whose output keeps growing, derived from the
+    // download it converts — never the launch's 30 s.
+    let compactSeam = seam.filter { !$0.isWhitespace }
+    #expect(compactSeam.contains("timeLimit:InterruptedLinkImportExtraction.conversionTimeLimit(downloadSeconds:DecodedAudio.declaredDuration(of:download),downloadBytes:downloadBytes)"),
+            "a conversion whose output keeps growing runs until quit: \(seam)")
     #expect(AppModel.linkImportConversionTimeLimit > 0 && AppModel.linkImportConversionTimeLimit.isFinite)
     #expect(AppModel.linkImportConversionStallLimit > 0 && AppModel.linkImportConversionStallLimit.isFinite)
     // The wait the app runs with is the documented limit; tests shorten the instance's.

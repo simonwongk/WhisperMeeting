@@ -620,3 +620,45 @@ func anotherOpenFailureIsNotRetried() throws {
     #expect(descriptor == nil)
     #expect(log.flags.count == 1)
 }
+
+// MARK: - F989: an absolute bound beside the output-stall bound
+
+@Test("A conversion's absolute bound is derived from the download: four times its length and a minute, or its size at 4 kbit/s (F989)")
+func conversionTimeLimitIsDerivedFromTheDownload() {
+    // A ten-minute download: forty minutes and one to convert, which only a runaway reaches.
+    #expect(InterruptedLinkImportExtraction.conversionTimeLimit(downloadSeconds: 600, downloadBytes: 9_999_999) == 2_460)
+    // Unreadable length (a WebM): 1 MB at 500 bytes a second is 2,000 s of the longest it could play.
+    #expect(InterruptedLinkImportExtraction.conversionTimeLimit(downloadSeconds: nil, downloadBytes: 1_000_000) == 8_060)
+    #expect(InterruptedLinkImportExtraction.conversionTimeLimit(downloadSeconds: .nan, downloadBytes: 1_000_000) == 8_060)
+    #expect(InterruptedLinkImportExtraction.conversionTimeLimit(downloadSeconds: 0, downloadBytes: 1_000_000) == 8_060)
+    // Nothing known: still a bound, never none.
+    let floor = InterruptedLinkImportExtraction.conversionTimeLimit(downloadSeconds: nil, downloadBytes: nil)
+    #expect(floor == 60)
+    // Huge inputs stay finite and positive, and the stopped conversion's message still reads.
+    let huge = InterruptedLinkImportExtraction.conversionTimeLimit(downloadSeconds: 1e300, downloadBytes: nil)
+    #expect(huge.isFinite && huge > 0)
+    #expect(MediaDownloadError.extractionTimedOut(huge).localizedDescription.contains("longer than"))
+    let hugeBytes = InterruptedLinkImportExtraction.conversionTimeLimit(downloadSeconds: nil, downloadBytes: .max)
+    #expect(hugeBytes.isFinite && hugeBytes > 0)
+}
+
+@Test("A conversion whose output keeps growing is stopped at its absolute bound, and touches nothing (F989)")
+func aConversionWhoseOutputKeepsGrowingIsStoppedAtItsBound() async throws {
+    let (folder, download, partial) = try makeInterruptedFolder()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let before = try Data(contentsOf: partial)
+    // Writes a byte every 0.1 s for 1.5 s: the output-stall bound never fires on it.
+    let ffmpeg = try growingFFmpeg(in: folder)
+    let started = ProcessInfo.processInfo.systemUptime
+
+    await #expect(throws: MediaDownloadError.extractionTimedOut(0.6)) {
+        try await InterruptedLinkImportExtraction.finish(
+            download: download, ffmpeg: ffmpeg, stallTimeout: 30, timeLimit: 0.6, outputStallTimeout: 0.5
+        )
+    }
+
+    #expect(ProcessInfo.processInfo.systemUptime - started < 8, "the conversion ran to the stand-in's own end")
+    #expect(try Data(contentsOf: partial) == before, "the half-written WAV changed")
+    #expect(try String(contentsOf: download, encoding: .utf8) == "the complete download")
+    #expect(temporaryFiles(in: folder).isEmpty, "a temp file was left: \(temporaryFiles(in: folder))")
+}
