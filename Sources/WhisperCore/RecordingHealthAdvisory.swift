@@ -38,6 +38,14 @@ public enum RecordingHealthAdvisory {
                 sustainedTail: " The source may already have been at its limit before it reached this Mac."
             ))
         }
+        // F735: once, after the notes it explains, and only when one of them printed a count.
+        let microphoneCounted = report.warnings.contains(.microphoneClipping)
+            && countsClipping(measured: report.microphoneFramesMeasured, atFullScale: report.microphoneFramesAtFullScale)
+        let systemCounted = report.warnings.contains(.systemAudioClipping)
+            && countsClipping(measured: report.systemAudioFramesMeasured, atFullScale: report.systemAudioFramesAtFullScale)
+        if microphoneCounted || systemCounted {
+            notes.append(clippingCountedBeforeMixing)
+        }
         if report.warnings.contains(.lowStorage) {
             notes.append("Storage ran low while recording.")
         }
@@ -64,6 +72,24 @@ public enum RecordingHealthAdvisory {
                 """
         }
         return notes.joined(separator: " ")
+    }
+
+    /// Where a clipping count was taken (F735). The monitor counts full-scale samples in each source
+    /// as it was captured, on every channel (F419), and the saved recording is those sources mixed
+    /// into one mono track. So a source clipped on one side of two reads "at full scale" here while
+    /// the recording's own waveform, and the live meter, sit at half scale. Said once, after the
+    /// clipping notes, when either of them reports a count; the monitor cannot tell this note whether
+    /// a source had two channels, and the sentence is true either way, since the saved recording is
+    /// always a mix of the two sources.
+    public static let clippingCountedBeforeMixing =
+        "These counts come from each source as it was captured, before it was mixed into this recording, "
+        + "so the recording's own waveform can sit below full scale."
+
+    /// Whether `clippingNote` prints a count of clipped samples for these figures: the same bounds it
+    /// checks (F400), and at least one sample at full scale.
+    static func countsClipping(measured: Int?, atFullScale: Int?) -> Bool {
+        guard let measured, let atFullScale, measured > 0 else { return false }
+        return atFullScale > 0 && atFullScale <= measured
     }
 
     /// What to say about clipping, from the evidence rather than from the bare flag (F346).
