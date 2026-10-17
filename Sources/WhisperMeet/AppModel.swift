@@ -7019,6 +7019,16 @@ final class AppModel: ObservableObject {
         }.value
     }
 
+    /// Which of a review sheet's rows change one place (F966): `GlossaryCorrector.alternatives` with
+    /// the evidence `applyGlossaryCorrections` applies with, off the main actor, as `proposalContexts`.
+    func proposalAlternatives(_ proposals: [GlossaryCorrection], in id: UUID) async -> [Int: Int] {
+        guard let segments = store.meeting(id: id)?.segments else { return [:] }
+        let evidence = cjkWordEvidence
+        return await Task.detached(priority: .userInitiated) {
+            GlossaryCorrector.alternatives(of: proposals, in: segments, evidence: evidence)
+        }.value
+    }
+
     /// Where a Chinese word begins and ends, for every matcher that must not rewrite part of one
     /// (F594). Injectable in the F47 shape so a test can pin the segmentation; defaults to
     /// `NLTokenizer`'s, which `WhisperCore` cannot import.

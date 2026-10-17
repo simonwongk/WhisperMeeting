@@ -3270,7 +3270,8 @@ private struct TranscriptDetailView: View {
             ), onDismiss: { proposalReviews.advance() }) { review in
                 GlossarySuggestionSheet(
                     review: review, protectedTerms: store.vocabulary,
-                    contexts: { await model.proposalContexts($0, in: meetingID) }
+                    contexts: { await model.proposalContexts($0, in: meetingID) },
+                    alternatives: { await model.proposalAlternatives($0, in: meetingID) }
                 ) { accepted in
                     // F831: Edit ▸ Undo puts the lines back, as it does for a line removal (F423).
                     guard let applied = model.applyGlossaryCorrections(accepted, to: meetingID) else { return }
@@ -4796,18 +4797,28 @@ private struct GlossarySuggestionSheet: View {
     /// Every row's sentence: the words around the place applying it would change (F817), so a row
     /// can be checked where it is — a Chinese match by sound can be another word or another person.
     let contexts: ([GlossaryCorrection]) async -> [ProposalContext?]
+    /// Which rows change one place (F966), worked out per page beside the sentences: such rows are
+    /// alternatives, since `apply` changes a place once, with the first ticked row.
+    let alternatives: ([GlossaryCorrection]) async -> [Int: Int]
     let onApply: ([GlossaryCorrection]) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selected: Set<Int> = []
-    /// The proposals that touch a vocabulary term, worked out once when the sheet opens, off the
-    /// main actor (F536). This was asked per row on every render and in `init`, which SwiftUI
-    /// re-runs whenever the parent redraws: 2–12 s per pass over 50 proposals against 5,000 terms.
-    @State private var touching: Set<Int>?
-    /// The rows' sentences, worked out once when the sheet opens, beside `touching` (F952). Each
-    /// row's body asked for its own on every redraw — every tick — and a Chinese row's costs an
-    /// NLTokenizer pass and a scan of the whole vocabulary: 0.249 s per pass over 50 rows at the
-    /// 5,000-term cap. Empty until they arrive; a row draws without its sentence until then.
-    @State private var sentences: [ProposalContext?] = []
+    /// The page shown (F818): a review of thousands of rows is shown `ProposalReview.pageSize` at a
+    /// time. Ticks are kept across pages, and Apply applies every tick.
+    @State private var page = 0
+    /// Pages whose warnings, sentences and alternatives are known and whose rows were preselected.
+    @State private var loadedPages: Set<Int> = []
+    /// The proposals that touch a vocabulary term, worked out per page off the main actor (F536,
+    /// F818). This was asked per row on every render and in `init`, which SwiftUI re-runs whenever
+    /// the parent redraws: 2–12 s per pass over 50 proposals against 5,000 terms.
+    @State private var touching: Set<Int> = []
+    /// The rows' sentences, worked out per page beside `touching` (F952, F818). Each row's body
+    /// asked for its own on every redraw — every tick — and a Chinese row's costs an NLTokenizer pass
+    /// and a scan of the whole vocabulary: 0.249 s per pass over 50 rows at the 5,000-term cap. A
+    /// row draws without its sentence until it arrives.
+    @State private var sentences: [Int: ProposalContext] = [:]
+    /// Row → the first row of its place, for rows that share one (F966).
+    @State private var groups: [Int: Int] = [:]
 
     private var proposals: [GlossaryCorrection] { review.proposals }
 
@@ -4815,11 +4826,13 @@ private struct GlossarySuggestionSheet: View {
         review: ProposalReview,
         protectedTerms: [String] = [],
         contexts: @escaping ([GlossaryCorrection]) async -> [ProposalContext?] = { $0.map { _ in nil } },
+        alternatives: @escaping ([GlossaryCorrection]) async -> [Int: Int] = { _ in [:] },
         onApply: @escaping ([GlossaryCorrection]) -> Void
     ) {
         self.review = review
         self.protectedTerms = protectedTerms
         self.contexts = contexts
+        self.alternatives = alternatives
         self.onApply = onApply
     }
 
@@ -4841,11 +4854,13 @@ private struct GlossarySuggestionSheet: View {
             .padding()
 
             List {
-                ForEach(Array(proposals.enumerated()), id: \.offset) { index, proposal in
+                ForEach(review.pages[page], id: \.self) { index in
+                    let proposal = proposals[index]
                     Toggle(isOn: Binding(
                         get: { selected.contains(index) },
                         set: { isOn in
-                            if isOn { selected.insert(index) } else { selected.remove(index) }
+                            // F966: ticking one row for a place unticks its alternatives.
+                            selected = review.ticking(index, on: isOn, in: selected, groups: groups)
                         }
                     )) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -4854,13 +4869,13 @@ private struct GlossarySuggestionSheet: View {
                                 Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.tertiary)
                                 Text(proposal.to).fontWeight(.medium)
                             }
-                            if sentences.indices.contains(index), let context = sentences[index] {
+                            if let context = sentences[index] {
                                 Text(Self.sentence(context))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(2)
                             }
-                            if touching?.contains(index) == true {
+                            if touching.contains(index) {
                                 Label("Rewrites a vocabulary term — not applied unless you tick it", systemImage: "exclamationmark.triangle")
                                     .font(.caption)
                                     .foregroundStyle(.orange)
@@ -4870,21 +4885,50 @@ private struct GlossarySuggestionSheet: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                            if let place = groups[index] {
+                                // F966: one choice between the rows for one place.
+                                Label("One of \(groups.values.filter { $0 == place }.count) spellings for this place — ticking one unticks the others", systemImage: "arrow.triangle.branch")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
             }
 
+            // F818: where the rows go on past this page, and the way there.
+            if review.pages.count > 1 {
+                HStack(spacing: 8) {
+                    Button { page -= 1 } label: { Image(systemName: "chevron.left") }
+                        .disabled(page == 0)
+                        .help("Previous rows")
+                        .accessibilityLabel("Previous rows")
+                    Text(ProposalReview.pageLabel(review.pages[page], of: proposals.count))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                    Button { page += 1 } label: { Image(systemName: "chevron.right") }
+                        .disabled(page == review.pages.count - 1)
+                        .help("Next rows")
+                        .accessibilityLabel("Next rows")
+                    Spacer()
+                }
+                .padding(.horizontal)
+                .padding(.top, 8)
+            }
+
             HStack {
-                // F817: Select All leaves a sound-alike Chinese row for its own tick.
-                Button(review.allTicked(selected) ? "Deselect All" : "Select All") {
-                    selected = review.toggledAll(selected)
+                // F817: Select All leaves a sound-alike Chinese row for its own tick; F818: on this
+                // page; F966: one row per place.
+                Button(review.allTicked(selected, on: review.pages[page], groups: groups) ? "Deselect All" : "Select All") {
+                    selected = review.toggledAll(selected, on: review.pages[page], groups: groups)
                 }
                 .disabled(review.selectableAll.isEmpty && selected.isEmpty)
                 Spacer()
                 // F537: Escape and Return.
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                // F966: one tick per place, so this counts the places Apply changes.
                 Button("Apply \(selected.count) Correction\(selected.count == 1 ? "" : "s")") {
                     onApply(selected.sorted().map { proposals[$0] })
                     dismiss()
@@ -4897,18 +4941,33 @@ private struct GlossarySuggestionSheet: View {
         }
         .frame(width: 440, height: 540)
         // F245's pre-selection — everything except a proposal that touches a term, and (F536) a
-        // Chinese near-miss from Correct Toward Vocabulary — once the touching set is known. Until
-        // then nothing is ticked, so Apply stays disabled.
-        .task {
-            let proposals = proposals
-            let terms = protectedTerms
-            let found = await Task.detached(priority: .userInitiated) {
-                GlossaryReviewDefaults.touching(proposals, protectedTerms: terms)
-            }.value
-            touching = found
-            selected = review.preselected(touching: found)
-            // F952: every row's sentence once, off the main actor, after the ticks are known.
-            sentences = await contexts(proposals)
+        // Chinese near-miss from Correct Toward Vocabulary, one row per place (F966) — once a page's
+        // touching set is known. Until then nothing on it is ticked.
+        .task(id: page) { await load(page) }
+    }
+
+    /// Works out one page's warnings, alternatives and sentences, off the main actor, the first time
+    /// it is shown, and ticks its preselected rows (F818).
+    private func load(_ page: Int) async {
+        guard !loadedPages.contains(page) else { return }
+        loadedPages.insert(page)
+        let rows = review.pages[page]
+        let slice = Array(proposals[rows])
+        let terms = protectedTerms
+        let found = await Task.detached(priority: .userInitiated) {
+            GlossaryReviewDefaults.touching(slice, protectedTerms: terms)
+        }.value
+        let pageTouching = Set(found.map { $0 + rows.lowerBound })
+        let local = await alternatives(slice)
+        var pageGroups: [Int: Int] = [:]
+        for (row, first) in local { pageGroups[row + rows.lowerBound] = first + rows.lowerBound }
+        touching.formUnion(pageTouching)
+        groups.merge(pageGroups) { _, new in new }
+        selected.formUnion(review.preselected(touching: pageTouching, on: rows, groups: pageGroups))
+        // F952: the page's sentences once, off the main actor, after the ticks are known.
+        let pageSentences = await contexts(slice)
+        for (offset, context) in pageSentences.enumerated() {
+            if let context { sentences[rows.lowerBound + offset] = context }
         }
     }
 }

@@ -328,9 +328,10 @@ func reviewSentencesAreWorkedOutTogether() async throws {
 @Test("The review sheet's Select All goes through the review's rule, and each row shows its sentence (F817)")
 func reviewSheetUsesTheSelectAllRuleAndShowsSentences() throws {
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
-    let selectAllUsesTheRule = source.contains("selected = review.toggledAll(selected)")
+    // Per page and one row per place since F818 and F966.
+    let selectAllUsesTheRule = source.contains("selected = review.toggledAll(selected, on: review.pages[page], groups: groups)")
     #expect(selectAllUsesTheRule)
-    let titleUsesTheRule = source.contains("review.allTicked(selected) ? \"Deselect All\" : \"Select All\"")
+    let titleUsesTheRule = source.contains("review.allTicked(selected, on: review.pages[page], groups: groups) ? \"Deselect All\" : \"Select All\"")
     #expect(titleUsesTheRule)
     let ticksEveryRow = source.contains("Set(proposals.indices)")
     #expect(!ticksEveryRow, "the sheet ticks every row itself again")
@@ -351,9 +352,10 @@ func reviewSheetReadsPrecomputedSentences() throws {
     // over 50 rows at the 5,000-term cap (the Wave 5 review of F817, R7).
     let rowAsksEachRedraw = source.contains("context(proposal)")
     #expect(!rowAsksEachRedraw)
-    let workedOutInTheTask = source.contains("sentences = await contexts(proposals)")
+    // Once per page since F818: a page's sentences when it is first shown.
+    let workedOutInTheTask = source.contains("let pageSentences = await contexts(slice)")
     #expect(workedOutInTheTask)
-    let rowReadsItsOwn = source.contains("if sentences.indices.contains(index), let context = sentences[index]")
+    let rowReadsItsOwn = source.contains("if let context = sentences[index]")
     #expect(rowReadsItsOwn)
 }
 

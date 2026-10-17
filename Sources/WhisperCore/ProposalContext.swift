@@ -72,6 +72,51 @@ extension GlossaryCorrector {
         }
     }
 
+    /// Rows that change one place (F966): for each row whose place overlaps another row's place on
+    /// the same line, the index of the first row of its group; a row alone at its place is absent.
+    ///
+    /// `apply` changes a place once, with the first ticked row that reaches it (F939), so two such
+    /// rows — the local model's two readings of one word, two vocabulary terms near one mishearing —
+    /// are alternatives, not two changes. Places are `apply`'s own (`place(of:in:evidence:)`) on the
+    /// line each row was proposed on (F971), as `contexts` draws them. Overlap is taken through a
+    /// chain (A over B, B over C), so such a group asks for one choice where `apply` could take two
+    /// — the safe side: a row unticked by the sheet can be ticked again after Apply.
+    public static func alternatives(
+        of corrections: [GlossaryCorrection], in segments: [TranscriptSegment], evidence: CJKWordEvidence = .none
+    ) -> [Int: Int] {
+        var lines: [String: SegmentedText] = [:]
+        var placed: [String: [(row: Int, range: Range<Int>)]] = [:]
+        for (row, correction) in corrections.enumerated() where segments.indices.contains(correction.segmentIndex) {
+            let text = correction.proposedLine ?? segments[correction.segmentIndex].text
+            let line = lines[text] ?? SegmentedText(text, segmenter: evidence.segmenter)
+            lines[text] = line
+            let rowEvidence = CJKWordEvidence(
+                segmenter: evidence.segmenter,
+                knownTerms: ReplacementBoundary.termsThatCouldEnclose(correction.from, among: evidence.knownTerms)
+            )
+            guard let range = place(of: correction, in: line, evidence: rowEvidence) else { continue }
+            let start = text.distance(from: text.startIndex, to: range.lowerBound)
+            let key = "\(correction.segmentIndex)\u{0}\(text)"
+            placed[key, default: []].append((row, start..<(start + text.distance(from: range.lowerBound, to: range.upperBound))))
+        }
+        var groups: [Int: Int] = [:]
+        for rows in placed.values {
+            var cluster: [Int] = []
+            var reach = 0
+            func close() {
+                if cluster.count > 1, let first = cluster.min() { for row in cluster { groups[row] = first } }
+                cluster = []
+            }
+            for item in rows.sorted(by: { ($0.range.lowerBound, $0.row) < ($1.range.lowerBound, $1.row) }) {
+                if !cluster.isEmpty, item.range.lowerBound >= reach { close() }
+                reach = cluster.isEmpty ? item.range.upperBound : max(reach, item.range.upperBound)
+                cluster.append(item.row)
+            }
+            close()
+        }
+        return groups
+    }
+
     /// `correction` in its sentence (F817): the place `apply` would change in `text` — `place(of:in:
     /// evidence:)`, the one `apply` uses, so pass the evidence the proposals are applied with — with
     /// up to `radius` characters either side, cut back to a space

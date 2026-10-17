@@ -111,3 +111,23 @@ func chainedRowsEachChangeTheirOwnPlace() {
     ]
     #expect(GlossaryCorrector.apply(rows, to: two).map(\.text) == ["Kubernetes and Kestrel", "Kestrel again"])
 }
+
+@Test("Rows that change one place are found as alternatives, the way apply resolves them (F966)")
+func rowsForOnePlaceAreAlternatives() {
+    // Since F939 two ticked rows for one occurrence change it once, with the first row's spelling;
+    // the sheet showed them as independent ticks and counted both. Their places are apply's own.
+    let segments = [line("the Kestral build and the Kestral fix"), line("Jon said hi")]
+    let rows = [
+        GlossaryCorrection(segmentIndex: 0, from: "Kestral", to: "Kestrel"),
+        GlossaryCorrection(segmentIndex: 0, from: "Kestral", to: "Kestrol"),
+        GlossaryCorrection(segmentIndex: 0, from: "Kestral", to: "Kestrel", characterOffset: 26),
+        GlossaryCorrection(segmentIndex: 1, from: "Jon", to: "Jonathan"),
+        GlossaryCorrection(segmentIndex: 0, from: "Kestral build", to: "Kestrel Build"),
+        GlossaryCorrection(segmentIndex: 7, from: "gone", to: "line"),
+    ]
+    // Rows 0, 1 and 4 overlap the first Kestral; row 2 is the second Kestral, alone; row 3 is another line.
+    #expect(GlossaryCorrector.alternatives(of: rows, in: segments) == [0: 0, 1: 0, 4: 0])
+    // Applying every row changes each group's place once, with its first row.
+    #expect(GlossaryCorrector.apply(rows, to: segments).map(\.text) == ["the Kestrel build and the Kestrel fix", "Jonathan said hi"])
+    #expect(GlossaryCorrector.alternatives(of: [rows[3]], in: segments).isEmpty)
+}
