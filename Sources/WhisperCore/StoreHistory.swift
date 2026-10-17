@@ -34,14 +34,16 @@ public struct RetentionPolicy: Sendable, Equatable {
     public var byteBudget: Int
     /// Where the budget stops scaling with the index (F527). Never lowers `byteBudget`.
     public var byteBudgetCeiling: Int
-    public var maxConflictBranches: Int
+    // No conflict-branch limit (F1020, F620; the user's decision of 2026-10-16): a conflict branch is
+    // a losing save's work and exists nowhere else, so nothing here deletes one. `maxConflictBranches`
+    // (20) was read by nothing and only implied a limit; Forget History's "and Conflict Copies" is
+    // the one way they go, and only when the user chooses it.
 
     public init(
         recentCount: Int = 3,
         ageAnchors: [Int] = [3_600, 86_400, 604_800],
         pinHighWaterRecordCount: Bool = true,
         byteBudget: Int = 256 * 1024 * 1024,
-        maxConflictBranches: Int = 20,
         byteBudgetCeiling: Int = 2 * 1024 * 1024 * 1024
     ) {
         self.recentCount = recentCount
@@ -49,7 +51,6 @@ public struct RetentionPolicy: Sendable, Equatable {
         self.pinHighWaterRecordCount = pinHighWaterRecordCount
         self.byteBudget = byteBudget
         self.byteBudgetCeiling = byteBudgetCeiling
-        self.maxConflictBranches = maxConflictBranches
     }
 
     public static let dictationLog = RetentionPolicy(recentCount: 2, ageAnchors: [86_400])

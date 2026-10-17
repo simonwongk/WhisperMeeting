@@ -653,7 +653,6 @@ public struct RetentionPolicy: Sendable, Equatable {
     public var ageAnchors: [Int] = [3_600, 86_400, 604_800]     // an hour, a day, a week
     public var pinHighWaterRecordCount: Bool = true
     public var byteBudget: Int = 256 * 1024 * 1024
-    public var maxConflictBranches: Int = 20
     public static let dictationLog = RetentionPolicy(recentCount: 2, ageAnchors: [86_400])
 }
 ```
@@ -671,7 +670,7 @@ fit, which at a real index — 2.1 MB when F211 measured it, 2.6 MB by the time 
 
 Then a byte budget, which **trims** the kept set and never rescues anything outside it: if what the rules kept exceeds `byteBudget`, drop oldest-first, but never anything kept by rules 1, 3 or 4. Only rule-2 anchors are droppable, so the budget is a ceiling on an already-bounded set — in the steady state it does nothing at all. The rules retain seven or eight generations, which at a 2–3 MB index is roughly 15–20 MB per store. (That is arithmetic from the rules, not a benchmark, and the index size is the measured one, not a fixed property — re-take it before relying on the figure.)
 
-`conflict-` files are **never automatically pruned** — they are unique user data that exists nowhere else. When their count reaches `maxConflictBranches` a new conflict is still preserved and `SaveOutcome.conflictBranchBacklog` reports the count so the app can ask the user to resolve them.
+`conflict-` files are **never automatically pruned** — they are unique user data that exists nowhere else. There is no limit on how many are kept: every new conflict is preserved, and `SaveOutcome.conflictBranchBacklog` reports the count. (A `maxConflictBranches` field was planned here and never enforced; F1020 removed it, by the user's decision of 2026-10-16 that conflict copies are never deleted automatically.)
 
 > **Why not "the newest K saves".** The 2026-08-14 loop wrote **ten** generations inside one launch (`AppModel.performStartupRecovery` calls `store.upsert` once per orphan folder, and `upsert` persists). `AppModel.recoverInterruptedTranscriptions` does the same per `.processing` meeting, and ordinary debounced transcript editing does it in under a minute. A 5-deep save window would have been emptied before the user saw the window. Under this policy those ten stub saves all have `recordCount == 0`, so rule 3 pins the 17-meeting generation indefinitely and rules 1–2 keep the hourly/daily/weekly anchors.
 
