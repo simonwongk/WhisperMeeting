@@ -133,6 +133,9 @@ func restoreRefusedWhileTranscribing() async throws {
 
     #expect(model.pendingLibraryRestore == nil, "a restore was offered over a running transcription")
     #expect(model.alertMessage?.contains("transcription") == true, "\(model.alertMessage ?? "no message")")
+    // F983: by name, as the queued refusal is (F843).
+    #expect(model.alertMessage?.contains("the transcription of “Renamed since”") == true,
+            "the refusal does not say which meeting is being transcribed: \(model.alertMessage ?? "no message")")
     try await drain(model, latch)
 }
 
@@ -207,6 +210,22 @@ func queuedRefusalWording() {
     #expect(untitled.contains("“Untitled meeting”"), "\(untitled)")
 }
 
+@Test("The running-job refusal names each job and its meeting, and falls back when it has none (F983)")
+func runningRefusalWording() {
+    let one = AppModel.runningJobRestoreRefusal([(.transcription, "Board call")])
+    #expect(one.hasPrefix("Wait for the transcription of “Board call” to finish, or cancel it"), "\(one)")
+    #expect(one.contains("Its result would be written into the meeting you are restoring."), "\(one)")
+
+    let two = AppModel.runningJobRestoreRefusal([(.transcription, "Board call"), (.summary, " ")])
+    #expect(two.contains("the transcription of “Board call” and the summary of “Untitled meeting”"), "\(two)")
+    #expect(two.contains("cancel them") && two.contains("Their results"), "\(two)")
+
+    let three = AppModel.runningJobRestoreRefusal([(.passageRerun, "A"), (.secondOpinion, "B"), (.summary, "C")])
+    #expect(three.contains("the re-run of a passage of “A”, the second opinion on “B” and the summary of “C”"), "\(three)")
+
+    #expect(AppModel.runningJobRestoreRefusal([]).contains("the running transcription or summary"))
+}
+
 @Test("A restore confirmed after a transcription started is refused, and changes nothing (F506)")
 @MainActor
 func restoreRefusedAtConfirmationWhenATranscriptionStarted() async throws {
@@ -245,6 +264,8 @@ func restoreRefusedWhileSummarizing() async throws {
     await model.requestLibraryRestore(from: generation)
 
     #expect(model.pendingLibraryRestore == nil, "a restore was offered over a running summary")
+    #expect(model.alertMessage?.contains("the summary of “Renamed since”") == true,
+            "the refusal does not say which meeting is being summarized (F983): \(model.alertMessage ?? "no message")")
     try await drain(model, latch)
 }
 
@@ -260,6 +281,8 @@ func restoreRefusedDuringAnAuxiliaryRun() async throws {
     await model.requestLibraryRestore(from: generation)
 
     #expect(model.pendingLibraryRestore == nil, "a restore was offered over a running second opinion")
+    #expect(model.alertMessage?.contains("the second opinion on “Renamed since”") == true,
+            "the refusal does not say which meeting the second opinion is for (F983): \(model.alertMessage ?? "no message")")
     try await drain(model, latch)
 }
 

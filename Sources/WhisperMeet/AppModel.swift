@@ -3394,7 +3394,18 @@ final class AppModel: ObservableObject {
             return Self.startupRecoveryRestoreRefusal
         }
         if hasActiveTranscription || isRunningAuxiliaryEngine || isSummarizing {
-            return "Wait for the running transcription or summary to finish, or cancel it, before restoring the library. Its result would be written into the meeting you are restoring."
+            // F983: by name, as the queued refusal is (F843): the running card and its Cancel are on
+            // the meeting's own page.
+            var running: [(job: RunningJob, title: String)] = []
+            func add(_ job: RunningJob, _ id: UUID?) {
+                guard let id else { return }
+                running.append((job, store.meeting(id: id)?.title ?? ""))
+            }
+            add(.transcription, transcription.activeID)
+            add(.secondOpinion, secondOpinionRunningID)
+            add(.passageRerun, segmentReTranscriptionRunningID)
+            add(.summary, activeSummarizationID)
+            return Self.runningJobRestoreRefusal(running)
         }
         // F583: a queued job writes into its meeting when it finishes exactly as a running one does,
         // and a job queued behind Quick Dictation (F470) has no running job to be caught above. The
@@ -3426,6 +3437,40 @@ final class AppModel: ObservableObject {
             ? named.prefix(3).joined(separator: ", ") + " and \(named.count - 3) more"
             : named.joined(separator: ", ")
         return "Wait for the \(named.count) queued transcriptions (\(shown)) to finish, or remove them from the queue on each meeting's page, before restoring the library. Their results would be written into the meetings you are restoring."
+    }
+
+    /// A job that writes into its meeting when it finishes, for `runningJobRestoreRefusal` (F983).
+    enum RunningJob {
+        case transcription, secondOpinion, passageRerun, summary
+
+        func named(_ quotedTitle: String) -> String {
+            switch self {
+            case .transcription: "the transcription of \(quotedTitle)"
+            case .secondOpinion: "the second opinion on \(quotedTitle)"
+            case .passageRerun: "the re-run of a passage of \(quotedTitle)"
+            case .summary: "the summary of \(quotedTitle)"
+            }
+        }
+    }
+
+    /// The refusal of a restore over running work, naming each job and its meeting by its live title
+    /// (F983), as `queuedTranscriptionRestoreRefusal` names the queued ones (F843). With nothing to
+    /// name — a flag set with no meeting recorded — it falls back to the sentence it replaced.
+    nonisolated static func runningJobRestoreRefusal(_ running: [(job: RunningJob, title: String)]) -> String {
+        guard !running.isEmpty else {
+            return "Wait for the running transcription or summary to finish, or cancel it, before restoring the library. Its result would be written into the meeting you are restoring."
+        }
+        let named = running.map { entry -> String in
+            let trimmed = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return entry.job.named("“\(trimmed.isEmpty ? "Untitled meeting" : trimmed)”")
+        }
+        let list = named.count == 1
+            ? named[0]
+            : named.dropLast().joined(separator: ", ") + " and " + named[named.count - 1]
+        if named.count == 1 {
+            return "Wait for \(list) to finish, or cancel it on that meeting's page, before restoring the library. Its result would be written into the meeting you are restoring."
+        }
+        return "Wait for \(list) to finish, or cancel them on each meeting's page, before restoring the library. Their results would be written into the meetings you are restoring."
     }
 
     /// Whether the Settings restore controls should show a restore in progress. The store holds
