@@ -6,8 +6,14 @@ import WhisperCore
 enum DecodedAudio {
     enum Failure: LocalizedError {
         case unreadable(String)
+        /// AVAudioFile opened the file and counts no frames in it (F1037): nothing it reads can be trusted, and asking
+        /// where it stands raises.
+        case uncounted
         var errorDescription: String? {
-            switch self { case let .unreadable(reason): return "The compressed audio could not be read back: \(reason)" }
+            switch self {
+            case let .unreadable(reason): return "The compressed audio could not be read back: \(reason)"
+            case .uncounted: return "The compressed audio could not be read back: its length is not counted."
+            }
         }
     }
 
@@ -134,7 +140,9 @@ enum DecodedAudio {
 
     /// The length the container declares, without decoding. Nil when AVAudioFile cannot open it.
     static func declaredDuration(of url: URL) -> TimeInterval? {
-        guard let file = try? AVAudioFile(forReading: url), file.processingFormat.sampleRate > 0 else { return nil }
+        // F1037: AVAudioFile opens an MP4 holding Opus and reports 0 frames, which is not a length — F911 took it for a
+        // download holding nothing. A file it cannot count declares nothing, and is measured another way or kept.
+        guard let file = try? AVAudioFile(forReading: url), file.processingFormat.sampleRate > 0, file.length > 0 else { return nil }
         return Double(file.length) / file.processingFormat.sampleRate
     }
 
@@ -147,6 +155,13 @@ enum DecodedAudio {
     /// Decodes every packet, once, for the length, the level and the level of each window (F801).
     /// Shrink decodes the compressed copy this way, and the original too, so the levels it compares
     /// come from the same reader.
+    ///
+    /// F1037: `framePosition` is never asked. On an MP4 holding Opus AVAudioFile reports 0 frames and 0 frames a packet,
+    /// and `framePosition` then *raises* an Objective-C exception ('prm?', from `CheckClientFormatSet`) that no Swift
+    /// `catch` sees — `AVAudioFile.h` says nothing of it; measured on macOS 27 — while `read(into:)` reports the same
+    /// failure as a thrown error. So the file's own length is probed first and a file of no frames refused here, before
+    /// any read (`fullyDecodedEveryTrack` reads such a file with AVAssetReader, which reports through its status); and
+    /// the loop counts the frames it read rather than asking where the file stands.
     static func fullyDecoded(of url: URL) throws -> Decoded {
         let file = try AVAudioFile(forReading: url)
         let format = file.processingFormat
@@ -155,9 +170,11 @@ enum DecodedAudio {
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 65_536) else {
             throw Failure.unreadable("no decodable audio format")
         }
+        let length = file.length
+        guard length > 0 else { throw Failure.uncounted }
         var sums = WindowSums()
         var frames = 0
-        while file.framePosition < file.length {
+        while Int64(frames) < length {
             try file.read(into: buffer)
             let count = Int(buffer.frameLength)
             guard count > 0 else { break }
@@ -178,12 +195,28 @@ enum DecodedAudio {
     /// own rate and channel count — nothing is mixed or converted before it is measured — and placed on
     /// the recording's timeline by its presentation time. The level and windows are then over every
     /// channel of every track, and `channelWindowLevels` lists each of those channels, the tracks in
-    /// order. A file with one track (or none AVFoundation can list) is `fullyDecoded`.
+    /// order. A file with one track (or none AVFoundation can list) is `fullyDecoded`, and one of those AVAudioFile counts
+    /// no frames in (an MP4 holding Opus, F1037) is read with AVAssetReader like a recording of several tracks.
     static func fullyDecodedEveryTrack(of url: URL) async throws -> Decoded {
         let asset = AVURLAsset(url: url)
         guard let tracks = try? await asset.loadTracks(withMediaType: .audio), tracks.count > 1 else {
-            return try fullyDecoded(of: url)
+            do {
+                return try fullyDecoded(of: url)
+            } catch Failure.uncounted {
+                // F1037: a file AVAudioFile cannot count (an MP4 holding Opus) is read with AVAssetReader, as a
+                // recording of several tracks is; with no track to read, it is unreadable.
+                guard let track = try? await asset.loadTracks(withMediaType: .audio).first else {
+                    throw Failure.unreadable("no audio track to read")
+                }
+                return try await readerDecoded(asset: asset, tracks: [track])
+            }
         }
+        return try await readerDecoded(asset: asset, tracks: tracks)
+    }
+
+    /// `tracks` of `asset` decoded with AVAssetReader, each at its own rate and channel count, placed by presentation
+    /// time; the body `fullyDecodedEveryTrack` has used for several tracks since F942.
+    private static func readerDecoded(asset: AVAsset, tracks: [AVAssetTrack]) async throws -> Decoded {
         var sums = WindowSums()
         var firstChannel = 0
         // Where the audio ends: no buffer may be placed past it and a second, so a corrupt timestamp cannot

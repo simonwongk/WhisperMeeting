@@ -217,8 +217,13 @@ verified and the index saved.
      is not shown, nothing is removed (review 2, F2-1). A download AVFoundation cannot read (a WebM/Opus one) is
      decoded first with the installed ffmpeg into a 16 kHz WAV that keeps its channels (`.shrink-<token>.decoded.wav`,
      removed afterwards), and checked the same way: one channel has nothing to check, two are measured, and one that
-     cannot be decoded — no ffmpeg, a decode that fails, more than one audio stream — or holds more than two channels
-     is not shown, so nothing is removed (F1004). The same holds for a resume's leftover.
+     cannot be decoded — no ffmpeg, a decode that fails, more than one audio stream — holds more than two channels, or
+     decodes shorter than its measured length is not shown, so nothing is removed (F1004). "Cannot read" includes a
+     file AVFoundation opens but lists no audio track in (an MP3 in MP4) or a track of no channels (F1004 round 2).
+     The same holds for a resume's leftover, which first checks the free space the decode needs (64 kB a second).
+   - An MP4 holding Opus is read with AVAssetReader: AVAudioFile opens it, counts 0 frames, and raises when asked
+     its position, which crashed Shrink (F1037). Such a file declares no length, so F911 measures it another way
+     (recovery's record, or ffprobe) or keeps it, instead of taking its 0 s as holding nothing.
    - For a mixed recording (F942) the level checks above are replaced, because levels cannot show a track lost while
      another sounds over it, nor a track whose channels cancel when combined: the review deleted an original both ways
      (review of F942, R2 and M8). Instead `RecordingMixer.audit` reads every channel of every track again, the way the
