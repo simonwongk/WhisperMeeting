@@ -175,8 +175,8 @@ func shrinkKeepsEveryCancellationTheReviewsMade() async throws {
         ("a loud stretch, then a quiet cancelling one (F2-3)", loudThenQuiet),
     ]
     var deleted: [String] = []
-    for (label, channels) in probes {
-        let outcome = try await shrinkWAV(channels)
+    let outcomes = try await concurrentProbes(probes) { try await shrinkWAV($0.1) }
+    for ((label, _), outcome) in zip(probes, outcomes) {
         if !outcome.kept || !outcome.alert.contains("nothing was removed") { deleted.append("\(label): \(outcome.alert)") }
         #expect(outcome.alert.contains("cancel each other"), "\(label): \(outcome.alert)")
     }
@@ -204,10 +204,8 @@ func shrinkKeepsWhatTheFirstRoundKept() async throws {
         ("a whole file of 0.1 s, mid/side", midSide(Array(a16.prefix(1_600)), Array(b16.prefix(1_600)))),
     ]
     var deleted: [String] = []
-    for (label, channels) in probes {
-        let outcome = try await shrinkWAV(channels)
-        if !outcome.kept { deleted.append("\(label): \(outcome.alert)") }
-    }
+    let outcomes = try await concurrentProbes(probes) { try await shrinkWAV($0.1) }
+    for ((label, _), outcome) in zip(probes, outcomes) where !outcome.kept { deleted.append("\(label): \(outcome.alert)") }
     #expect(deleted.isEmpty, "\(deleted)")
 }
 
@@ -249,9 +247,10 @@ func shrinkJudgesAWAVByWhatTheCompressionKeepsOfItsMask() async throws {
     // read it here (`shrinkWAVAskingTheHost`) — and where they cannot, kept for exactly that reason.
     let unreadable = AppModel.ShrinkFailure.unreadableOriginal.errorDescription ?? "?"
     let ownA = fixtureToneAmplitude(a16, rate: Double(rate), frequency: toneA[0]), ownB = fixtureToneAmplitude(quietB, rate: Double(rate), frequency: toneB[0])
-    for (name, mask) in [("front left and right", UInt32(0x3)), ("no positions", UInt32(0)), ("back left and right", UInt32(0x30)),
-                         ("side left and right", UInt32(0x600)), ("the centre pair", UInt32(0xC0)), ("front left and centre", UInt32(0x5))] {
-        let outcome = try await shrinkWAVAskingTheHost([a16, quietB], mask: mask)
+    let masks: [(String, UInt32)] = [("front left and right", 0x3), ("no positions", 0), ("back left and right", 0x30),
+                                     ("side left and right", 0x600), ("the centre pair", 0xC0), ("front left and centre", 0x5)]
+    let outcomes = try await concurrentProbes(masks) { try await shrinkWAVAskingTheHost([a16, quietB], mask: $0.1) }
+    for ((name, _), outcome) in zip(masks, outcomes) {
         if let copy = outcome.copy {
             // Removed: only as Shrunk, and only with both voices in the copy — an even mix holds each at about half.
             let heldA = fixtureToneAmplitude(copy, rate: Double(rate), frequency: toneA[0])
@@ -526,19 +525,19 @@ func shrinkStillShrinksOrdinaryStereo() async throws {
         ("a voice beside itself 4 Hz higher", [a16, voice16(toneA, detune: 4)]),
     ]
     var refused: [String] = []
-    for (label, channels) in controls {
-        let outcome = try await shrinkWAV(channels)
-        if outcome.kept || !outcome.alert.contains("Shrunk") { refused.append("\(label): \(outcome.alert)") }
-    }
-    // Other rates and a float WAV, a voice per channel.
+    // Other rates, a voice per channel, beside the 16 kHz controls; all run together.
+    var all: [(String, [[Float]], Int)] = controls.map { ($0.0, $0.1, rate) }
     for wavRate in [8_000, 22_050, 96_000] {
         let a = voice16(toneA.filter { $0 < Double(wavRate) / 2 }, seconds: 4).map { $0 }
         let count = Int(4.0 * Double(wavRate))
         let resampled: [[Float]] = [a, voice16(toneB.filter { $0 < Double(wavRate) / 2 }, seconds: 4)].map { channel in
             (0..<count).map { channel[Swift.min(channel.count - 1, $0 * rate / wavRate)] }
         }
-        let outcome = try await shrinkWAV(resampled, rate: wavRate)
-        if outcome.kept || !outcome.alert.contains("Shrunk") { refused.append("\(wavRate) Hz: \(outcome.alert)") }
+        all.append(("\(wavRate) Hz", resampled, wavRate))
+    }
+    let outcomes = try await concurrentProbes(all) { try await shrinkWAV($0.1, rate: $0.2) }
+    for ((label, _, _), outcome) in zip(all, outcomes) where outcome.kept || !outcome.alert.contains("Shrunk") {
+        refused.append("\(label): \(outcome.alert)")
     }
     let f = try await MixFixture(recordingExtension: "wav", duration: voiceSeconds) { url in
         try fixtureFloatWAV([a16, b16], rate: rate).write(to: url)
@@ -659,6 +658,10 @@ private func f1009Probes() -> [(String, [[Float]])] {
         ("voice B alone for 0.12 s inside a stretch", solo(0.12, at: 4 * hop + 0.196, over: false)),
         ("voice B alone for 0.12 s across a stretch's edge", solo(0.12, at: 8 * hop - 0.06, over: false)),
         ("voice B for 0.08 s over voice A", solo(0.08, at: 4 * hop + 0.216, over: true)),
+        // Review 1 of Wave 8 lane A, finding 3: these two are what pin "broadband" (`delayEvidenceBands` 2; at 1 both
+        // are deleted) and the brief rule's tolerance.
+        ("voice B alone for 0.06 s across a stretch's edge", solo(0.06, at: 8 * hop - 0.03, over: false)),
+        ("voice B for 0.06 s over voice A, inside a stretch", solo(0.06, at: 2.24, over: true)),
     ]
 }
 
@@ -666,8 +669,9 @@ private func f1009Probes() -> [(String, [[Float]])] {
 @MainActor
 func shrinkKeepsWhatOnlyANarrowbandDelayExcused() async throws {
     var deleted: [String] = []
-    for (label, channels) in f1009Probes().prefix(3) {
-        let outcome = try await shrinkWAV(channels)
+    let probes = Array(f1009Probes().prefix(3))
+    let outcomes = try await concurrentProbes(probes) { try await shrinkWAV($0.1) }
+    for ((label, _), outcome) in zip(probes, outcomes) {
         if !outcome.kept { deleted.append("\(label): \(outcome.alert)") }
         print("F1009 probe \(outcome.kept ? "KEPT   " : "DELETED") | \(label) | \(outcome.alert.prefix(140))")
     }
@@ -678,8 +682,9 @@ func shrinkKeepsWhatOnlyANarrowbandDelayExcused() async throws {
 @MainActor
 func shrinkKeepsABriefSideVoice() async throws {
     var deleted: [String] = []
-    for (label, channels) in f1009Probes().dropFirst(3) {
-        let outcome = try await shrinkWAV(channels)
+    let probes = Array(f1009Probes().dropFirst(3))
+    let outcomes = try await concurrentProbes(probes) { try await shrinkWAV($0.1) }
+    for ((label, _), outcome) in zip(probes, outcomes) {
         if !outcome.kept { deleted.append("\(label): \(outcome.alert)") }
         print("F1009 probe \(outcome.kept ? "KEPT   " : "DELETED") | \(label) | \(outcome.alert.prefix(140))")
     }
@@ -698,9 +703,9 @@ func shrinkStillShrinksSpacedTalkersAndTones() async throws {
         ("voice A with a steady 1 kHz tone in phase on both channels", [mix(a16, tone), mix(a16, tone)]),
     ]
     var refused: [String] = []
-    for (label, channels) in controls {
-        let outcome = try await shrinkWAV(channels)
-        if outcome.kept || !outcome.alert.contains("Shrunk") { refused.append("\(label): \(outcome.alert)") }
+    let outcomes = try await concurrentProbes(controls) { try await shrinkWAV($0.1) }
+    for ((label, _), outcome) in zip(controls, outcomes) where outcome.kept || !outcome.alert.contains("Shrunk") {
+        refused.append("\(label): \(outcome.alert)")
     }
     #expect(refused.isEmpty, "\(refused)")
 }
