@@ -330,3 +330,57 @@ func mishearingBesideTheRightSpellingIsProposed() {
     #expect(GlossaryCorrector.corrections(vocabulary: ["Kestrel"], segments: [seg("the Kestrels nest")])
         == [GlossaryCorrection(segmentIndex: 0, from: "Kestrels", to: "Kestrel")])
 }
+
+/// Each probe line on its own: the rows Correct Toward Vocabulary makes, as "from → to".
+private func rows(_ vocabulary: [String], _ line: String) -> [String] {
+    GlossaryCorrector.corrections(vocabulary: vocabulary, segments: [seg(line)]).map { "\($0.from) → \($0.to)" }
+}
+
+@Test("Beside the right spelling, a window needs a higher score and the term's own digits, so no person, numeral or short word is taken for a mishearing (F994, round 2)")
+func besideTheRightSpellingRowsNeedMore() {
+    // The review of lane E: round 1 searched the rest of a line that names the term at the usual 0.5,
+    // and every one of these lines — none misheard — got a row, ticked by default (Latin rows are).
+    #expect(rows(["Mark"], "Mark and Mike will sync").isEmpty)
+    #expect(rows(["Jon"], "Jon told Jan about it").isEmpty)
+    #expect(rows(["Ann"], "Ann and Bob came").isEmpty)
+    #expect(rows(["Ann"], "Ann and Anne both came").isEmpty)
+    #expect(rows(["Priya Raman"], "Priya Raman said Priya will come").isEmpty)
+    #expect(rows(["Q3"], "Q3 numbers and Q4 plans").isEmpty)
+    #expect(rows(["iOS 17"], "iOS 17 and iOS 18 both ship").isEmpty)
+    #expect(rows(["v2"], "v2 replaces v1 today").isEmpty)
+    #expect(rows(["GPT-4"], "GPT-4 beats GPT-3 easily").isEmpty)
+    #expect(rows(["Redis"], "Redis is down and the radius is wrong").isEmpty)
+    #expect(rows(["Kestrel"], "Kestrel and MiniKestrel ship").isEmpty)
+    // The real second mishearings still are rows: Pria Ramen 0.8, Kestrol 0.86, Grafanna 0.88.
+    #expect(rows(["Priya Raman"], "Priya Raman and Pria Ramen spoke") == ["Pria Ramen → Priya Raman"])
+    #expect(rows(["Kestrel"], "Kestrel shipped and Kestrol followed") == ["Kestrol → Kestrel"])
+    #expect(rows(["Grafana"], "Grafana and Grafanna dashboards") == ["Grafanna → Grafana"])
+}
+
+@Test("Beside the right spelling, only an English ending makes a longer word the same word; a doubled or extra letter is a mishearing (F994, round 2)")
+func onlyEnglishEndingsAreInflections() {
+    // Round 1 skipped every longer word that began with the term, so these were lost wherever the
+    // term was also spelled right (the review of lane E, finding 3).
+    #expect(rows(["Kestrel"], "Kestrel shipped and Kestrell followed") == ["Kestrell → Kestrel"])
+    #expect(rows(["Pavel"], "Pavel met Pavell later") == ["Pavell → Pavel"])
+    #expect(rows(["Grafana"], "Grafana panel and Grafanaa alert") == ["Grafanaa → Grafana"])
+    #expect(rows(["Sean"], "Sean asked Seann") == ["Seann → Sean"])
+    #expect(rows(["Lisa"], "Lisa and Lisaa") == ["Lisaa → Lisa"])
+    // An English ending is the term inflected, and nothing reaches across it.
+    #expect(rows(["Kestrel"], "Kestrel and the Kestrels nest").isEmpty)
+    #expect(rows(["deploy"], "we deploy and deployed it").isEmpty)
+    #expect(rows(["deploy"], "deploy the deployment").isEmpty)
+}
+
+@Test("A window on another listed term, a split one too, is never followed by a window that reaches over a neighbouring word (F1003, round 2)")
+func aWindowOnAnotherTermLeavesNoRowBehindIt() {
+    // The review of lane E, finding 4: the window spelling the other term was skipped and the next
+    // best took the word beside it.
+    #expect(rows(["Bank of New York", "Bank of New York Mellon"], "the Bank of New Yor k said yes.")
+        == ["Bank of New Yor k → Bank of New York"])
+    #expect(rows(["Priya Raman", "Priya Raman Iyer"], "ask Priya Ram an now.") == ["Priya Ram an → Priya Raman"])
+    #expect(rows(["Kubernetes", "Kubernetes Engine"], "we run Kuber netes daily") == ["Kuber netes → Kubernetes"])
+    #expect(rows(["Rust", "Russell"], "ask Rust sell about it").isEmpty)
+    // Without the other term listed, the split mishearing of the longer one is proposed as before.
+    #expect(rows(["Russell"], "ask Rust sell about it") == ["Rust sell → Russell"])
+}

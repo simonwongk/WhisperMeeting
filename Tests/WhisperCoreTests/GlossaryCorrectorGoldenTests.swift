@@ -35,11 +35,11 @@ import Testing
 // - F972 fourth: a three-word term on such a line is compared with its four-word windows too, but
 //   only where a window of up to three words already scored for it (round 2 of Wave 7, F968's stray word).
 // - F994: a term is present where it stands, not in the whole segment: no window across it, nor
-//   across a word that begins with its spelling (its inflection, "Kestrels"), and the rest of the
-//   line is searched as before.
-// - F1003: a window equal to another term of the vocabulary is never proposed toward this one, nor
-//   a window overlapping where another term stands as up to three words, unless this term's
-//   spelling holds that one's.
+//   across a word that is its spelling with an English ending ("Kestrels"); the rest of the line is
+//   searched, but a window there must write the term's digits and score above 0.75 (round 2).
+// - F1003: a window equal to another term of the vocabulary, or overlapping where one stands as any
+//   run of words (a split one too), unless this term's spelling holds that one's, is no row — and
+//   when it is the best window, no row at all, so the next one never reaches over a neighbour.
 //
 // Not an amendment: the oracle remembers its scores across runs (F1011, `OracleScores`), which
 // changes no answer — only how often the same pair is scored.
@@ -101,14 +101,16 @@ private enum PreF536GlossaryCorrector {
     ) -> [GlossaryCorrection] {
         var results: [GlossaryCorrection] = []
         let termSpellings = Set(vocabulary.map(normalize)) // amended (F1003)
+        var spellingWords: [String: Int] = [:] // amended (F1003): each spelling's fewest words
+        for term in vocabulary { spellingWords[normalize(term)] = min(spellingWords[normalize(term)] ?? .max, Self.words(of: term, splittingAtDashes: amended.f915).count) } // amended
         for (index, segment) in segments.enumerated() {
             let words = Self.words(of: segment.text, splittingAtDashes: amended.f915)
             guard !words.isEmpty else { continue }
             let normalizedWords = words.map { normalize($0.text) }
-            // Where any term stands as up to three words, once per segment (F1003). // amended
+            // Where any term stands, as any run of words — a split one too — once per segment (F1003). // amended
             var termsStanding: [(span: Range<Int>, spelling: String)] = [] // amended
             if amended.f1003 { // amended
-                for size in 1...maxWindow where size <= words.count { // amended
+                for size in 1...words.count { // amended
                     for start in 0...(words.count - size) { // amended
                         let spelling = normalizedWords[start..<(start + size)].joined() // amended
                         if termSpellings.contains(spelling) { termsStanding.append((start..<(start + size), spelling)) } // amended
@@ -121,9 +123,10 @@ private enum PreF536GlossaryCorrector {
                 guard !termNormalized.isEmpty else { continue }
                 if !amended.f994, normalizedWords.contains(termNormalized) { continue } // amended (was unconditional)
 
-                var best: (similarity: Double, slice: Range<Int>)?
-                var blocked = termsStanding // amended (F1003)
-                    .filter { $0.spelling != termNormalized && !termNormalized.contains($0.spelling) }.map(\.span) // amended
+                var best: (similarity: Double, slice: Range<Int>, onAnotherTerm: Bool)? // amended (F1003: onAnotherTerm)
+                let others = termsStanding // amended (F1003): a window on or across another term competes, and as the best is no row
+                    .filter { $0.spelling != termNormalized && (!termNormalized.contains($0.spelling) || $0.span.count > (spellingWords[$0.spelling] ?? .max)) } // amended
+                var blocked: [Range<Int>] = [] // amended (F994)
                 var presentAsAWindow = false // amended
                 let termWordList = Self.words(of: term, splittingAtDashes: amended.f915) // amended
                 let termWords = termWordList.count // amended
@@ -147,9 +150,11 @@ private enum PreF536GlossaryCorrector {
                             standsHere = true // amended
                         } // amended
                     } // amended
-                    if standsHere { // amended: and beside it, no window across a word that is it inflected
+                    if standsHere { // amended: and beside it, no window across a word that is it with an English ending
+                        let endings: Set<String> = ["s", "es", "ed", "d", "ing", "er", "ers", "ment", "ments"] // amended
                         for (position, word) in normalizedWords.enumerated() // amended
-                        where word.count > termNormalized.count && word.hasPrefix(termNormalized) { // amended
+                        where word.count > termNormalized.count && word.hasPrefix(termNormalized) // amended
+                            && endings.contains(String(word.dropFirst(termNormalized.count))) { // amended
                             blocked.append(position..<(position + 1)) // amended
                         } // amended
                     } // amended
@@ -163,17 +168,20 @@ private enum PreF536GlossaryCorrector {
                         let splitWord = amended.f968 && size > termWords // amended
                         if windowNormalized == termNormalized, !splitWord { presentAsAWindow = true } // amended
                         guard !windowNormalized.isEmpty, windowNormalized != termNormalized || splitWord else { continue } // amended
-                        if amended.f1003, windowNormalized != termNormalized, termSpellings.contains(windowNormalized) { continue } // amended
                         if blocked.contains(where: { $0.overlaps(start..<(start + size)) }) { continue } // amended
+                        if standsHere, windowNormalized.filter(\.isNumber) != termNormalized.filter(\.isNumber) { continue } // amended (F994)
+                        let onAnotherTerm = amended.f1003 && ((windowNormalized != termNormalized && termSpellings.contains(windowNormalized)) // amended
+                            || others.contains { $0.span.count <= largest && $0.span.overlaps(start..<(start + size)) }) // amended
                         let score = scores.similarity(windowNormalized, termNormalized) // F1011: remembered
-                        if score >= similarityThreshold, score > (best?.similarity ?? 0) {
-                            best = (score, start..<(start + size))
+                        let passes = standsHere ? score > 0.75 : score >= similarityThreshold // amended (F994)
+                        if passes, score > (best?.similarity ?? 0) {
+                            best = (score, start..<(start + size), onAnotherTerm)
                         }
                     }
                 }
                 } // amended
                 if amended.f820, presentAsAWindow, !amended.f994 { continue } // amended
-                if let best {
+                if let best, !best.onAnotherTerm { // amended (F1003)
                     let window = words[best.slice.lowerBound].range.lowerBound..<words[best.slice.upperBound - 1].range.upperBound // amended
                     let untrimmed = amended.f914 // amended
                         ? String(segment.text[window]) : words[best.slice].map(\.text).joined(separator: " ") // amended
