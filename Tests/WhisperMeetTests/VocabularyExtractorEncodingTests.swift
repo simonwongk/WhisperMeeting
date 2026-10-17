@@ -163,7 +163,7 @@ func longGlossaryKeepsDocumentOrderAndCountsTheRest() throws {
     defer { try? FileManager.default.removeItem(at: dir) }
     let url = dir.appendingPathComponent("glossary.txt")
     // 150 lines, each an English term and its Chinese one joined by 、: 300 candidates.
-    let lines: [String] = (1...150).map { String(format: "Term%03d、术语%03d", $0, $0) }
+    let lines: [String] = (1...150).map { String(format: "Term%03ld、术语%03ld", $0, $0) }
     try (lines.joined(separator: "\n") + "\n").data(using: .utf8)!.write(to: url)
 
     let result = VocabularyExtractor.extractBatch(from: [url])
@@ -185,4 +185,18 @@ func importDocumentsSaysWhatWasNotOffered() throws {
     let start = try #require(source.range(of: "private func importDocuments("))
     let body = String(source[start.upperBound...].prefix(2_000))
     #expect(body.contains("VocabularyImportMessage.notOffered(result.notOffered)"))
+}
+
+@Test("A candidate one document leaves out and another offers is not counted as not offered (F822, round 2)")
+func notOfferedCountsEachTermOnceAcrossDocuments() throws {
+    let dir = try makeTempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    // The long glossary leaves out Term201–Term250; the short one offers Term201–Term210.
+    let long = dir.appendingPathComponent("long.txt")
+    try ((1...250).map { String(format: "Term%03ld", $0) }.joined(separator: "\n") + "\n").data(using: .utf8)!.write(to: long)
+    let short = dir.appendingPathComponent("short.txt")
+    try ((201...210).map { String(format: "Term%03ld", $0) }.joined(separator: "\n") + "\n").data(using: .utf8)!.write(to: short)
+    let result = VocabularyExtractor.extractBatch(from: [long, short])
+    #expect(result.terms.count == 210)
+    #expect(result.notOffered == 40)
 }

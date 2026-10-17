@@ -30,7 +30,9 @@ enum VocabularyExtractor {
     /// sorted alphabetically for display, and how many more it held (F822).
     struct CandidateList: Equatable {
         var terms: [String]
-        var notOffered: Int
+        /// The candidates past the first `maxCandidatesPerText`, in text order.
+        var notOfferedTerms: [String] = []
+        var notOffered: Int { notOfferedTerms.count }
     }
 
     /// Reads a document's full plain text — the same per-type reading as `extract`, but returning the
@@ -312,18 +314,22 @@ enum VocabularyExtractor {
     static func extractBatch(from urls: [URL]) -> BatchExtraction {
         var terms: [String] = []
         var failed: [URL] = []
-        var notOffered = 0
+        var notOfferedTerms: [String] = []
         for url in urls {
             if let text = try? rawText(from: url) {
                 let list = candidateList(in: text)
                 terms.append(contentsOf: list.terms)
-                notOffered += list.notOffered
+                notOfferedTerms.append(contentsOf: list.notOfferedTerms)
             } else {
                 failed.append(url)
             }
         }
         var seen = Set<String>()
-        return BatchExtraction(terms: terms.filter { seen.insert($0).inserted }, failed: failed, notOffered: notOffered)
+        let offered = terms.filter { seen.insert($0).inserted }
+        // A candidate one document left out and another offered is offered; each counts once (the
+        // review of lane E, finding 11).
+        let notOffered = Set(notOfferedTerms).subtracting(offered).count
+        return BatchExtraction(terms: offered, failed: failed, notOffered: notOffered)
     }
 
     /// What Import Documents… read: the merged candidates, the files that could not be read, and how
@@ -344,7 +350,7 @@ enum VocabularyExtractor {
 
     /// `candidates`, with how many more the text held than it offers (F822).
     static func candidateList(in text: String, includeLineHeuristic: Bool = true) -> CandidateList {
-        guard !text.isEmpty else { return CandidateList(terms: [], notOffered: 0) }
+        guard !text.isEmpty else { return CandidateList(terms: []) }
         var terms = CandidateCollector()
 
         let tagger = NLTagger(tagSchemes: [.nameType])
@@ -443,7 +449,7 @@ enum VocabularyExtractor {
             .map(\.key)
         let offered = inTextOrder.prefix(maxCandidatesPerText)
             .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-        return CandidateList(terms: offered, notOffered: max(0, inTextOrder.count - maxCandidatesPerText))
+        return CandidateList(terms: offered, notOfferedTerms: Array(inTextOrder.dropFirst(maxCandidatesPerText)))
     }
 
     /// Function words that open a sentence capitalized and so read, to the capitalized-phrase
