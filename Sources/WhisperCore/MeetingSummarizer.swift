@@ -130,6 +130,11 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
     /// against the model's own tokenizer and `config.json` `max_position_embeddings`, never a
     /// guessed character count. `detail` names the measured token counts.
     case localInputTooLong(String)
+    /// An Ask question and the passages found for it need more tokens than the on-device model has
+    /// room for (F918). The same pre-flight refusal as `.localInputTooLong`, from the same helper,
+    /// but its own copy: the helper's detail is worded for a summary ("This transcript…", "a shorter
+    /// selection", "use Claude"), and Ask has no transcript to shorten, no selection, and no Claude.
+    case answerInputTooLong
     /// The on-device model's own files could not be read — a missing or corrupt `config.json`,
     /// tokenizer, or weights file, such as a hand-deleted or corrupted file (F598).
     /// `summarize_local.py`/`correct_local.py` report it as `finishReason: "model_unreadable"`
@@ -176,6 +181,9 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
             return "The on-device model's output could not be read. Nothing was saved — try again."
         case let .localInputTooLong(detail):
             return detail
+        case .answerInputTooLong:
+            return "Your question and the passages found for it are more than the on-device model can "
+                + "read at once. Try a shorter question. The passages are what was said."
         case let .localModelUnreadable(detail):
             return detail
         case .unreadableResponse:

@@ -297,9 +297,11 @@ public struct LocalSummarizer: MeetingSummarizer {
     static func answerRefusal(warning: String?, finishReason: String?) -> SummarizerError? {
         // F755: the helper's F475 pre-flight refused the prompt before loading the model. Before the
         // warning check, which wrapped it as "the answer could not be read cleanly" — and with no
-        // warning, nothing matched and the empty summary was returned as the answer.
+        // warning, nothing matched and the empty summary was returned as the answer. The helper's
+        // detail is worded for a summary ("This transcript…", "a shorter selection", "use
+        // Claude"), so Ask says it in its own words and drops the detail (F918).
         if finishReason == Self.tooLongFinishReason {
-            return .localInputTooLong(warning ?? Self.tooLongFallback)
+            return .answerInputTooLong
         }
         // F598: before the warning check, which would otherwise wrap it as a degraded answer.
         if finishReason == Self.modelUnreadableFinishReason {
@@ -347,7 +349,8 @@ public struct LocalSummarizer: MeetingSummarizer {
 
     /// `summarize_local.py`/`correct_local.py`'s F475 pre-flight: the prompt needs more tokens than
     /// the model's context window leaves room for, so the model was never loaded. Ask runs through
-    /// `summarize_local.py` too, so summarize, correct and Ask all read it.
+    /// `summarize_local.py` too, so summarize, correct and Ask all read it; Ask maps it to its own
+    /// `.answerInputTooLong` (F918), the other two to `.localInputTooLong` with the helper's detail.
     static let tooLongFinishReason = "too_long"
     /// Only for a payload without its warning; the helper always writes the measured detail.
     static let tooLongFallback = "This transcript is too long for the on-device model."

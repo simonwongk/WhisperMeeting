@@ -230,12 +230,10 @@ func unreadableModelRefusalIsSharedByEveryLocalPath() {
 @Test("Ask names a too-long prompt as too long, not as an answer that could not be read (F755)")
 func answerRefusalNamesATooLongPrompt() async throws {
     let detail = "This transcript needs about 41200 tokens, more than the 40560 available. Try a shorter selection."
-    // The pure rule, both ways round: the summarize path already said this.
-    #expect(LocalSummarizer.answerRefusal(warning: detail, finishReason: "too_long") == .localInputTooLong(detail))
-    #expect(LocalSummarizer.answerRefusal(warning: detail, finishReason: "too_long")
-            == LocalSummarizer.localOutputRefusal(warning: detail, finishReason: "too_long"))
-    #expect(LocalSummarizer.answerRefusal(warning: nil, finishReason: "too_long")
-            == LocalSummarizer.localOutputRefusal(warning: nil, finishReason: "too_long"))
+    // The pure rule: too long, whatever the helper's wording — never a degraded answer, and never
+    // the empty summary returned as if it were the answer (F755). Ask's own copy since F918.
+    #expect(LocalSummarizer.answerRefusal(warning: detail, finishReason: "too_long") == .answerInputTooLong)
+    #expect(LocalSummarizer.answerRefusal(warning: nil, finishReason: "too_long") == .answerInputTooLong)
 
     // And through `answerText`, from the helper's own pre-flight payload.
     let fixture = try LocalSummaryFixture(outputJSON: """
@@ -249,9 +247,27 @@ func answerRefusalNamesATooLongPrompt() async throws {
         modelDirectory: fixture.modelDirectory
     )
     let passage = CitedResult(meetingID: UUID(), meetingTitle: "M", segmentIndex: 0, timestamp: nil, snippet: "We agreed.", score: 1)
-    await #expect(throws: SummarizerError.localInputTooLong(detail)) {
+    await #expect(throws: SummarizerError.answerInputTooLong) {
         _ = try await summarizer.answerText(question: "What did we agree?", passages: [passage])
     }
+}
+
+@Test("Ask's too-long refusal gives Ask's advice, not the summary helper's (F918)")
+func answerTooLongRefusalSpeaksToAsk() {
+    // The helper's real sentence (`summarize_local.py` `context_overflow_detail`), written for a summary.
+    let detail = "This transcript needs about 41200 tokens, more than the 40560 available in this model's "
+        + "42000-token context window with 400 reserved for the response. Try a shorter selection, or use "
+        + "Claude for long meetings."
+    let message = LocalSummarizer.answerRefusal(warning: detail, finishReason: "too_long")?.errorDescription ?? ""
+    // Ask grounds its answer in the passages it found for a question; there is no transcript to
+    // shorten, no selection to make, and Ask never sends anything to Claude.
+    #expect(!message.contains("transcript"), "got \(message)")
+    #expect(!message.contains("selection"), "got \(message)")
+    #expect(!message.contains("Claude"), "got \(message)")
+    #expect(message.contains("question"), "got \(message)")
+    #expect(message.contains("passages are what was said"), "got \(message)")
+    // The summarize and correct paths keep the helper's measured detail verbatim.
+    #expect(LocalSummarizer.localOutputRefusal(warning: detail, finishReason: "too_long")?.errorDescription == detail)
 }
 
 @Test("Local summarizer surfaces a helper failure as helperFailed")
