@@ -7627,7 +7627,7 @@ final class AppModel: ObservableObject {
                     throw LocalEmbedderError.unreadableOutput
                 }
                 var offset = 0
-                var saves: [(index: SegmentEmbeddings, directory: URL)] = []
+                var built: [(id: UUID, index: SegmentEmbeddings)] = []
                 for meeting in chunk {
                     let length = meeting.segments.count * embedded.dimension
                     let index = SegmentEmbeddings(
@@ -7639,25 +7639,33 @@ final class AppModel: ObservableObject {
                     offset += length
                     ready[meeting.id] = index
                     cacheAskIndex(index, for: meeting.id)
-                    // A read-only library still searches by meaning; it just does not keep the index
-                    // on disk — the session cache above is what keeps it from re-embedding every query.
-                    let directory = store.recordingDirectoryURL(for: meeting.id)
-                    if !store.isDegraded, FileManager.default.fileExists(atPath: directory.path) {
-                        saves.append((index, directory))
-                    }
+                    built.append((meeting.id, index))
                 }
                 // Saved before the next run starts, so a search that cancels this one keeps every
                 // group finished so far (F538) — and saved here, on the main actor, with no
-                // suspension since the folder check above (F849). F538 wrote these from a detached
-                // task, and `MeetingStore.delete` runs on the main actor: a save landing while a
-                // delete was emptying the same folder put files back into it, the folder's own
-                // removal then failed, and F146's rollback listed the meeting again without its
-                // audio. Here a save runs wholly before a delete, which then removes the index with
-                // the folder, or wholly after one, when the folder is gone and the check skips it.
-                // Measured (median, Apple M3 Pro) at about 1 ms for one 2,000-passage meeting and
-                // 6.5 ms for one of 20,000 lines; each further meeting in a group adds about 0.3 ms,
-                // so a group of a hundred short meetings holds the main actor ~28 ms (F871).
-                for save in saves { try? askIndexSave(save.index, save.directory) }
+                // suspension between a meeting's folder check and its save (F849). F538 wrote these
+                // from a detached task, and `MeetingStore.delete` runs on the main actor: a save
+                // landing while a delete was emptying the same folder put files back into it, the
+                // folder's own removal then failed, and F146's rollback listed the meeting again
+                // without its audio. Here a save runs wholly before a delete, which then removes the
+                // index with the folder, or wholly after one, when the folder is gone and the check
+                // skips it.
+                //
+                // One meeting at a time, with the main actor given back between them (F871). A save
+                // costs about 0.3 ms a meeting plus its size (measured median, Apple M3 Pro: ~1 ms
+                // for a 2,000-passage meeting, 6.5 ms for one of 20,000 lines), and a group is ~2,000
+                // passages, so a group of 400 five-line meetings saved in one stretch: the main thread's
+                // longest stall while indexing them measured 162–167 ms on this Mac (debug build, three
+                // runs, `askIndexSaveStallAtScale`). The check is re-made after each yield: a delete can
+                // run in it.
+                for (position, entry) in built.enumerated() {
+                    if position > 0 { await Task.yield() }
+                    // A read-only library still searches by meaning; it just does not keep the index
+                    // on disk — the session cache above is what keeps it from re-embedding every query.
+                    let directory = store.recordingDirectoryURL(for: entry.id)
+                    guard !store.isDegraded, FileManager.default.fileExists(atPath: directory.path) else { continue }
+                    try? askIndexSave(entry.index, directory)
+                }
             }
         }
         return meetings.compactMap { meeting in ready[meeting.id].map { (meeting, $0) } }
