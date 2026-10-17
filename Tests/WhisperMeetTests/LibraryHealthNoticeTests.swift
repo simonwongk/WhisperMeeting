@@ -358,3 +358,12 @@ func theTwoVersionsLaunchSaysWhenItsCopiesFailed() async throws {
     #expect(message.contains("could not copy meetings.json and meetings.backup.json aside"), "\(message)")
     #expect(!claimsACopy(message), "says a copy was set aside, and none is on disk: \(message)")
 }
+
+@MainActor
+@Test("The two-versions copy sentence says file, not files, when one copy was made (F834)")
+func theCopySentenceCountsItsFiles() {
+    let one = ReadOnlyLibraryNotice.divergentCopies(copied: ["meetings.unreadable-1.json"], notCopied: ["meetings.backup.json"])
+    #expect(one?.contains("copied the index file aside as meetings.unreadable-1.json.") == true, "\(one ?? "nil")")
+    let two = ReadOnlyLibraryNotice.divergentCopies(copied: ["meetings.unreadable-1.json", "meetings.backup.unreadable-1.json"], notCopied: [])
+    #expect(two?.contains("copied the index files aside as") == true, "\(two ?? "nil")")
+}

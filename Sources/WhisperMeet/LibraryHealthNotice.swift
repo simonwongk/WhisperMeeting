@@ -98,7 +98,8 @@ extension ReadOnlyLibraryNotice {
     static func divergentCopies(copied: [String], notCopied: [String]) -> String? {
         var sentences: [String] = []
         if !copied.isEmpty {
-            sentences.append("Before opening read-only, WhisperMeet copied the index files aside as \(copied.joined(separator: " and ")).")
+            let files = copied.count == 1 ? "file" : "files"
+            sentences.append("Before opening read-only, WhisperMeet copied the index \(files) aside as \(copied.joined(separator: " and ")).")
         }
         if !notCopied.isEmpty {
             let them = notCopied.count == 1 ? "it is" : "they are"

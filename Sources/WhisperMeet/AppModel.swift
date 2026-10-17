@@ -1225,7 +1225,10 @@ final class AppModel: ObservableObject {
     /// recordings, which takes seconds per folder, and a restore confirmed meanwhile — on the relaunch
     /// after a crash, the likeliest day to restore — refused its upserts while it still reported each
     /// meeting recovered. `libraryRestoreBlockedReason` reads it.
-    private(set) var isRunningStartupRecovery = false
+    var isRunningStartupRecovery: Bool { startupRecoveryRuns > 0 }
+    /// How many `performStartupRecovery` runs are under way: a count, so an overlapping run cannot
+    /// clear the flag while another is still writing (the review of F612). None overlap today.
+    private var startupRecoveryRuns = 0
     /// The live capture's claim on its own folder (F297): an exclusive `flock` on `capture.lock`,
     /// held from the moment the folder exists until the recording is indexed or discarded. A
     /// second instance's startup sweep asks the kernel whether this is held, and that — not the
@@ -3642,8 +3645,8 @@ final class AppModel: ObservableObject {
         guard !didPerformStartupRecovery else { return }
         didPerformStartupRecovery = true
         // Every return below ends it, so a restore is held off only while this runs (F612).
-        isRunningStartupRecovery = true
-        defer { isRunningStartupRecovery = false }
+        startupRecoveryRuns += 1
+        defer { startupRecoveryRuns -= 1 }
         // F318: the watched folder starts only once everything below has settled the library.
         defer { restartWatchedFolder() }
         // F257: idempotent, and started here because this is the one method that runs once per
