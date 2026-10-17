@@ -1319,11 +1319,21 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             // failed, the next save read the date of the SHRED back from the new file, a week-old
             // generation looked a second old, no age anchor could hold it, and it was pruned. Best
             // effort, like the ledger: a date that cannot be set costs that, never the rewrite.
+            //
+            // Never OLDER than the ledger's record of this file says, though (F670, round 2). A file
+            // date that disagrees in that direction — epoch 0 from an extractor or sync client, a
+            // `touch -t` over the folder — made the rewrite the hour, day and week anchor at once
+            // when the ledger write then failed, and the true day and week anchors lost their only
+            // rule. The younger of the two can cost only this generation; an older one steals others'.
             if let original = io.identity(url) {
-                let date = Date(
+                var date = Date(
                     timeIntervalSince1970: TimeInterval(original.modifiedSeconds)
                         + TimeInterval(original.modifiedNanoseconds) / 1_000_000_000
                 )
+                if let recorded = ledger.flatMap({ Self.record(naming: name, in: $0)?.wroteAtEpochSeconds }),
+                   TimeInterval(recorded) > date.timeIntervalSince1970 {
+                    date = Date(timeIntervalSince1970: TimeInterval(recorded))
+                }
                 try? io.setModificationDate(date, temporary, .stage)
             }
             try io.rename(temporary, directory.appendingPathComponent(newName), .retain)
@@ -1380,6 +1390,11 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
         else { return HistoryShred(rewritten: rewritten, rotation: nil) }
         let rotation = try save(current.value, expecting: current.token)
         return HistoryShred(rewritten: rewritten, rotation: rotation)
+    }
+
+    /// The ledger record that names `name` — the current, the previous, or one in the history — or nil.
+    private static func record(naming name: String, in ledger: StoreLedger) -> StoreLedger.Record? {
+        ([ledger.current, ledger.previous].compactMap { $0 } + ledger.history).first { $0.historyName == name }
     }
 
     /// Brings a retained generation back as the current one (F190).

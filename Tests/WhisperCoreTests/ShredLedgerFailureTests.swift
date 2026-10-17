@@ -92,3 +92,63 @@ func aShredWhoseLedgerWriteFailsKeepsTheGenerationsDates() throws {
         "the rewritten generation is dated \(String(describing: retained?.wroteAtEpochSeconds)), not a week ago"
     )
 }
+
+// F670, round 2 (the lane review's finding 1). Keeping the file's own date is right only while it
+// agrees with the ledger. A file dated OLDER than its ledger record — an extractor or sync client
+// that stamps epoch-0 dates, a `touch -t` over the folder — made the rewrite look ancient when the
+// ledger write then failed: it became the hour, day and week anchor at once, and the true day and
+// week anchors lost their only rule. The rewrite is now dated the younger of the two: claiming a
+// generation is younger can cost only that generation; claiming it is older steals other
+// generations' anchors.
+@Test("A shredded generation whose file date is older than its ledger date is never dated older, so a failed ledger write cannot cost the day and week anchors (F670)")
+func aRewriteIsNeverDatedOlderThanItsLedgerRecord() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F670b-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let ledgerPath = root.appendingPathComponent("meetings.ledger.json").path
+    let history = root.appendingPathComponent("meetings.history", isDirectory: true)
+    let failLedger = Armed()
+    var io = StoreFileIO.live
+    io.writeAtomically = { data, url, phase in
+        if failLedger.isOn, url.path == ledgerPath { throw LedgerWriteFailed() }
+        try StoreFileIO.live.writeAtomically(data, url, phase)
+    }
+    let store = BackupJSONStore<[Note]>(
+        primaryURL: root.appendingPathComponent("meetings.json"),
+        backupURL: root.appendingPathComponent("meetings.backup.json"),
+        io: io, recordCount: { $0.count }
+    )
+    let now = Int(Date().timeIntervalSince1970)
+    let secret = Note(id: "secret", title: "secret")
+    let notes = (0..<9).map { Note(id: "n\($0)", title: "meeting \($0)") }
+    var names: [String] = []
+    func save(_ value: [Note], at seconds: Int, mtime: Int? = nil, expecting token: GenerationToken?) throws -> GenerationToken {
+        let outcome = try store.save(value, expecting: token, now: seconds)
+        let name = try #require(outcome.retainedName)
+        names.append(name)
+        try FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: TimeInterval(mtime ?? seconds))],
+            ofItemAtPath: history.appendingPathComponent(name).path
+        )
+        return outcome.token
+    }
+    // Counts rise then fall, so the high-water pin sits on the newest and protects none of the old.
+    var token = try save(Array(notes.prefix(1)), at: now - 8 * 86_400, expecting: nil)          // g1 week anchor
+    token = try save(Array(notes.prefix(2)), at: now - 2 * 86_400, expecting: token)            // g2 day anchor
+    token = try save(Array(notes.prefix(3)) + [secret], at: now - 2 * 3_600, mtime: 0, expecting: token) // g3 hour anchor, bogus mtime
+    token = try save(Array(notes.prefix(5)), at: now - 60, expecting: token)
+    token = try save(Array(notes.prefix(6)), at: now - 30, expecting: token)
+    token = try save(Array(notes.prefix(7)), at: now - 10, expecting: token)
+
+    failLedger.set(true)
+    let shred = try store.shredHistory(removingElementsWithIDs: ["secret"])
+    failLedger.set(false)
+    try #require(shred.rewritten == [names[2]], "fixture: \(shred.rewritten)")
+
+    _ = try store.save(notes, expecting: token, now: now)
+
+    let onDisk = Set(try FileManager.default.contentsOfDirectory(atPath: history.path))
+    #expect(onDisk.contains(names[0]), "the WEEK anchor g1 was pruned: \(onDisk.sorted())")
+    #expect(onDisk.contains(names[1]), "the DAY anchor g2 was pruned: \(onDisk.sorted())")
+}
