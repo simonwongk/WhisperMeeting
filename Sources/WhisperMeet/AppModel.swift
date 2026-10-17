@@ -4148,7 +4148,12 @@ final class AppModel: ObservableObject {
             // finished folder's lock file as "never indexed" and such a folder would hide a wipe of
             // the index beside it. Only a lock the kernel says is free; the live recording's, and
             // any other writer's, is left as it is. A folder still orphaned keeps its file (above).
-            for meeting in store.meetings where meeting.id != activeMeetingID {
+            // And only for a meeting the index on disk lists at this moment (F990): another copy can
+            // have replaced the index since this launch loaded it, and a meeting no longer in it
+            // keeps its file, so its folder is adopted by the next launch rather than counted as a
+            // meeting an index lost. An unreadable index heals nothing; the next launch asks again.
+            let savedIDs = store.meetingIDsInSavedIndex() ?? []
+            for meeting in store.meetings where meeting.id != activeMeetingID && savedIDs.contains(meeting.id) {
                 RecordingCaptureLock.removeIfFree(in: store.recordingURL(for: meeting).deletingLastPathComponent())
             }
             // F297: let go of every lock the probe took. The file goes too for a folder that is

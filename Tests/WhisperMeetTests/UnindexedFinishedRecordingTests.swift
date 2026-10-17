@@ -228,6 +228,59 @@ func aHeldStopIndexedByTheBannersAnswerLosesItsLockFile() async throws {
             "an index wiped beside an indexed recording opened writable: \(reopened.health)")
 }
 
+/// F990, the banner's half: the answer's save lands, then another copy replaces the index before the
+/// lock files are removed. The removal is keyed on the index as saved at that moment, so the held
+/// Stop's folder keeps its file and the next launch opens writable instead of reading the folder as a
+/// wiped meeting.
+@MainActor
+@Test("A held Stop the banner indexed keeps its lock when another copy replaces the index before the removal (F990)")
+func aBannerAnswerOvertakenByAnotherCopyKeepsTheLock() async throws {
+    let root = try libraryRoot("f990-banner")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (model, cleanup) = try makeModel(root: root)
+    defer { cleanup() }
+    let store = model.store
+    store.upsert(MeetingRecord(id: UUID(), title: "Standup", status: .completed))
+    model.recordingTitle = "Board call"
+    await model.startRecording()
+    let id = try #require(model.activeMeetingID)
+    let folder = store.recordingDirectoryURL(for: id)
+    try model.recorder.beginTestTrackSession(in: folder)
+    try model.recorder.writeTestFrames(system: 48_000 * 2, microphone: 48_000 * 2, systemStart: 0, microphoneStart: 0)
+    let rival = BackupJSONStore<[MeetingRecord]>(
+        primaryURL: root.appendingPathComponent("meetings.json"),
+        backupURL: root.appendingPathComponent("meetings.backup.json"),
+        writer: "ffff9999", recordCount: { $0.count }
+    )
+    var seen = try rival.load()
+    _ = try rival.save([], expecting: seen?.token)
+    var saves = 0
+    store.beforeIndexSaveForTesting = {
+        saves += 1
+        if saves == 2 {
+            seen = try? rival.load()
+            _ = try? rival.save([MeetingRecord(title: "The other copy's", status: .recorded)], expecting: seen?.token)
+        }
+    }
+    _ = await model.stopRecording(title: model.recordingTitle)
+    store.beforeIndexSaveForTesting = nil
+    try #require(store.conflictOffer?.unsavedNew.contains { $0.id == id } == true, "fixture: the banner holds the Stop")
+    let lock = folder.appendingPathComponent(RecordingCaptureLock.filename).path
+    try #require(FileManager.default.fileExists(atPath: lock), "fixture: the held Stop keeps its lock file")
+
+    store.afterBannerSaveForTesting = {
+        let current = try? rival.load()
+        _ = try? rival.save([], expecting: current?.token)
+    }
+    store.keepConflictedEdit()
+    store.afterBannerSaveForTesting = nil
+
+    try #require(store.meetingIDsInSavedIndex() == [], "fixture: the other copy's empty index is on disk")
+    #expect(FileManager.default.fileExists(atPath: lock), "the lock was removed for a meeting the saved index does not list")
+    let reopened = MeetingStore(rootDirectory: root)
+    #expect(reopened.health == .complete, "the next launch opened read-only: \(reopened.health)")
+}
+
 /// A lock file left in an indexed folder by a build that did not remove it — or by a crash between
 /// the index save and the removal — is removed by the next launch's sweep, so it hides nothing after
 /// one clean launch. A lock the sweep cannot take (a writer alive in that folder) is left alone.
@@ -258,6 +311,46 @@ func theSweepRemovesAStaleLockFromAnIndexedFolder() async throws {
     let seen = try rival.load()
     _ = try rival.save([], expecting: seen?.token)
     #expect(MeetingStore(rootDirectory: root).health == .suspectEmpty(recordingFolderCount: 1))
+}
+
+/// F990: the heal was keyed on the lock being free and the meeting being in this launch's list, not
+/// on the index as saved at that moment. Here another copy replaces the index with `[]` after this
+/// launch loaded it and before its sweep: the meeting is still in this window's list, but no longer
+/// in the index on disk, so its folder keeps the file that says "never indexed", and the next launch
+/// opens writable and adopts the folder instead of reading it as a wiped meeting.
+@MainActor
+@Test("The sweep keeps the lock of a meeting another copy took out of the saved index, so the next launch opens writable (F990)")
+func theSweepHealsOnlyWhatTheSavedIndexLists() async throws {
+    let root = try libraryRoot("f990")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (id, folder) = try writeFinishedFolder(in: root, lockFile: true)
+    let seeded = MeetingStore(rootDirectory: root)
+    seeded.upsert(MeetingRecord(id: id, title: "Indexed, lock left behind",
+                                recordingPath: "Recordings/\(id.uuidString)/meeting.wav", status: .recorded))
+    try #require(seeded.health == .complete)
+    let lock = folder.appendingPathComponent(RecordingCaptureLock.filename).path
+
+    let (model, cleanup) = try makeModel(root: root)
+    defer { cleanup() }
+    try #require(model.store.meeting(id: id) != nil, "precondition: this launch loaded the meeting")
+    // The other copy's save lands while this launch is in its startup work, before the sweep.
+    let realPass = model.store.notesBackfillPass
+    model.store.notesBackfillPass = { snapshot, libraryRoot in
+        let rival = BackupJSONStore<[MeetingRecord]>(
+            primaryURL: libraryRoot.appendingPathComponent("meetings.json"),
+            backupURL: libraryRoot.appendingPathComponent("meetings.backup.json"),
+            writer: "ffff9999", recordCount: { $0.count }
+        )
+        let seen = try? rival.load()
+        _ = try? rival.save([], expecting: seen?.token)
+        return await realPass(snapshot, libraryRoot)
+    }
+    await model.performStartupRecovery()
+
+    try #require(model.store.meetingIDsInSavedIndex() == [], "precondition: the other copy's index is on disk")
+    #expect(FileManager.default.fileExists(atPath: lock), "the sweep removed the lock of a meeting the saved index no longer lists")
+    let next = MeetingStore(rootDirectory: root)
+    #expect(next.health == .complete, "the next launch opened read-only: \(next.health)")
 }
 
 @MainActor

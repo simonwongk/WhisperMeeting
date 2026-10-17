@@ -980,6 +980,16 @@ final class MeetingStore: ObservableObject {
             .appendingPathComponent(id.uuidString, isDirectory: true)
     }
 
+    /// The ids `meetings.json` lists as it is on disk now, or nil when it cannot be read as a list
+    /// (F990). A raw read with no side effect — no quarantine, no health change — for the two places
+    /// that remove a `capture.lock` because its meeting is indexed: keyed on what the saved index
+    /// says at that moment, not on this window's list, which another copy may have overtaken.
+    func meetingIDsInSavedIndex() -> Set<UUID>? {
+        guard let data = try? Data(contentsOf: rootDirectory.appendingPathComponent("meetings.json")),
+              let records = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return nil }
+        return Set(records.compactMap { ($0["id"] as? String).flatMap(UUID.init(uuidString:)) })
+    }
+
     func recordingURL(for meeting: MeetingRecord) -> URL {
         let indexed = rootDirectory.appendingPathComponent(meeting.recordingPath)
         // A record that still names a capture's WAV after Shrink replaced it (F795): an older index
@@ -2181,7 +2191,12 @@ final class MeetingStore: ObservableObject {
             // vouched for: the capture kept its `capture.lock` because the meeting was not indexed
             // when it stopped (F936), and a finished folder's lock file reads as "never indexed" at
             // the next launch, so left here it would hide a later wipe of the index beside it.
-            for record in records {
+            // Only for a meeting the index on disk lists as it is read now (F990), not one this
+            // window merely believes it saved: another copy may have replaced the index since. An
+            // index that cannot be read removes nothing, and the next launch's sweep heals the file.
+            afterBannerSaveForTesting?()
+            let saved = meetingIDsInSavedIndex() ?? []
+            for record in records where saved.contains(record.id) {
                 RecordingCaptureLock.removeIfFree(in: recordingURL(for: record).deletingLastPathComponent())
             }
             return
@@ -3621,6 +3636,10 @@ final class MeetingStore: ObservableObject {
     /// makes for a new meeting right after its reload (F667), or a list's second try after a lost
     /// race (F663). Nil outside tests.
     var beforeIndexSaveForTesting: (() -> Void)?
+
+    /// Runs between the banner answer's successful save and its `capture.lock` removals, so a test can
+    /// put another copy's commit there (F990). Nil outside tests.
+    var afterBannerSaveForTesting: (() -> Void)?
 
     /// Returns whether the index actually reached disk, so a caller that is about to destroy
     /// something the index references can refuse to (F190). Callers that only mutate metadata can
