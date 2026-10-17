@@ -510,7 +510,7 @@ extension AppModel {
                                                             .init(name: "", bytes: 100_000_000)])
                 if let available = availableBytesForShrink(folder), available < needed {
                     return .failed(title: meeting.title,
-                                   message: ShrinkFailure.insufficientSpace(needed: needed, available: available).localizedDescription)
+                                   message: ErrorPresentation.readable(ShrinkFailure.insufficientSpace(needed: needed, available: available)))
                 }
             }
             let copyURL = store.recordingURL(for: meeting)

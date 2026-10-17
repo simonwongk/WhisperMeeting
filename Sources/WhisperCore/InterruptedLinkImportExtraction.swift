@@ -530,10 +530,21 @@ extension InterruptedLinkImportExtraction {
     }
 
     /// Why `decodeForChannelCheck` produced nothing to check (F1004).
-    public enum ChannelCheckDecodeError: Error, Equatable {
+    public enum ChannelCheckDecodeError: LocalizedError, Equatable {
         case ffmpegMissing
         case failed(exitStatus: Int32)
         case noOutput
+
+        public var errorDescription: String? {
+            switch self {
+            case .ffmpegMissing:
+                return "The download could not be checked because ffmpeg is not installed, so it was kept."
+            case .failed(let exitStatus):
+                return "ffmpeg could not decode the download to check it (exit status \(exitStatus)), so it was kept."
+            case .noOutput:
+                return "ffmpeg wrote nothing when decoding the download to check it, so it was kept."
+            }
+        }
     }
 
     /// Decodes `download` with the installed ffmpeg into `output`, a 16 kHz 16-bit WAV keeping its channels
