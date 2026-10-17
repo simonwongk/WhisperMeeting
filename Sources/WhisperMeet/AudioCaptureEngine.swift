@@ -1172,11 +1172,6 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         streamError = error   // the syncing accessor: tests call this from off the queue
     }
 
-    /// Whether any capture failure has been recorded: a death, or one buffer that failed to convert
-    /// or write. Test-only, so F402 moved it under DEBUG. No production code reads it: `stop()`
-    /// reads `_streamDied` itself, the restart decision reads it through `captureDidDie`, and only a
-    /// death sets it.
-    var hasStreamError: Bool { captureQueue.sync { _streamError != nil } }
 
     var testFrameCounts: (system: Int64, microphone: Int64) {
         (systemWriter?.frameCount ?? 0, microphoneWriter?.frameCount ?? 0)

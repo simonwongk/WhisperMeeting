@@ -22,9 +22,13 @@ import Testing
 //
 // No clock. `recordStreamStop` hands its work to the serial `captureQueue` asynchronously, so each
 // test calls `drainCaptureQueueForTesting()` (a `captureQueue.sync {}`) before it asserts. That
-// orders the assertions after the queued block whatever `captureDidDie` and `hasStreamError` do to
-// read their value. Without it, an accessor that does not wait on the queue fails the death test,
-// and passes the ignore tests' expectations on it without checking anything.
+// orders the assertions after the queued block whatever `captureDidDie` does to read its value —
+// since F401 it reads a mirror and does not wait on the queue at all. Without the drain the death
+// test fails, and the ignore tests pass without checking anything.
+//
+// Each test asserts `captureDidDie`, the flag production acts on (F363). They also asserted
+// `hasStreamError` until F779, a DEBUG accessor over `_streamError`, which decides nothing in
+// production; it was deleted rather than kept as a seam that makes a meaningless field look important.
 
 private struct LateStop: Error {}
 
@@ -50,7 +54,6 @@ func staleStreamStopIsIgnored() {
     engine.drainCaptureQueueForTesting()
 
     #expect(!engine.captureDidDie, "a late stop from a replaced stream marked the live capture dead")
-    #expect(!engine.hasStreamError, "a late stop from a replaced stream recorded an error on the live capture")
 }
 
 @Test("A stop reported when there is no live stream at all is ignored (F484)")
@@ -61,7 +64,6 @@ func stopWithNoLiveStreamIsIgnored() {
     engine.drainCaptureQueueForTesting()
 
     #expect(!engine.captureDidDie)
-    #expect(!engine.hasStreamError)
 }
 
 @Test("The live stream's own stop records a death (F484)")
@@ -74,7 +76,6 @@ func liveStreamStopRecordsDeath() {
     engine.drainCaptureQueueForTesting()
 
     #expect(engine.captureDidDie, "the live stream stopped and the engine did not notice")
-    #expect(engine.hasStreamError)
 }
 
 @Test("The SCStream delegate callback forwards to the guarded body (F484)")
