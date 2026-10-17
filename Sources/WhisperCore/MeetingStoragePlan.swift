@@ -563,7 +563,7 @@ public enum MeetingStoragePlan {
             case .stillMeasuring:
                 return "Its size is still being measured; try again in a moment."
             case let .channelsCancelled(detail):
-                return "Shrink found, the last time it tried, that " + detail + ". It is kept as it is, and Shrink won't try again unless that file changes."
+                return "Shrink found, the last time it tried, that " + detail + ". It is kept as it is, and Shrink won't try again this session unless that file changes."
             case .alreadyShrunk:
                 return "Already shrunk."
             case .nothingToGain:
@@ -581,7 +581,7 @@ public enum MeetingStoragePlan {
             case .anotherShrinkRunning:
                 return "Another meeting is being shrunk."
             case .shrinkingNow:
-                return "Shrinking now. A long stereo recording can take a minute or more while every channel is checked."
+                return "Shrinking now. A long recording can take a minute or more."
             }
         }
     }

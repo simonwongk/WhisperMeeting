@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import WhisperCore
@@ -90,7 +91,8 @@ func shrinkRemembersACancellationRefusal() async throws {
         Issue.record("not remembered: \(String(describing: reason))"); return
     }
     #expect(detail.hasPrefix("the recording's left and right channels cancel each other at about 0:0"), "\(detail)")
-    #expect(reason?.message.contains("won't try again unless that file changes") == true, "\(reason?.message ?? "")")
+    // Promised for this session only: after a relaunch the first press checks again (F1025).
+    #expect(reason?.message.contains("won't try again this session unless that file changes") == true, "\(reason?.message ?? "")")
 
     // A second press, and a Shrink Selected with an ordinary meeting beside it, encode nothing for it.
     library.model.alertMessage = nil
@@ -176,7 +178,95 @@ func shrinkSaysItIsShrinkingThisMeeting() async throws {
     gate.release.signal()
     await work.value
     #expect(own == .shrinkingNow, "\(String(describing: own?.message))")
-    #expect(own?.message.hasPrefix("Shrinking now.") == true)
+    #expect(own?.message == "Shrinking now. A long recording can take a minute or more.", "said of mono recordings too")
     #expect(other == .anotherShrinkRunning)
     #expect(library.model.alertMessage?.contains("Shrunk") == true, "\(library.model.alertMessage ?? "nil")")
+}
+
+// MARK: - F1006 round 2: what is remembered, and by which file (review 2 of Wave 8 lane A, finding 1)
+
+@Test("A refusal that can belong to one run — the copy missing sound — is not remembered, and the next press checks again (F1006)")
+@MainActor
+func shrinkDoesNotRememberAOneRunFinding() async throws {
+    let library = try Library([("Client call", [voiceA, voiceB])])
+    defer { try? FileManager.default.removeItem(at: library.root) }
+    // The copy loses the mix's sound in its first window: an encoder's bad run, not a property of the recording.
+    let real = library.model.channelPresenceForShrink
+    library.model.channelPresenceForShrink = { original, copy in
+        var presence = try await real(original, copy)
+        if !presence.mix.isEmpty { presence.mix[0].missing = presence.mix[0].energy }
+        return presence
+    }
+
+    try await library.shrink(["Client call"])
+    let first = library.model.alertMessage ?? "nil"
+    try #require(first.contains("missing sound"), "fixture: refused for the copy: \(first)")
+
+    #expect(library.model.shrinkUnavailability(for: try library.meeting("Client call")) == nil)
+    library.model.alertMessage = nil
+    try await library.shrink(["Client call"])
+    #expect(library.encodes.count == 2, "a one-run finding was remembered: \(library.model.alertMessage ?? "nil")")
+}
+
+/// A link import whose `recording.wav` is a mono WAV of `download`'s mean, with that two-channel download beside it as
+/// `recording.caf`, every encode counted.
+@MainActor
+private func downloadBeside(_ download: [[Float]]) throws -> (library: Library, download: URL) {
+    let mean: [Float] = zip(download[0], download[1]).map { ($0 + $1) / 2 }
+    let library = try Library([("Conference talk", [mean])])
+    let meeting = try library.meeting("Conference talk")
+    let url = library.model.store.recordingURL(for: meeting).deletingLastPathComponent().appendingPathComponent("recording.caf")
+    let settings: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2,
+                                   AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false]
+    let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+    let frames = download[0].count
+    let buffer = try #require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(frames)))
+    buffer.frameLength = AVAudioFrameCount(frames)
+    let data = try #require(buffer.floatChannelData)
+    for channel in 0..<2 { for n in 0..<frames { data[channel][n] = download[channel][n] } }
+    try file.write(from: buffer)
+    return (library, url)
+}
+
+@Test("A refusal about a download beside the recording is remembered by the download, and ends when the download goes (F1006)")
+@MainActor
+func shrinkRemembersADownloadRefusalByTheDownload() async throws {
+    let (library, download) = try downloadBeside(midSide)
+    defer { try? FileManager.default.removeItem(at: library.root) }
+
+    try await library.shrink(["Conference talk"])
+    let first = library.model.alertMessage ?? "nil"
+    try #require(first.contains("also holds “recording.caf”"), "fixture: refused for the download: \(first)")
+
+    guard case let .channelsCancelled(detail)? = library.model.shrinkUnavailability(for: try library.meeting("Conference talk")) else {
+        Issue.record("not remembered"); return
+    }
+    #expect(detail.hasPrefix("“recording.caf”'s left and right channels cancel each other"), "\(detail)")
+    // Keyed on the download: once it is gone, the recording beside it is no longer refused for it.
+    try FileManager.default.removeItem(at: download)
+    await library.model.refreshStorage(ids: [try library.id("Conference talk")])
+    #expect(library.model.shrinkUnavailability(for: try library.meeting("Conference talk")) == nil)
+}
+
+@Test("A resume's refusal of a leftover is remembered, by the leftover (F1006)")
+@MainActor
+func shrinkRemembersAResumeLeftoverRefusal() async throws {
+    let library = try Library([("Client call", midSide)])
+    defer { try? FileManager.default.removeItem(at: library.root) }
+    // What a Shrink interrupted before its removals leaves: the index names the copy made from the mid/side WAV.
+    var meeting = try library.meeting("Client call")
+    let wav = library.model.store.recordingURL(for: meeting), folder = wav.deletingLastPathComponent()
+    try AudioCompressor.compressSpeech(input: wav, output: folder.appendingPathComponent("recording.m4a"),
+                                       workingWAV: library.root.appendingPathComponent("work.wav"))
+    meeting.recordingPath = (meeting.recordingPath as NSString).deletingLastPathComponent + "/recording.m4a"
+    library.model.store.upsert(meeting)
+
+    try await library.shrink(["Client call"])
+    let first = library.model.alertMessage ?? "nil"
+    try #require(first.contains("“recording.wav”, which the compressed copy replaced, was kept"), "fixture: \(first)")
+
+    guard case let .channelsCancelled(detail)? = library.model.shrinkUnavailability(for: try library.meeting("Client call")) else {
+        Issue.record("not remembered"); return
+    }
+    #expect(detail.hasPrefix("“recording.wav”'s left and right channels cancel each other"), "\(detail)")
 }
