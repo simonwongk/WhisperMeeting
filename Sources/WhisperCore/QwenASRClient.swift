@@ -141,7 +141,7 @@ public struct QwenASRClient: Sendable {
                 try AudioTranscoder.transcodeToWAV(input: fileURL, output: decodedURL)
                 audioURL = decodedURL
             } catch {
-                throw QwenASRError.processFailed(error.localizedDescription)
+                throw QwenASRError.processFailed(ErrorPresentation.readable(error))
             }
             try Task.checkCancellation()
         }

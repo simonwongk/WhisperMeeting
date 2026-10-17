@@ -2218,7 +2218,7 @@ final class AppModel: ObservableObject {
                 // The user cancelled, or deleted the meeting (F512): no comparison, and nothing to say.
             } catch {
                 secondOpinionFailed = true
-                alertMessage = error.localizedDescription
+                alertMessage = ErrorPresentation.readable(error)
             }
         }
     }
@@ -2533,7 +2533,7 @@ final class AppModel: ObservableObject {
         // as a missing model the user would then install for nothing.
         guard libraryAcceptsChanges("Speaker analysis") else { return }
         guard isDiarizationModelInstalled() else {
-            alertMessage = LocalDiarizationError.runtimeNotInstalled.localizedDescription
+            alertMessage = ErrorPresentation.readable(LocalDiarizationError.runtimeNotInstalled)
             return
         }
         guard let meeting = store.meeting(id: id) else { return }
@@ -2622,7 +2622,7 @@ final class AppModel: ObservableObject {
             } catch is CancellationError {
                 // Nothing written and nothing said: the user asked for this.
             } catch {
-                alertMessage = error.localizedDescription
+                alertMessage = ErrorPresentation.readable(error)
             }
         }
     }
@@ -2648,7 +2648,7 @@ final class AppModel: ObservableObject {
         do {
             try DiarizationArtifactStore.clear(meetingID: id, in: store.rootDirectory)
         } catch {
-            alertMessage = "Those speaker labels could not be removed. Your recording and transcript are unchanged. \(error.localizedDescription)"
+            alertMessage = "Those speaker labels could not be removed. Your recording and transcript are unchanged. \(ErrorPresentation.readable(error))"
         }
         invalidateSpeakerOverlayCache()
     }
@@ -2703,7 +2703,7 @@ final class AppModel: ObservableObject {
                 alertMessage = "The label was saved. The previous speaker-analysis file was damaged, so a copy of it was kept beside the recording as \(quarantined)."
             }
         } catch {
-            alertMessage = error.localizedDescription
+            alertMessage = ErrorPresentation.readable(error)
             return
         }
         invalidateSpeakerOverlayCache()
@@ -3009,7 +3009,7 @@ final class AppModel: ObservableObject {
             } catch is CancellationError {
                 // Cancelled, or the meeting was deleted (F512): the original line stays, and nothing to say.
             } catch {
-                alertMessage = error.localizedDescription
+                alertMessage = ErrorPresentation.readable(error)
             }
         }
     }
@@ -3304,7 +3304,7 @@ final class AppModel: ObservableObject {
             }.value
             pendingLibraryRestore = PendingLibraryRestore(generation: generation, plan: plan)
         } catch {
-            alertMessage = "That backup could not be read, so nothing was changed. \(error.localizedDescription)"
+            alertMessage = "That backup could not be read, so nothing was changed. \(ErrorPresentation.readable(error))"
         }
     }
 
@@ -3515,7 +3515,7 @@ final class AppModel: ObservableObject {
             // The offer is not put back. It was taken when the user answered, and the dialog it
             // belonged to has closed; `BackupRestore` either wrote nothing or has already rolled
             // the library back, so choosing the same backup again is safe.
-            alertMessage = "The library could not be restored, and nothing was changed. \(error.localizedDescription)"
+            alertMessage = "The library could not be restored, and nothing was changed. \(ErrorPresentation.readable(error))"
         }
     }
 
@@ -3645,7 +3645,7 @@ final class AppModel: ObservableObject {
             alertMessage = "Library backed up: \(summary.copied) file(s) copied, \(summary.skipped) unchanged."
                 + (summary.prunedGenerations.isEmpty ? "" : " Removed \(summary.prunedGenerations.count) old backup(s).")
         } catch {
-            alertMessage = error.localizedDescription
+            alertMessage = ErrorPresentation.readable(error)
         }
     }
 
@@ -3914,7 +3914,7 @@ final class AppModel: ObservableObject {
                     // One unreadable/broken orphan folder must not abort recovery of the rest (F47).
                     // The folder is left untouched (raw tracks preserved) and reported.
                     messages.append(
-                        "An interrupted recording folder at \(orphan.directory.path) could not be rebuilt and was left untouched. \(error.localizedDescription)"
+                        "An interrupted recording folder at \(orphan.directory.path) could not be rebuilt and was left untouched. \(ErrorPresentation.readable(error))"
                     )
                     continue
                 }
@@ -4217,7 +4217,7 @@ final class AppModel: ObservableObject {
             }
         } catch {
             messages.append(
-                "WhisperMeet could not finish scanning interrupted recordings. Existing recording folders were not changed. \(error.localizedDescription)"
+                "WhisperMeet could not finish scanning interrupted recordings. Existing recording folders were not changed. \(ErrorPresentation.readable(error))"
             )
         }
         recoverInterruptedTranscriptions()
@@ -4268,7 +4268,7 @@ final class AppModel: ObservableObject {
                 installationMessage = "Local Whisper is ready. The selected model downloads once, when first used."
             case let .failed(error):
                 installationMessage = error.statusMessage
-                alertMessage = error.localizedDescription
+                alertMessage = ErrorPresentation.readable(error)
             case let .cancelled(previousKept):
                 installationMessage = Self.cancelledInstallMessage(previousKept: previousKept)
             }
@@ -4307,7 +4307,7 @@ final class AppModel: ObservableObject {
                 qwenInstallationMessage = "Qwen3-ASR is ready for local transcription."
             case let .failed(error):
                 qwenInstallationMessage = error.statusMessage
-                alertMessage = error.localizedDescription
+                alertMessage = ErrorPresentation.readable(error)
             case let .cancelled(previousKept):
                 qwenInstallationMessage = Self.cancelledInstallMessage(previousKept: previousKept)
             }
@@ -4354,7 +4354,7 @@ final class AppModel: ObservableObject {
                 summarizerInstallationMessage = "Local summaries are ready — private and offline."
             case let .failed(error):
                 summarizerInstallationMessage = error.statusMessage
-                alertMessage = error.localizedDescription
+                alertMessage = ErrorPresentation.readable(error)
             case let .cancelled(previousKept):
                 summarizerInstallationMessage = Self.cancelledInstallMessage(previousKept: previousKept)
             }
@@ -4407,7 +4407,7 @@ final class AppModel: ObservableObject {
                 diarizationInstallationMessage = "Speaker analysis is ready — it runs entirely on this Mac."
             case let .failed(error):
                 diarizationInstallationMessage = error.statusMessage
-                alertMessage = error.localizedDescription
+                alertMessage = ErrorPresentation.readable(error)
             case let .cancelled(previousKept):
                 diarizationInstallationMessage = Self.cancelledInstallMessage(previousKept: previousKept)
             }
@@ -4541,7 +4541,7 @@ final class AppModel: ObservableObject {
             // The lock file first, or `removeIfEmpty` would find the folder non-empty (F297).
             releaseCaptureLock(removingFile: true)
             _ = try? InterruptedRecordingRecovery.removeIfEmpty(in: directory)
-            report(error.localizedDescription)
+            report(ErrorPresentation.readable(error))
         }
     }
 
@@ -4723,7 +4723,7 @@ final class AppModel: ObservableObject {
                     // only through this channel. The stop that produced it is often itself
                     // triggered by sleep or a dead display, so "the user is right there" does not
                     // hold for any of these three.
-                    report(alert + " \(recordingError.localizedDescription)")
+                    report(alert + " \(ErrorPresentation.readable(recordingError))")
                     return id
                 }
             } catch {
@@ -4731,11 +4731,11 @@ final class AppModel: ObservableObject {
                 // saving ones (F477). The folder's sidecar holds it for the launch that rebuilds the
                 // folder; kept here, it named the next meeting, unseen when Start came from the menu bar.
                 recordingTitle = ""
-                report("The recording could not be finalized automatically. Its folder was preserved at \(directory.path). Finishing error: \(recordingError.localizedDescription) Recovery error: \(error.localizedDescription)")
+                report("The recording could not be finalized automatically. Its folder was preserved at \(directory.path). Finishing error: \(ErrorPresentation.readable(recordingError)) Recovery error: \(ErrorPresentation.readable(error))")
                 return nil
             }
             recordingTitle = ""
-            report("No usable audio could be rebuilt, but the recording folder was left untouched at \(directory.path). \(recordingError.localizedDescription)")
+            report("No usable audio could be rebuilt, but the recording folder was left untouched at \(directory.path). \(ErrorPresentation.readable(recordingError))")
             return nil
         }
     }
@@ -5542,7 +5542,7 @@ final class AppModel: ObservableObject {
             // A Cancel that landed alongside a real error must not resurrect a dismissed sheet, and
             // a newer test that took ownership during engine.cancel() must not be clobbered either.
             if owned, !Task.isCancelled {
-                preflightTest = .failed(error.localizedDescription)
+                preflightTest = .failed(ErrorPresentation.readable(error))
             }
         }
     }
@@ -5694,9 +5694,9 @@ final class AppModel: ObservableObject {
             // the file first went to the importer, and a retry does not repeat it. A file the user
             // handed over is imported once, so they are told now, as before.
             if origin == .watchedFolder, ImportCopyFailure.isTransient(error) {
-                return .failure(.copyFailedTransiently(reason: error.localizedDescription))
+                return .failure(.copyFailedTransiently(reason: ErrorPresentation.readable(error)))
             }
-            var message = "The recording could not be imported: \(error.localizedDescription)"
+            var message = "The recording could not be imported: \(ErrorPresentation.readable(error))"
             if let nextStep = (error as? ImportError)?.nextStep(for: origin) {
                 message += " " + nextStep
             }
@@ -5756,7 +5756,7 @@ final class AppModel: ObservableObject {
             return .refused(Self.linkImportNotAWebLink)
         }
         guard !parsed.isPlaylist else {
-            return .refused(MediaDownloadError.playlistNotSupported.localizedDescription)
+            return .refused(ErrorPresentation.readable(MediaDownloadError.playlistNotSupported))
         }
 
         let probe: MediaProbe
@@ -5767,10 +5767,10 @@ final class AppModel: ObservableObject {
             // is not one during the download below.
             return .cancelled
         } catch {
-            return .refused(error.localizedDescription)
+            return .refused(ErrorPresentation.readable(error))
         }
         guard !probe.isLive else {
-            return .refused(MediaDownloadError.liveInProgress.localizedDescription)
+            return .refused(ErrorPresentation.readable(MediaDownloadError.liveInProgress))
         }
         // Long media is confirmed, never capped.
         if let duration = probe.durationSeconds,
@@ -5856,7 +5856,7 @@ final class AppModel: ObservableObject {
             // No resume in v1: a failed or cancelled download leaves nothing behind.
             try? FileManager.default.removeItem(at: directory)
             if error is CancellationError { return .cancelled }
-            return .refused(error.localizedDescription)
+            return .refused(ErrorPresentation.readable(error))
         }
     }
 
@@ -6704,7 +6704,7 @@ final class AppModel: ObservableObject {
                 // ahead of this guard would make every test that stubs the model as installed
                 // depend on the host's architecture through the init parameter's default.
                 alertMessage = localSummariesSupported
-                    ? SummarizerError.modelNotInstalled.localizedDescription
+                    ? ErrorPresentation.readable(SummarizerError.modelNotInstalled)
                     : "Local summaries require an Apple-silicon Mac. "
                         + "To use Claude instead, choose it in Settings: the transcript is then sent to Anthropic."
                 return
@@ -6720,7 +6720,7 @@ final class AppModel: ObservableObject {
                 return
             }
             guard let key = claudeKeyStore.read() else {
-                alertMessage = SummarizerError.missingAPIKey.localizedDescription
+                alertMessage = ErrorPresentation.readable(SummarizerError.missingAPIKey)
                 return
             }
             apiKey = key
@@ -6826,7 +6826,7 @@ final class AppModel: ObservableObject {
             // The same, reported another way (F512): URLSession fails a cancelled request with
             // `URLError(.cancelled)`, which `ClaudeSummarizer` wraps as `requestFailed`.
         } catch {
-            alertMessage = error.localizedDescription
+            alertMessage = ErrorPresentation.readable(error)
         }
     }
 
@@ -7321,7 +7321,7 @@ final class AppModel: ObservableObject {
             case .installed:
                 askEmbeddingInstallMessage = nil
             case let .failed(error):
-                askEmbeddingInstallMessage = error.localizedDescription
+                askEmbeddingInstallMessage = ErrorPresentation.readable(error)
             case .cancelled:
                 askEmbeddingInstallMessage = "The search model download was cancelled."
             }
@@ -7596,7 +7596,7 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return nil
         } catch {
-            alertMessage = "The on-device model could not write an answer: \(error.localizedDescription)"
+            alertMessage = "The on-device model could not write an answer: \(ErrorPresentation.readable(error))"
             return nil
         }
     }
@@ -7887,7 +7887,7 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             return []
         } catch {
-            alertMessage = error.localizedDescription
+            alertMessage = ErrorPresentation.readable(error)
             return []
         }
     }
@@ -8215,7 +8215,7 @@ final class AppModel: ObservableObject {
             // the same cap here means a future engine or error path that forgets to summarize its
             // own log still cannot write an oversized errorMessage into meetings.json. Idempotent
             // on an already-capped detail (a short string is returned unchanged).
-            let detail = SubprocessLogSummary.summarize(error.localizedDescription)
+            let detail = SubprocessLogSummary.summarize(ErrorPresentation.readable(error))
             if !detail.isEmpty { message += " (\(detail))" }
             let recordingIsSafe = store.meeting(id: id).map {
                 FileManager.default.fileExists(atPath: store.recordingURL(for: $0).path)
@@ -8461,7 +8461,7 @@ extension AppModel {
             // The offer is already gone, unlike F193's `pendingLibraryRecovery`: the user answered
             // the confirmation, and `SourceRebuild` has already put the previous recording back, so
             // trying again (via `requestSourceRebuild`) is safe.
-            alertMessage = "The recording could not be rebuilt, and nothing was changed. The original microphone and system tracks are still in this meeting's folder. \(error.localizedDescription)"
+            alertMessage = "The recording could not be rebuilt, and nothing was changed. The original microphone and system tracks are still in this meeting's folder. \(ErrorPresentation.readable(error))"
         }
     }
 
@@ -8563,7 +8563,7 @@ extension AppModel {
         } catch {
             alertMessage = """
                 \(ReadOnlyLibraryNotice.lead) The retained copies could not be listed. \
-                Your recordings are untouched. \(error.localizedDescription)
+                Your recordings are untouched. \(ErrorPresentation.readable(error))
                 """
         }
     }
@@ -8614,7 +8614,7 @@ extension AppModel {
             // user keeps the list and can try an older one without starting over.
             alertMessage = """
                 The meeting index could not be restored. Nothing was changed and your recordings are \
-                untouched. \(error.localizedDescription)
+                untouched. \(ErrorPresentation.readable(error))
                 """
         }
     }
@@ -8657,11 +8657,11 @@ extension AppModel {
         } catch MeetingStoreError.keptVersionWouldStayReadOnly {
             // Refused, or undone, because the library would have stayed read-only (the lane review's
             // F833 follow-up). Its sentence says nothing changed and points to Recover Library….
-            alertMessage = MeetingStoreError.keptVersionWouldStayReadOnly.localizedDescription
+            alertMessage = ErrorPresentation.readable(MeetingStoreError.keptVersionWouldStayReadOnly)
         } catch {
             alertMessage = """
                 The version on disk could not be kept, and nothing was changed. Your recordings are \
-                untouched. \(error.localizedDescription)
+                untouched. \(ErrorPresentation.readable(error))
                 """
         }
     }
@@ -8687,9 +8687,9 @@ extension AppModel {
         // Before the dialog, which says the current recordings are not changed: a live meeting whose
         // recording is inside this copy would lose its audio with it (the lane review's MUST-FIX).
         if let meeting = store.meetingUsingRestoreSnapshot(named: snapshot.name) {
-            alertMessage = MeetingStoreError.restoreSnapshotHoldsALiveRecording(
+            alertMessage = ErrorPresentation.readable(MeetingStoreError.restoreSnapshotHoldsALiveRecording(
                 snapshot: snapshot.name, meeting: meeting
-            ).localizedDescription
+            ))
             return
         }
         pendingRestoreSnapshotRemoval = snapshot
@@ -8712,12 +8712,12 @@ extension AppModel {
         } catch let refusal as MeetingStoreError {
             // Refused before anything was removed — a live meeting's recording is inside it, or it is
             // not a safety copy at all — and its own sentence says so.
-            alertMessage = refusal.localizedDescription
+            alertMessage = ErrorPresentation.readable(refusal)
         } catch {
             // Part of it may be gone; what is left stays where it was and is listed again below.
             alertMessage = """
                 The safety copy \(snapshot.name) could not be removed completely. What is left of it is \
-                still in the library folder and still listed. \(error.localizedDescription)
+                still in the library folder and still listed. \(ErrorPresentation.readable(error))
                 """
         }
         refreshRestoreSnapshots()
@@ -8779,7 +8779,7 @@ extension AppModel {
             // may be specific to this attempt, and nothing was changed.
             alertMessage = """
                 The meeting index could not be rebuilt. Nothing was changed and your recordings are \
-                untouched. \(error.localizedDescription)
+                untouched. \(ErrorPresentation.readable(error))
                 """
         }
     }

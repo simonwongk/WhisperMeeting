@@ -35,6 +35,28 @@ public enum ErrorPresentation {
         return fallback
     }
 
+    /// The text to show for an error at a site that has no sentence of its own for the failure
+    /// (F383): the error's own copy, or, when it has none, one generic sentence that keeps the
+    /// domain and code for whoever is asked about it.
+    ///
+    /// Every user-facing read of an error in `Sources/` goes through here rather than through
+    /// `localizedDescription`, which for a framework error with no copy answers the bridge's
+    /// "The operation couldn't be completed. (OSStatus error -10868.)". `noRawLocalizedDescriptionInSources`
+    /// holds every site to it, so the wording is decided in one place. It returns exactly
+    /// `localizedDescription` whenever that is real copy: for every error this repo declares (all
+    /// carry a sentence, F366) and for Cocoa's own file errors, nothing changes.
+    public static func readable(_ error: any Error) -> String {
+        let bridged = error as NSError
+        return sentence(for: error, fallback: undescribedFallback(domain: bridged.domain, code: bridged.code))
+    }
+
+    /// `readable`'s sentence for an error that brought none. Path-redacted, as `diagnostic` is: a
+    /// domain is not a path today, and nothing guarantees the next framework agrees.
+    static func undescribedFallback(domain: String, code: Int) -> String {
+        "The operation could not be completed, and no reason was given "
+            + "(\(DiagnosticsBundleBuilder.redactPaths(domain)) \(code))."
+    }
+
     /// Whether `described` is the Swift-to-NSError bridge's stand-in rather than real copy.
     ///
     /// Matched on the parenthetical the bridge appends: either `(<domain> error <code>.)` with the

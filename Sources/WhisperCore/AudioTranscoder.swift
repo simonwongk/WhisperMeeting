@@ -74,7 +74,7 @@ public enum AudioTranscoder {
             try process.run()
         } catch {
             let name = URL(fileURLWithPath: tool).lastPathComponent
-            throw AudioTranscoderError.transcodeFailed("\(name) could not be launched: \(error.localizedDescription)")
+            throw AudioTranscoderError.transcodeFailed("\(name) could not be launched: \(ErrorPresentation.readable(error))")
         }
         // afconvert writes audio to the output file and afinfo a few KB of XML; the pipe carries only
         // those, so a read-to-EOF then wait cannot deadlock on a full pipe.

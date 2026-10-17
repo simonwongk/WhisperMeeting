@@ -371,7 +371,7 @@ extension AppModel {
             switch encoded {
             case let .failure(error):
                 rememberShrinkRefusal(error, id: id, recordingName: disk.recordingName, entries: disk.entries)
-                return .failed(title: meeting.title, message: error.localizedDescription)
+                return .failed(title: meeting.title, message: ErrorPresentation.readable(error))
             case let .success(bytes):
                 encodedBytes = bytes
             }
@@ -409,7 +409,7 @@ extension AppModel {
                 }
             } catch {
                 try? FileManager.default.removeItem(at: tempM4A)
-                return .failed(title: meeting.title, message: error.localizedDescription)
+                return .failed(title: meeting.title, message: ErrorPresentation.readable(error))
             }
             // The rename, flushed too, before the index names it or anything is removed.
             if (try? await Task.detached { try flush(folder) }.value) == nil {
@@ -456,7 +456,7 @@ extension AppModel {
                 }
                 return nil
             }.value
-            if let checked { return .failed(title: meeting.title, message: checked.localizedDescription) }
+            if let checked { return .failed(title: meeting.title, message: ErrorPresentation.readable(checked)) }
         }
         if MeetingStoragePlan.isResume(disk) {
             // F1001: and a two-channel leftover, which the encode's own mono mix made the copy from, is shown
@@ -498,7 +498,7 @@ extension AppModel {
             }.value
             if let checked {
                 rememberShrinkRefusal(checked, id: id, recordingName: disk.recordingName, entries: disk.entries)
-                return .failed(title: meeting.title, message: checked.localizedDescription)
+                return .failed(title: meeting.title, message: ErrorPresentation.readable(checked))
             }
         }
 

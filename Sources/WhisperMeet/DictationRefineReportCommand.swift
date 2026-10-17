@@ -84,7 +84,7 @@ enum DictationRefineReportCommand {
             decoder.dateDecodingStrategy = .iso8601
             log = try decoder.decode(DictationLog.self, from: Data(contentsOf: logURL))
         } catch {
-            return (1, "could not read a dictation log at \(logURL.path): \(error.localizedDescription)")
+            return (1, "could not read a dictation log at \(logURL.path): \(ErrorPresentation.readable(error))")
         }
         let report = DictationRefineReport(log: log, since: cut?.date)
         // The sample size leads. The log is capped (`DictationLog.limit`), so this is a window

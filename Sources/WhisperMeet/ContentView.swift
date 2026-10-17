@@ -537,7 +537,7 @@ private struct RecordMeetingView: View {
                     }
                 }
             case let .failure(error):
-                model.alertMessage = error.localizedDescription
+                model.alertMessage = ErrorPresentation.readable(error)
             }
         }
         .sheet(isPresented: Binding(
@@ -2895,7 +2895,7 @@ private struct VocabularyView: View {
             case let .success(urls):
                 importDocuments(urls)
             case let .failure(error):
-                importMessage = error.localizedDescription
+                importMessage = ErrorPresentation.readable(error)
             }
         }
     }
@@ -3317,7 +3317,7 @@ private struct TranscriptDetailView: View {
                     guard let url = urls.first else { return }
                     correctWithReference(url, meetingID: meetingID)
                 case let .failure(error):
-                    model.alertMessage = error.localizedDescription
+                    model.alertMessage = ErrorPresentation.readable(error)
                 }
             }
         }
@@ -4337,7 +4337,7 @@ private struct TranscriptDetailView: View {
         do {
             try content.write(to: url, atomically: true, encoding: .utf8)
         } catch {
-            model.alertMessage = error.localizedDescription
+            model.alertMessage = ErrorPresentation.readable(error)
         }
     }
 

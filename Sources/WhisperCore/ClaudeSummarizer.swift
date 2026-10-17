@@ -54,7 +54,7 @@ public struct ClaudeSummarizer: MeetingSummarizer {
         } catch let error as URLError where error.code == .timedOut {
             throw SummarizerError.requestTimedOut
         } catch {
-            throw SummarizerError.requestFailed(error.localizedDescription)
+            throw SummarizerError.requestFailed(ErrorPresentation.readable(error))
         }
 
         guard let http = response as? HTTPURLResponse else {

@@ -645,7 +645,7 @@ struct WriteConflictReport: Equatable {
         guard let storeError = error as? BackupJSONStoreError else {
             preservedAs = nil
             isRace = false
-            message = error.localizedDescription
+            message = ErrorPresentation.readable(error)
             return
         }
         switch storeError {
@@ -948,7 +948,7 @@ final class MeetingStore: ObservableObject {
             )
         } catch {
             startupRecoveryMessages.append(
-                "WhisperMeet could not open its storage folder: \(error.localizedDescription)"
+                "WhisperMeet could not open its storage folder: \(ErrorPresentation.readable(error))"
             )
             return
         }
@@ -2762,7 +2762,7 @@ final class MeetingStore: ObservableObject {
             pendingShredQueue = remaining
             return shredded
         } catch {
-            storageErrorMessage = "A deleted meeting's text could not be removed from the saved index history: \(error.localizedDescription) Settings → Meeting library → Forget History removes the saved history at once."
+            storageErrorMessage = "A deleted meeting's text could not be removed from the saved index history: \(ErrorPresentation.readable(error)) Settings → Meeting library → Forget History removes the saved history at once."
             return []
         }
     }
@@ -3177,7 +3177,7 @@ final class MeetingStore: ObservableObject {
                 keptPreRestoreSnapshots: left.preRestoreSnapshots
             )
         } catch {
-            storageErrorMessage = "The saved history could not be removed: \(error.localizedDescription)"
+            storageErrorMessage = "The saved history could not be removed: \(ErrorPresentation.readable(error))"
             return nil
         }
     }
@@ -3577,9 +3577,9 @@ final class MeetingStore: ObservableObject {
             if report.isRace { return .lostRace(report) }
             switch list {
             case .vocabulary:
-                storageErrorMessage = "Vocabulary changes could not be saved. The last readable copy remains on this Mac. \(error.localizedDescription)"
+                storageErrorMessage = "Vocabulary changes could not be saved. The last readable copy remains on this Mac. \(ErrorPresentation.readable(error))"
             case .replacementRules:
-                storageErrorMessage = "Replacement-rule changes could not be saved. The last readable copy remains on this Mac. \(error.localizedDescription)"
+                storageErrorMessage = "Replacement-rule changes could not be saved. The last readable copy remains on this Mac. \(ErrorPresentation.readable(error))"
             }
             return .failed
         }
@@ -3836,7 +3836,7 @@ final class MeetingStore: ObservableObject {
         } catch {
             unsavedChanges = true
             writeConflict = WriteConflictReport(error)
-            storageErrorMessage = "Meeting changes could not be saved. The recording files and last readable index copy remain on this Mac. \(error.localizedDescription)"
+            storageErrorMessage = "Meeting changes could not be saved. The recording files and last readable index copy remain on this Mac. \(ErrorPresentation.readable(error))"
             return false
         }
     }
@@ -4067,7 +4067,7 @@ final class MeetingStore: ObservableObject {
            case let .noReadableCopy(_, _, quarantined) = storeError {
             return .unreadable(quarantined: quarantined)
         }
-        return .unavailable(error.localizedDescription)
+        return .unavailable(ErrorPresentation.readable(error))
     }
 
     /// Rebuild a meeting list from index bytes that no longer decode as a whole, keeping every record
@@ -4251,7 +4251,7 @@ final class MeetingStore: ObservableObject {
             }
         } catch {
             degrade(to: Self.health(after: error))
-            startupRecoveryMessages.append(error.localizedDescription)
+            startupRecoveryMessages.append(ErrorPresentation.readable(error))
         }
     }
 

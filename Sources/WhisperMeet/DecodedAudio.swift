@@ -191,11 +191,11 @@ enum DecodedAudio {
         // the end itself no further than the audio the tracks hold allows, as the mixer's (second review).
         let audioEnd: TimeInterval
         do { audioEnd = try await RecordingMixer.boundedAudioEnd(of: tracks) } catch {
-            throw Failure.unreadable(error.localizedDescription)
+            throw Failure.unreadable(ErrorPresentation.readable(error))
         }
         for track in tracks {
             let reader: AVAssetReader
-            do { reader = try AVAssetReader(asset: asset) } catch { throw Failure.unreadable(error.localizedDescription) }
+            do { reader = try AVAssetReader(asset: asset) } catch { throw Failure.unreadable(ErrorPresentation.readable(error)) }
             // Float32, interleaved, at the track's own rate and channel count: no conversion asked for.
             let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
                 AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true,
@@ -204,7 +204,7 @@ enum DecodedAudio {
             guard reader.canAdd(output) else { throw Failure.unreadable("a track's audio cannot be decoded") }
             reader.add(output)
             guard reader.startReading() else {
-                throw Failure.unreadable(reader.error?.localizedDescription ?? "the reader did not start")
+                throw Failure.unreadable(reader.error.map { ErrorPresentation.readable($0) } ?? "the reader did not start")
             }
             var channels = 0
             while let buffer = output.copyNextSampleBuffer() {
@@ -231,7 +231,7 @@ enum DecodedAudio {
                          startFrame: start) { samples[$0 * count + $1] }
             }
             if reader.status == .failed {
-                throw Failure.unreadable(reader.error?.localizedDescription ?? "a track could not be decoded")
+                throw Failure.unreadable(reader.error.map { ErrorPresentation.readable($0) } ?? "a track could not be decoded")
             }
             firstChannel += channels
         }

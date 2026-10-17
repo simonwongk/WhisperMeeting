@@ -123,7 +123,7 @@ public enum DictationHelperSync {
                 try bundledData.write(to: helper.installedScript, options: .atomic)
                 return .synced(helper.name)
             } catch {
-                return .failed(helper.name, error.localizedDescription)
+                return .failed(helper.name, ErrorPresentation.readable(error))
             }
         }
     }

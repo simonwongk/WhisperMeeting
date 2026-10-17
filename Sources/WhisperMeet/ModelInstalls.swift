@@ -157,7 +157,7 @@ extension AppModel {
             return .failed(error.keepingPrevious(wasInstalled && isInstalled(self)))
         } catch {
             refreshRuntime()
-            return .failed(.couldNotStart(component, reason: error.localizedDescription))
+            return .failed(.couldNotStart(component, reason: ErrorPresentation.readable(error)))
         }
     }
 
@@ -183,9 +183,9 @@ extension AppModel {
         } catch let error as ProcessGroupRunnerError {
             switch error {
             case .spawnFailed:
-                throw InstallerError.couldNotStart(job.component, reason: error.localizedDescription)
+                throw InstallerError.couldNotStart(job.component, reason: ErrorPresentation.readable(error))
             case .stalled:
-                throw InstallerError.scriptFailed(job.component, reason: error.localizedDescription, previousKept: false)
+                throw InstallerError.scriptFailed(job.component, reason: ErrorPresentation.readable(error), previousKept: false)
             }
         }
         // F654: a cancelled installer that exited 0 had passed its switch-over, where every

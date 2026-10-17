@@ -48,3 +48,19 @@ func foundationsOwnSentencesAreKept() {
                 "\(error.domain) \(error.code)")
     }
 }
+
+@Test("readable keeps real copy and replaces only the bridge's placeholder, keeping its code (F383)")
+func readableKeepsCopyAndNamesTheCodeOtherwise() {
+    for error in [
+        NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError),
+        NSError(domain: NSPOSIXErrorDomain, code: Int(ENOENT)),
+        NSError(domain: "any", code: 1, userInfo: [NSLocalizedDescriptionKey: "Said by whoever threw it."]),
+    ] {
+        #expect(ErrorPresentation.readable(error) == error.localizedDescription, "\(error.domain) \(error.code)")
+    }
+    let mute = NSError(domain: NSOSStatusErrorDomain, code: -10_868)
+    #expect(ErrorPresentation.readable(mute)
+        == "The operation could not be completed, and no reason was given (NSOSStatusErrorDomain -10868).")
+    #expect(ErrorPresentation.readable(Mute.only)
+        .hasPrefix("The operation could not be completed, and no reason was given ("))
+}

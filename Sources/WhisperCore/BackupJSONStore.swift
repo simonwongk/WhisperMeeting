@@ -677,7 +677,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
             }
         } catch {
             historyAvailable = false
-            repairs.append(.historyUnavailable(reason: error.localizedDescription))
+            repairs.append(.historyUnavailable(reason: ErrorPresentation.readable(error)))
         }
 
         // 8. rotateBackup — reproduces the pre-F190 `existingPrimary ?? existingBackup ?? newData`
@@ -901,7 +901,7 @@ public struct BackupJSONStore<Value: Codable & Sendable> {
                 primary: primaryURL.lastPathComponent,
                 expected: expecting,
                 found: found,
-                reason: error.localizedDescription
+                reason: ErrorPresentation.readable(error)
             )
         }
         throw BackupJSONStoreError.generationConflict(

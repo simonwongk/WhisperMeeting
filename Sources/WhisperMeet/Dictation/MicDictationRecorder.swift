@@ -514,7 +514,7 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
             let verdict = MicDictationRecorder.startExit(
                 formatRefused: formatRefused,
                 completed: completed,
-                raisedReason: raised?.localizedDescription,
+                raisedReason: raised.map { ErrorPresentation.readable($0) },
                 swiftFailure: swiftFailure,
                 engineRunning: engineRunning,
                 interruption: interruption
@@ -555,7 +555,7 @@ final class MicDictationRecorder: DictationRecording, @unchecked Sendable {
                     engine.stop()
                 }, &teardownRaised)
                 if !tornDown {
-                    log.error("dictation teardown after a failed start raised: \(teardownRaised?.localizedDescription ?? "no reason", privacy: .public)")
+                    log.error("dictation teardown after a failed start raised: \(teardownRaised.map { DiagnosticsBundleBuilder.publicLogDescription($0) } ?? "no reason", privacy: .public)")
                 }
             }
             throw error

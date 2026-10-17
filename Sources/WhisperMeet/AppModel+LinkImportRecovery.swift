@@ -254,13 +254,13 @@ extension AppModel {
         switch result {
         case let .success(finished):
             let measured = await Self.loadDuration(of: finished)
-            guard measured > 0 else { return .failed(MediaDownloadError.extractionFailed.localizedDescription) }
+            guard measured > 0 else { return .failed(ErrorPresentation.readable(MediaDownloadError.extractionFailed)) }
             InterruptedLinkImportExtraction.recordConversion(of: download, seconds: measured)
             return .converted(finished, measured)
         case .failure(is CancellationError):
             return .cancelled
         case let .failure(error):
-            return .failed(error.localizedDescription)
+            return .failed(ErrorPresentation.readable(error))
         }
     }
 

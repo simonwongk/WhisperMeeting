@@ -110,7 +110,7 @@ import WhisperCore
             }
         } catch {
             // `health` alone, since F195: `loadErrorMessage` reads the reason back out of it.
-            health = .unavailable(error.localizedDescription)
+            health = .unavailable(ErrorPresentation.readable(error))
         }
     }
 
@@ -196,7 +196,7 @@ import WhisperCore
             try store.forgetHistory()
         } catch {
             historyEraseFailureMessage =
-                "Dictations were cleared, but their saved history copies could not be fully removed: \(error.localizedDescription)"
+                "Dictations were cleared, but their saved history copies could not be fully removed: \(ErrorPresentation.readable(error))"
             return false
         }
         historyEraseFailureMessage = nil
@@ -244,7 +244,7 @@ import WhisperCore
             // *load* verdict: a write that failed says nothing about whether the bytes on disk were
             // readable, and conflating them would turn a transient save failure into a permanent
             // read-only library.
-            saveErrorMessage = error.localizedDescription
+            saveErrorMessage = ErrorPresentation.readable(error)
             guard WriteConflictReport(error).isRace else { return true }
             // The re-read IS a load, so its verdict is `health`'s to keep: a history the other copy
             // left undecodable is shown read-only, and the change waits in memory as any refused one.
@@ -256,7 +256,7 @@ import WhisperCore
             do {
                 reread = try store.load()
             } catch {
-                health = .unavailable(error.localizedDescription)
+                health = .unavailable(ErrorPresentation.readable(error))
                 return true
             }
             if let reread {
@@ -282,7 +282,7 @@ import WhisperCore
                 noteHistory(after: outcome)
                 return false
             } catch {
-                saveErrorMessage = error.localizedDescription
+                saveErrorMessage = ErrorPresentation.readable(error)
                 return true
             }
         }

@@ -1,4 +1,5 @@
 import Foundation
+import WhisperCore
 
 enum BackupRestoreError: LocalizedError, Equatable {
     /// The plan's generation is damaged, or could not be checked and the caller did not say to
@@ -108,7 +109,7 @@ enum BackupRestore {
             }
         } catch {
             try? fileManager.removeItem(at: snapshot)
-            throw BackupRestoreError.couldNotSnapshotLibrary(error.localizedDescription)
+            throw BackupRestoreError.couldNotSnapshotLibrary(ErrorPresentation.readable(error))
         }
 
         // Track what actually landed, so rollback undoes exactly that and nothing else. A rollback

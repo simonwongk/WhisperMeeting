@@ -24,7 +24,7 @@ public enum AudioCompressor {
         do {
             try process.run()
         } catch {
-            throw AudioTranscoderError.transcodeFailed("afconvert could not be launched: \(error.localizedDescription)")
+            throw AudioTranscoderError.transcodeFailed("afconvert could not be launched: \(ErrorPresentation.readable(error))")
         }
         // As in `transcodeToWAV`: the pipes carry only small log lines, so read-to-EOF then wait cannot deadlock.
         let data = pipe.fileHandleForReading.readDataToEndOfFile()

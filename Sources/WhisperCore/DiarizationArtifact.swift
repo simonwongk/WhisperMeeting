@@ -111,7 +111,8 @@ public enum DiarizationArtifactError: Error, Sendable, Equatable {
 }
 
 extension DiarizationArtifactError: LocalizedError {
-    /// `AppModel` puts `error.localizedDescription` straight into an alert, and a bare `Error` renders
+    /// `AppModel` puts this error's text straight into an alert (through `ErrorPresentation.readable`
+    /// since F383, which keeps this sentence), and a bare `Error` rendered
     /// there as "The operation couldn't be completed. (WhisperCore.DiarizationArtifactError error 2.)"
     /// — an internal enum ordinal shown to someone who was only trying to name a speaker. Every case
     /// ends by saying the transcript is unchanged, because labels are an optional extra and losing one

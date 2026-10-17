@@ -92,7 +92,7 @@ extension AppModel {
             alertMessage = Self.linkedRecordingNotCopyable
             return false
         case let .failure(error):
-            alertMessage = "The recording of “\(title)” could not be copied into the library, so nothing was changed. \(error.localizedDescription)"
+            alertMessage = "The recording of “\(title)” could not be copied into the library, so nothing was changed. \(ErrorPresentation.readable(error))"
             return false
         }
     }

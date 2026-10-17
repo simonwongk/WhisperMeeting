@@ -1469,7 +1469,7 @@ final class FloatTrackWriter {
         }, &raised)
         guard completed else {
             throw AudioCaptureError.conversionFailed(
-                "Could not read captured audio (\(raised?.localizedDescription ?? "the format was rejected"))"
+                "Could not read captured audio (\(raised.map { ErrorPresentation.readable($0) } ?? "the format was rejected"))"
             )
         }
         guard let inputBuffer = rawInputBuffer else {
@@ -1539,7 +1539,7 @@ final class FloatTrackWriter {
               conversionError == nil,
               let samples = outputBuffer.floatChannelData?.pointee else {
             throw AudioCaptureError.conversionFailed(
-                conversionError?.localizedDescription ?? "Audio conversion failed"
+                conversionError.map { ErrorPresentation.readable($0) } ?? "Audio conversion failed"
             )
         }
 

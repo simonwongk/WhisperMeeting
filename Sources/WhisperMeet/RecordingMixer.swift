@@ -152,7 +152,7 @@ enum RecordingMixer {
                 held += seconds.filter { $0.isFinite && $0 > 0 }.reduce(0, +)
             }
         } catch {
-            throw Failure.unreadable(error.localizedDescription)
+            throw Failure.unreadable(ErrorPresentation.readable(error))
         }
         guard end <= RecordingMixPlan.longestMix(heldSeconds: held) else {
             throw Failure.implausibleLength(claimed: end, held: held)
@@ -237,7 +237,7 @@ enum RecordingMixer {
     static func audit(of original: URL, against copy: URL) async throws -> RecordingMixPlan.Audit {
         let (asset, tracks, facts, end) = try await open(original)
         let copyFile: AVAudioFile
-        do { copyFile = try AVAudioFile(forReading: copy) } catch { throw Failure.unreadable(error.localizedDescription) }
+        do { copyFile = try AVAudioFile(forReading: copy) } catch { throw Failure.unreadable(ErrorPresentation.readable(error)) }
         guard copyFile.processingFormat.sampleRate == Double(sampleRate), copyFile.processingFormat.channelCount == 1 else {
             throw Failure.unreadable("the copy is not 16 kHz mono")
         }
@@ -453,7 +453,7 @@ enum RecordingMixer {
             throw Failure.unreadable("not one track of two channels")
         }
         let copyFile: AVAudioFile
-        do { copyFile = try AVAudioFile(forReading: copy) } catch { throw Failure.unreadable(error.localizedDescription) }
+        do { copyFile = try AVAudioFile(forReading: copy) } catch { throw Failure.unreadable(ErrorPresentation.readable(error)) }
         guard copyFile.processingFormat.sampleRate == Double(sampleRate), copyFile.processingFormat.channelCount == 1 else {
             throw Failure.unreadable("the copy is not 16 kHz mono")
         }
@@ -971,7 +971,7 @@ enum RecordingMixer {
         do {
             tracks = try await asset.loadTracks(withMediaType: .audio)
         } catch {
-            throw Failure.unreadable(error.localizedDescription)
+            throw Failure.unreadable(ErrorPresentation.readable(error))
         }
         let facts = await Self.facts(of: tracks, in: asset)
         if case let .unsupported(refusal) = RecordingMixPlan.decision(for: facts) { throw Failure.notMixable(refusal) }
@@ -1003,7 +1003,7 @@ enum RecordingMixer {
     static func readInStep(asset: AVAsset, tracks: [AVAssetTrack], channels: [Int], audioEnd: TimeInterval,
                            body: (_ start: Int, _ count: Int, _ lanes: [[[Float]]]) throws -> Void) throws -> Int {
         let reader: AVAssetReader
-        do { reader = try AVAssetReader(asset: asset) } catch { throw Failure.unreadable(error.localizedDescription) }
+        do { reader = try AVAssetReader(asset: asset) } catch { throw Failure.unreadable(ErrorPresentation.readable(error)) }
         var lanes: [Lane] = []
         for (track, count) in zip(tracks, channels) {
             var settings: [String: Any] = [
@@ -1029,7 +1029,7 @@ enum RecordingMixer {
             lanes.append(Lane(output: trackOutput, channels: count, pending: [[Float]](repeating: [], count: count)))
         }
         guard reader.startReading() else {
-            throw Failure.unreadable(reader.error?.localizedDescription ?? "the reader did not start")
+            throw Failure.unreadable(reader.error.map { ErrorPresentation.readable($0) } ?? "the reader did not start")
         }
         defer { reader.cancelReading() }
         var handed = 0
@@ -1038,7 +1038,7 @@ enum RecordingMixer {
         func pull(_ index: Int) throws {
             guard let buffer = lanes[index].output.copyNextSampleBuffer() else {
                 if reader.status == .failed {
-                    throw Failure.unreadable(reader.error?.localizedDescription ?? "a track could not be decoded")
+                    throw Failure.unreadable(reader.error.map { ErrorPresentation.readable($0) } ?? "a track could not be decoded")
                 }
                 lanes[index].finished = true
                 return
@@ -1131,7 +1131,7 @@ enum RecordingMixer {
     private static func writer(at output: URL, expectedSeconds: TimeInterval) throws -> FileHandle {
         FileManager.default.createFile(atPath: output.path, contents: nil)
         let handle: FileHandle
-        do { handle = try FileHandle(forWritingTo: output) } catch { throw Failure.unreadable(error.localizedDescription) }
+        do { handle = try FileHandle(forWritingTo: output) } catch { throw Failure.unreadable(ErrorPresentation.readable(error)) }
         try handle.write(contentsOf: Data(count: reservedHeader(expectedSeconds: expectedSeconds)))
         return handle
     }
