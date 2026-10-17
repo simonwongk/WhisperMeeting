@@ -53,9 +53,10 @@ public enum ErrorPresentation {
     /// The shape is English. This comment used to say the parenthetical "carries no translatable
     /// words", which is false: Foundation's `FoundationErrors.loctable` localises it, as
     /// `(%1$@-Fehler %2$ld.)` in German and `（%1$@错误%2$ld。）` in Simplified Chinese. So this
-    /// holds only where Foundation renders English, as the domain match did. WhisperMeet ships no
-    /// localisations and declares no development region; which language Foundation then uses for
-    /// its error text has not been verified.
+    /// holds only where Foundation renders English, as the domain match did. Measured for F783:
+    /// Foundation follows the main bundle's languages, and WhisperMeet declares none, so under a
+    /// German or Chinese system it still writes English; the same bundle declaring `de` gets German.
+    /// `appDeclaresNoLanguageSoErrorTextStaysEnglish` pins that premise.
     private static func isBridgePlaceholder(_ described: String, for error: NSError) -> Bool {
         described.contains("(\(error.domain) error \(error.code).)")
             || described.range(of: #"\([^()]+ error -?\d+(?:\.\)| - )"#, options: .regularExpression) != nil
