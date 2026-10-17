@@ -75,6 +75,17 @@ private let a = "6F1E7C2A-9B53-4C8E-A0D1-3E5F7A9B1C2D"
 private let b = "0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9"
 private let c = "FFFFEEEE-DDDD-CCCC-BBBB-AAAA99998888"
 
+/// `a` as JSON text with its second character, `F`, written as the escape backslash-u0046.
+private let escapedLetterID: String = "6" + jsonUnicodeEscape("0046") + String(a.dropFirst(2))
+/// `a` as JSON text with every hyphen written as the escape backslash-u002d.
+private let escapedHyphenID: String = a.replacingOccurrences(of: "-", with: jsonUnicodeEscape("002d"))
+
+/// A JSON `\u` escape for `hex`, built from its parts so no tool along the way turns it into the
+/// character it stands for.
+private func jsonUnicodeEscape(_ hex: String) -> String {
+    String(Character(Unicode.Scalar(UInt8(92)))) + "u" + hex
+}
+
 private func library() -> [Record] {
     [
         Record(id: a, title: "Standup [daily] {notes}", transcriptText: "he said \"stop\" \\ then ] and }",
@@ -139,9 +150,31 @@ func oddInputsAgree() {
         ("missing comma", #"[{"id":"\#(a)"} {"id":"\#(b)"}]"#),
         ("mismatched brackets", #"[{"id":"\#(a)"],{"id":"\#(b)"}]"#),
         ("byte order mark", "\u{FEFF}[{\"id\":\"\(a)\"},{\"id\":\"\(b)\"}]"),
+        // F907 review, finding 1: the record's OWN id written with `\u` escapes, so the id's text never
+        // appears in the bytes. Escapes chosen so the escape does not end in the character it stands
+        // for (`F` is backslash-u0046, a hyphen backslash-u002d), or a byte search would find the id by accident.
+        ("own id with an escaped letter", #"[{"id":"\#(escapedLetterID)","t":"secret kestrel"},{"id":"\#(b)"}]"#),
+        ("own id with an escaped hyphen", #"[{"id":"\#(escapedHyphenID)","t":"secret kestrel"},{"id":"\#(b)"}]"#),
     ]
     for (label, text) in cases {
         expectAgrees([a], Data(text.utf8), label)
+    }
+}
+
+// The one place the byte path is known to be looser than the whole parse (F907 review, finding 2): a
+// number too large for a Double. JSONSerialization refuses the file over `1e400`, and parses `-1e400`
+// only to raise when writing it back (F1041). The byte path removes the doomed record and keeps the
+// other record's bytes exactly as written, which loses nothing and does not crash, so it is pinned
+// rather than routed to the whole parse.
+@Test("A number too large for a Double in another record is kept as written, and the doomed record still goes (F907)")
+func hugeNumberElsewhereIsKeptAsWritten() throws {
+    for number in ["1e400", "-1e400"] {
+        let other = #"{"id":"\#(b)","duration":\#(number)}"#
+        let data = Data(#"[{"id":"\#(a)","t":"secret kestrel"},\#(other)]"#.utf8)
+        let shred = try #require(JSONArrayShred.removingElements(withIDs: [a], from: data), "\(number): the record was left in")
+        #expect(shred.removed == [a.lowercased()])
+        #expect(shred.count == 1)
+        #expect(String(decoding: shred.data, as: UTF8.self) == "[\(other)]", "\(number): the other record was rewritten")
     }
 }
 

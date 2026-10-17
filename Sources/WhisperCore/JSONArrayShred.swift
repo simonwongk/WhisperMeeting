@@ -27,9 +27,17 @@ public enum JSONArrayShred {
     /// element starts and ends (`ElementScanner`). Only an element whose bytes mention a doomed id
     /// (compared without case) is parsed, and it is removed only when its own top-level `"id"` is one;
     /// every other element is copied byte for byte, so its formatting and anything a newer build wrote
-    /// in it are untouched. The validator is never looser than `JSONSerialization`: a file it cannot
-    /// vouch for — not well-formed, not UTF-8, a byte order mark, a lone surrogate escape, an extreme
-    /// number, deep nesting — takes the whole-parse path this replaced, whose answer it then is.
+    /// in it are untouched. An element with a backslash-u escape anywhere is parsed and judged too,
+    /// since escapes can spell an id the byte search cannot see. A file the validator cannot vouch
+    /// for — not well-formed, not UTF-8, a byte order mark, a surrogate escape, a number with too many
+    /// digits, deep nesting — takes the whole-parse path this replaced, whose answer it then is.
+    ///
+    /// The validator is stricter than `JSONSerialization` in every case known but one: a number too
+    /// large for a `Double`, such as `1e400`. `JSONSerialization` refuses a file holding one, and the
+    /// validator accepts it, so such a file has its doomed record cut and every other byte kept as
+    /// written. That loses nothing, and routing it to the whole parse instead would meet F1041 for
+    /// `-1e400`, which that path parses and then raises on when writing it back
+    /// (`hugeNumberElsewhereIsKeptAsWritten`, F907 review, finding 2).
     public static func removingElements(
         withIDs ids: Set<String>, from data: Data
     ) -> (data: Data, count: Int, removed: Set<String>)? {
@@ -52,10 +60,13 @@ public enum JSONArrayShred {
             guard let elements = scanner.topLevelElements() else { return .cannotVouch }
             // Which elements mention a doomed id anywhere, found in a lowercased copy of the bytes. A
             // mention is not a record — a transcript can quote an id, a segment can carry one — so each
-            // candidate is then parsed and judged by its own top-level `"id"`.
+            // candidate is then parsed and judged by its own top-level `"id"`. An element with a
+            // backslash-u escape anywhere is a candidate too: its id may be spelled by escapes the search
+            // cannot see (F907 review, finding 1). The stores' encoders escape only control
+            // characters, so a store-written file has few such elements and the speed is unchanged.
             var lowered = [UInt8](bytes)
             for index in lowered.indices where lowered[index] &- 0x41 < 26 { lowered[index] |= 0x20 }
-            var candidates = Set<Int>()
+            var candidates = scanner.escapedElements
             lowered.withUnsafeBytes { haystack in
                 guard let base = haystack.baseAddress else { return }
                 for id in doomed {
@@ -164,11 +175,19 @@ public enum JSONArrayShred {
 /// byte order mark or another encoding (the first byte is not `[` after whitespace), a `\u` escape in
 /// the surrogate range, a number with more than 40 digits or an exponent of more than three, and
 /// nesting deeper than 128. Being stricter than `JSONSerialization` only costs speed; being looser
-/// would let a file it rejects be rewritten, so every doubt is a nil.
+/// would let a file it rejects be rewritten, so every doubt is a nil. The one known exception is a
+/// number beyond a `Double`'s range (`1e400`), which this accepts and `JSONSerialization` refuses;
+/// `JSONArrayShred.removingElements` says why that is kept.
 struct ElementScanner {
     let bytes: UnsafeRawBufferPointer
     private var index = 0
     private var depth = 0
+    /// Whether the element being walked has a backslash-u escape anywhere in it.
+    private var sawUnicodeEscape = false
+    /// The top-level elements with a backslash-u escape anywhere in them (F907 review, finding 1).
+    /// Such an element's text can spell an id without the id's own characters — an escaped letter or
+    /// hyphen — so no byte search can rule it out, and it is parsed and judged like a candidate.
+    private(set) var escapedElements = Set<Int>()
     private static let maximumDepth = 128
 
     init(bytes: UnsafeRawBufferPointer) {
@@ -188,7 +207,9 @@ struct ElementScanner {
             while true {
                 skipWhitespace()
                 let start = index
+                sawUnicodeEscape = false
                 guard value() else { return nil }
+                if sawUnicodeEscape { escapedElements.insert(elements.count) }
                 elements.append(start..<index)
                 skipWhitespace()
                 if peek == UInt8(ascii: ",") {
@@ -346,6 +367,7 @@ struct ElementScanner {
                      UInt8(ascii: "f"), UInt8(ascii: "n"), UInt8(ascii: "r"), UInt8(ascii: "t"):
                     index += 1
                 case UInt8(ascii: "u"):
+                    sawUnicodeEscape = true
                     index += 1
                     guard bytes.count - index >= 4 else { return false }
                     var scalar: UInt32 = 0
