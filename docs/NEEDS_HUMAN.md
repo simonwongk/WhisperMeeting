@@ -60,12 +60,17 @@ and tell me what looked wrong, or just "fine". Say "skip" for any step you'd rat
 
 **What I need from you:** about 30 minutes for the five checks below.
 
+**Set up 2026-10-17 (whisper-27).** Everything is in the Desktop folder **WhisperMeet short list**: start with
+`Checklist.txt`, which is these five steps in plain words. The folder also holds the test clip for step 2, a double-click
+launcher for step 3's test copy, and a double-click cleanup for when you're done.
+
 1. **Turn on search by meaning (F392) — 5 min.** In the sidebar, open **Ask Meetings** and press **Add Search by Meaning
    (490 MB)**. Tell me when it has finished. It downloads once; after that, searching stays on this Mac. An agent then measures
    how well it works using test questions only, never your meetings.
 
 2. **Shrink a throwaway meeting (F805) — 5 min. Never use a real meeting.**
-   - Import a copy of any voice memo (or record 30 seconds just for this) and let it transcribe.
+   - Drag **Test clip - safe to delete.wav** (in the Desktop folder; synthetic speech) into WhisperMeet and let it
+     transcribe. Delete that test meeting when you're done.
    - On its page, the header shows a size such as "1.2 MB". Press **Shrink…** and read the dialog: it should show the size
      before and after. Press **Shrink**.
    - Afterwards it should say "Shrunk … from … to …". The meeting should still **play**, and **Transcribe Again…** should
@@ -73,12 +78,14 @@ and tell me what looked wrong, or just "fine". Say "skip" for any step you'd rat
    - Settings → Meeting library → **Show Storage…**: meetings are listed largest first, with a total.
    - Once a build with F1040 is installed, the original goes to the Trash instead of being deleted: check that it is there.
 
-3. **Restore a backup once (F353) — 5 min. Your library stays the same if you follow this order.**
-   - Settings → Meeting library → **Back up library…** — make a fresh backup now.
+3. **Restore a backup once (F353) — 5 min, in a test copy of the app, so your real library is never restored over.**
+   - Double-click **Step 3 - open the test copy.command** in the Desktop folder. A second WhisperMeet window opens on a small
+     test library with two sample meetings (one has no audio on purpose).
+   - In that test window: Settings → Meeting library → **Back up library…**, into the folder's **Test backups**.
    - Then press **Restore…** and choose *the backup you just made*.
    - Read what the screen says it will do, then press **Restore**. Don't cancel: pressing it is the part nobody has tried.
-   - Tell me whether what it said matches what happened. The backup is only a minute old, so your library should look exactly
-     the same afterwards.
+   - Tell me whether what it said matches what happened. The test library should look the same afterwards. Then quit the test
+     copy.
 
 4. **A recording with no window open (F294) — 2 min.** Close the main window completely. Start a recording from the
    **menu-bar icon**, wait a few seconds, then stop it from the menu bar. Did a notification appear on screen? The first one
