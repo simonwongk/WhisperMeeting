@@ -416,6 +416,16 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 outputURL: mixedURL
             )
         }
+        // F556's measurement, numbers only: how much silence filled skipped spans, and how many
+        // frames each track's clock was steered by, over this recording. A long recording with a
+        // USB or Bluetooth microphone is what tells whether drift is real and how large.
+        let system = systemWriter
+        let microphone = microphoneWriter
+        // `notice`, not `info`: info lines are kept in memory only, and this one is read back hours
+        // later with `log show`.
+        Self.logger.notice(
+            "Recording track alignment over \(duration, format: .fixed(precision: 1))s: system gap=\(system?.droppedFrames ?? 0) repeated=\(system?.driftRepeatedFrames ?? 0) skipped=\(system?.driftSkippedFrames ?? 0); microphone gap=\(microphone?.droppedFrames ?? 0) repeated=\(microphone?.driftRepeatedFrames ?? 0) skipped=\(microphone?.driftSkippedFrames ?? 0)"
+        )
         do {
             try SourceTrackManifest.write(
                 system: systemTrack,
@@ -1314,8 +1324,13 @@ final class FloatTrackWriter {
     private var converterInputFormat: AVAudioFormat?
     private(set) var firstPresentationTime: Double?
     /// Frames of silence written to fill spans the stream skipped (F151). Reported so a recording
-    /// can say it has gaps rather than quietly containing them.
-    private(set) var droppedFrames: Int64 = 0
+    /// can say it has gaps rather than quietly containing them. Not the restart's padding, which
+    /// `appendSilence` writes and the manifest records as a padded gap of its own (F282).
+    var droppedFrames: Int64 { track.gapPaddedFrames }
+    /// Frames written twice, and left out, to keep a drifting clock on time (F556). Logged at Stop,
+    /// never persisted: they are the measurement F556 asked for, not a property of the recording.
+    var driftRepeatedFrames: Int64 { track.driftRepeatedFrames }
+    var driftSkippedFrames: Int64 { track.driftSkippedFrames }
     var frameCount: Int64 { track.frameCount }
 
     init(
@@ -1484,31 +1499,28 @@ final class FloatTrackWriter {
         if firstPresentationTime == nil {
             firstPresentationTime = sampleBuffer.presentationTimeStamp.seconds
         }
-        // F151: pad a span the stream skipped, BEFORE writing this buffer, so its samples land at
-        // their true offset. Without this, dropped or stalled buffers pack the rest of the track
-        // earlier than it happened — shortening the recording, invalidating every timestamp after
-        // the gap, and desyncing the two channels, which drop independently.
+        // F151 and F556, in `FloatTrackFile.appendCaptured`: a span the stream skipped is padded
+        // with silence BEFORE this buffer, so its samples land at their true offset, and a track
+        // drifting off its clock is steered back by a single frame. Without the padding, dropped or
+        // stalled buffers pack the rest of the track earlier than it happened; without the steering,
+        // a slow device clock reached the gap tolerance every few minutes and got 10 ms of zeros.
         //
-        // The same invariant F275 restores after a restart (`sample offset == elapsed time`), for a
-        // cause that has to be detected rather than announced. Returns 0 on every buffer of a
-        // healthy capture, which is the case that has to stay free.
-        if let firstPresentationTime {
-            let padding = CaptureGapPolicy.paddingFrames(
-                presentationOffset: sampleBuffer.presentationTimeStamp.seconds - firstPresentationTime,
-                writtenFrames: track.frameCount,
-                // The writer's OWN output rate, not the engine's constant: this compares against
-                // `track.frameCount`, which counts frames at the rate this writer converts to.
-                sampleRate: targetFormat.sampleRate
-            )
-            if padding > 0 {
-                try track.appendSilence(frames: padding)
-                droppedFrames += padding
-            }
-        }
-        // The write and its periodic device flush (F276) belong to `FloatTrackFile`; the pointer is
-        // passed straight through rather than copied into an array, because this runs on the
-        // `sampleHandlerQueue` for every buffer.
-        try track.append(samples, frameCount: Int(outputBuffer.frameLength))
+        // The same invariant F275 restores after a restart (`sample offset == elapsed time`), for
+        // causes that have to be detected rather than announced. A healthy buffer is written as it
+        // is, which is the case that has to stay free.
+        //
+        // The pointer is passed straight through rather than copied into an array, because this runs
+        // on the `sampleHandlerQueue` for every buffer; the write and its periodic device flush (F276)
+        // belong to `FloatTrackFile`.
+        let presentationTime = sampleBuffer.presentationTimeStamp.seconds
+        try track.appendCaptured(
+            samples,
+            frameCount: Int(outputBuffer.frameLength),
+            presentationOffset: presentationTime - (firstPresentationTime ?? presentationTime),
+            // The writer's OWN output rate, not the engine's constant: this compares against
+            // `track.frameCount`, which counts frames at the rate this writer converts to.
+            sampleRate: targetFormat.sampleRate
+        )
         // The level and the clipping count are `CaptureLevelMeter`'s, so a test can drive the
         // production computation without a `CMSampleBuffer` (F419).
         return CaptureLevelMeter.measure(input: inputBuffer, output: outputBuffer)

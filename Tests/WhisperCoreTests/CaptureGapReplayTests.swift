@@ -10,11 +10,10 @@ import Testing
 // accounting, over a sequence of buffers, on two channels that drop independently.
 //
 // ScreenCaptureKit will not drop buffers on demand, so the drop comes from the seam instead. The
-// replay below performs exactly the two calls `AudioCaptureEngine` makes per buffer, in that order
-// (`FloatTrackWriter.append(_:)` in `Sources/WhisperMeet/AudioCaptureEngine.swift`:
-// `CaptureGapPolicy.paddingFrames`, then `track.appendSilence`, then `track.append`): ask the policy
-// for padding against the frames written so far, append that many silent frames, then append the
-// buffer.
+// replay below makes the call `AudioCaptureEngine` makes per buffer since F556,
+// `FloatTrackFile.appendCaptured` (from `FloatTrackWriter.append(_:)` in
+// `Sources/WhisperMeet/AudioCaptureEngine.swift`), which asks the policy against the frames written
+// so far, appends any padding, then the buffer. It used to restate those steps by hand.
 //
 // What this does NOT cover, said plainly rather than implied: the `CMSampleBuffer` plumbing above
 // that call — the converter, `firstPresentationTime`, and the queue it runs on. This is the writer
@@ -35,19 +34,19 @@ private func replay(
 ) throws -> Int64 {
     var padded: Int64 = 0
     for buffer in buffers {
-        if applyPadding {
-            let gap = CaptureGapPolicy.paddingFrames(
-                presentationOffset: buffer.offset,
-                writtenFrames: track.frameCount,
-                sampleRate: replayRate
-            )
-            if gap > 0 {
-                try track.appendSilence(frames: gap)
-                padded += gap
-            }
+        let samples = [Float](repeating: 0.5, count: buffer.frames)
+        guard applyPadding else {
+            try track.append(samples)
+            continue
         }
-        try track.append([Float](repeating: 0.5, count: buffer.frames))
+        let decision = try samples.withUnsafeBufferPointer {
+            try track.appendCaptured(
+                $0.baseAddress!, frameCount: $0.count, presentationOffset: buffer.offset, sampleRate: replayRate
+            )
+        }
+        if case let .padSilence(gap) = decision { padded += gap }
     }
+    #expect(padded == track.gapPaddedFrames, "the track's own count of padding")
     return padded
 }
 

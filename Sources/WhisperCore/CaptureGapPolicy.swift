@@ -71,4 +71,79 @@ public enum CaptureGapPolicy {
         // short by the tolerance.
         return min(gap, Int64(maximumGapFrames))
     }
+
+    /// How far a track may sit off its clock before it is steered back, one frame per buffer
+    /// (F556). 240 frames is 5 ms at 48 kHz, half of `toleranceFrames`.
+    ///
+    /// `paddingFrames` cannot tell a dropped buffer from a device whose sample clock runs slightly
+    /// off host time: both show up as presentation offsets ahead of the frames written. A dropped
+    /// buffer is one step; drift is the same difference built up a fraction of a frame per buffer. A
+    /// microphone 50 ppm slow falls 2.4 frames behind a second, so the old policy let it reach 480
+    /// frames and then wrote a 10 ms block of zeros into it, every 200 s, mid-speech. One 50 ppm fast
+    /// ran ahead with nothing correcting it, because an early buffer is never padded.
+    ///
+    /// So inside the band `paddingFrames` ignores, drift is corrected by a single frame: written
+    /// twice when the track is behind, left out when it is ahead. One frame of a 1,024-frame buffer
+    /// is inaudible, where 480 zeros are a tick. One frame per buffer corrects up to about 1,000 ppm
+    /// at ScreenCaptureKit's buffer size, twenty times the drift the ticket worked from; a clock
+    /// worse than that falls back to the old behaviour on each side, which is no worse than before.
+    ///
+    /// Not resampling. A rate estimate fed into the converter is what the ticket proposed if drift
+    /// showed up, and it would hold a track closer than 5 ms; it also needs a measured drift to tune
+    /// against, which no recording has given yet (F556's measurement is the user's). This keeps
+    /// `sample offset == elapsed time` within 5 ms with nothing to tune, and the counts it logs at
+    /// Stop are that measurement.
+    ///
+    /// Why 5 ms. Far enough above timestamp jitter that a healthy stream is never touched (the
+    /// tolerance above calls that jitter sub-millisecond, which nobody has measured either), and
+    /// far enough below 10 ms that a drifting track never reaches the gap tolerance.
+    public static let driftToleranceFrames = 240
+
+    /// What to do with one captured buffer of `bufferFrames` frames that begins `presentationOffset`
+    /// seconds after the track's first buffer, given `writtenFrames` already on disk (F151, F556).
+    ///
+    /// - A gap past `toleranceFrames`: `paddingFrames`, unchanged — F151's whole gap, capped.
+    /// - Behind by more than `driftToleranceFrames`, up to the gap tolerance: repeat the buffer's
+    ///   first frame.
+    /// - Ahead by more than `driftToleranceFrames`, up to the gap tolerance: leave the first frame
+    ///   out, never emptying a buffer.
+    /// - Ahead by more than the gap tolerance: nothing, as F151 decided for an early buffer — a step
+    ///   that size is a clock correction or a re-delivery, not drift, and the old answer stands
+    ///   beside the new one rather than being replaced by it.
+    /// - Anything else, including a non-finite or negative offset: nothing.
+    public static func alignment(
+        presentationOffset: TimeInterval,
+        writtenFrames: Int64,
+        bufferFrames: Int,
+        sampleRate: Double
+    ) -> CaptureAlignment {
+        let padding = paddingFrames(
+            presentationOffset: presentationOffset, writtenFrames: writtenFrames, sampleRate: sampleRate
+        )
+        if padding > 0 { return .padSilence(padding) }
+        guard sampleRate > 0, presentationOffset.isFinite, presentationOffset >= 0, bufferFrames > 0 else {
+            return .none
+        }
+        // `saturating:` for F151's reason; a finite offset that would saturate here has already been
+        // answered by `paddingFrames` above. Both terms are non-negative, so the difference cannot
+        // overflow.
+        let expected = Int64(saturating: (presentationOffset * sampleRate).rounded())
+        let discrepancy = expected - writtenFrames
+        let drift = Int64(driftToleranceFrames)
+        if discrepancy > drift { return .repeatFirstFrame }
+        if discrepancy < -drift, discrepancy >= -Int64(toleranceFrames), bufferFrames > 1 { return .skipFirstFrame }
+        return .none
+    }
+}
+
+/// What `CaptureGapPolicy.alignment` decided for one captured buffer (F556).
+public enum CaptureAlignment: Equatable, Sendable {
+    /// Write the buffer as it is: the healthy case, every buffer of a capture on time.
+    case none
+    /// Write this many frames of silence first: the stream skipped a span (F151).
+    case padSilence(Int64)
+    /// Write the buffer's first frame twice: the track had fallen behind its clock (F556).
+    case repeatFirstFrame
+    /// Leave the buffer's first frame out: the track had run ahead of its clock (F556).
+    case skipFirstFrame
 }

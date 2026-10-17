@@ -152,6 +152,51 @@ public final class FloatTrackFile {
         }
     }
 
+    /// Appends one captured buffer where its presentation offset says it belongs (F151, F556), and
+    /// returns what `CaptureGapPolicy.alignment` decided for it.
+    ///
+    /// Here rather than in `FloatTrackWriter.append` so the capture path and the replay tests run the
+    /// same lines: `CaptureGapReplayTests` used to restate the writer's two calls by hand, and a
+    /// restatement cannot notice the writer changing. Each counter moves only once its write has
+    /// succeeded, so a write that throws partway leaves them describing what is on disk.
+    @discardableResult
+    public func appendCaptured(
+        _ samples: UnsafePointer<Float>,
+        frameCount frames: Int,
+        presentationOffset: TimeInterval,
+        sampleRate: Double
+    ) throws -> CaptureAlignment {
+        let decision = CaptureGapPolicy.alignment(
+            presentationOffset: presentationOffset,
+            writtenFrames: frameCount,
+            bufferFrames: frames,
+            sampleRate: sampleRate
+        )
+        switch decision {
+        case .none:
+            try append(samples, frameCount: frames)
+        case let .padSilence(padding):
+            try appendSilence(frames: padding)
+            gapPaddedFrames += padding
+            try append(samples, frameCount: frames)
+        case .repeatFirstFrame:
+            try append(samples, frameCount: 1)
+            driftRepeatedFrames += 1
+            try append(samples, frameCount: frames)
+        case .skipFirstFrame:
+            try append(samples + 1, frameCount: frames - 1)
+            driftSkippedFrames += 1
+        }
+        return decision
+    }
+
+    /// Silence `appendCaptured` wrote for spans the stream skipped (F151).
+    public private(set) var gapPaddedFrames: Int64 = 0
+    /// Frames `appendCaptured` wrote twice to keep a slow clock on time (F556).
+    public private(set) var driftRepeatedFrames: Int64 = 0
+    /// Frames `appendCaptured` left out to keep a fast clock on time (F556).
+    public private(set) var driftSkippedFrames: Int64 = 0
+
     /// 8,192 frames — one 32 KB write, matching `FloatTrackMixer`'s read chunk.
     private static let silenceChunkFrames = 8_192
 
