@@ -691,13 +691,14 @@ func aConversionWhoseOutputKeepsGrowingIsStoppedAtItsBound() async throws {
     let (folder, download, partial) = try makeInterruptedFolder()
     defer { try? FileManager.default.removeItem(at: folder) }
     let before = try Data(contentsOf: partial)
-    // Writes a byte every 0.1 s for 1.5 s: the output-stall bound never fires on it.
+    // Writes a byte every 0.1 s for 1.5 s. The stall bound is 5 s, far from the 0.6 s limit, so a slow
+    // runner's pause between two writes cannot make it fire first (round 2); the limit sets the run time.
     let ffmpeg = try growingFFmpeg(in: folder)
     let started = ProcessInfo.processInfo.systemUptime
 
     await #expect(throws: MediaDownloadError.extractionTimedOut(0.6)) {
         try await InterruptedLinkImportExtraction.finish(
-            download: download, ffmpeg: ffmpeg, stallTimeout: 30, timeLimit: 0.6, outputStallTimeout: 0.5
+            download: download, ffmpeg: ffmpeg, stallTimeout: 30, timeLimit: 0.6, outputStallTimeout: 5
         )
     }
 
