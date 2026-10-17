@@ -125,7 +125,8 @@ extension RecordingFolderLiveness {
     /// `openState(of:)` finds them (F973) — so a notice can say what to quit (yt-dlp, ffmpeg, another
     /// WhisperMeet). Empty when nothing holds it, when the kernel cannot be asked, or when a holder
     /// has exited before its name is read. A name is the process's own (`proc_name`), at most 32
-    /// characters, never a path.
+    /// characters, never a path. This process is never named (round 2): the notice says what to quit,
+    /// and this process's own conversion temp file matches the import prefix.
     public static func holderNames(of path: String) -> [String] {
         var pids = [pid_t](repeating: 0, count: 1_024)
         let bytes = pids.withUnsafeMutableBytes { buffer in
@@ -137,7 +138,8 @@ extension RecordingFolderLiveness {
         guard bytes > 0 else { return [] }
         let count = min(pids.count, Int(bytes) / MemoryLayout<pid_t>.size)
         var names = Set<String>()
-        for pid in pids.prefix(count) where pid > 0 {
+        let current = getpid()
+        for pid in pids.prefix(count) where pid > 0 && pid != current {
             var buffer = [CChar](repeating: 0, count: 256)
             guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0 else { continue }
             let name = String(cString: buffer).trimmingCharacters(in: .whitespacesAndNewlines)

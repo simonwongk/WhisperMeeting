@@ -151,3 +151,23 @@ func importFilesHeldOpenNamesOnlyHeldImportFiles() throws {
     let unknown: [String] = RecordingFolderLiveness.importFilesHeldOpen(in: directory) { _ in .unknown }
     #expect(unknown.isEmpty)
 }
+
+// F973 round 2: the notice names what to quit, so this process is never among the names. Its own
+// conversion's temp file matches the import prefix, and a restore that re-runs startup recovery while
+// it converts would otherwise have told the user to quit WhisperMeet.
+@Test("The holders named for a file never include this process (F973)")
+func holderNamesLeaveOutThisProcess() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F973-self-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let file = directory.appendingPathComponent("recording.wav")
+    try Data("x".utf8).write(to: file)
+    let handle = try FileHandle(forUpdating: file)
+    defer { try? handle.close() }
+    // The kernel does see this process holding it, so an empty list below is the exclusion, not a blind probe.
+    try #require(RecordingFolderLiveness.openState(of: file.path) == .held)
+
+    let names: [String] = RecordingFolderLiveness.holderNames(of: file.path)
+    #expect(names.isEmpty, "this process named itself as a holder: \(names)")
+}
