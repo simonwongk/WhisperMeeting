@@ -3157,6 +3157,15 @@ private struct TranscriptDetailView: View {
                               ? "A source-tracks rebuild is already running. Wait for it to finish before starting another."
                               : "Mix the raw microphone and system tracks again, in case more audio survived than the first recovery found.")
                     }
+                    // F704: a recording imported as a link before F494. Its own sibling, for F306's
+                    // reason, and shown only while the original it links to is still there.
+                    if model.linkedRecordingOriginal(id: meetingID) != nil {
+                        Button("Copy Linked Recording Into Library") {
+                            Task { await model.copyLinkedRecordingIntoLibrary(id: meetingID) }
+                        }
+                        .buttonStyle(.link)
+                        .help("This recording is a link to a file elsewhere. Copy that file into the library, so the meeting keeps playing if the original moves and is included in backups. The original is not changed.")
+                    }
                     tagsEditor
                     notesSection
 

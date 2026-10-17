@@ -8731,6 +8731,9 @@ extension AppModel {
     /// `.Qwen3ASR-backup-*` dir while `Qwen3ASR/` is gone and Qwen reports "not installed"; the tested
     /// recovery-only reclaim restores it (or clears an incomplete one) without a manual reinstall
     /// (F33). Returns whether the reclaim was run. The reclaim itself is the injected
+        case .recordingIsSymbolicLink:
+            // F704: an import of a link before F494 kept the link. Named with what to do, and where.
+            return "“\(title)”: the recording file is a link to a file somewhere else, not a copy. It was imported from a link by an earlier version of WhisperMeet, so it plays only while the original stays where it is, and backups leave it out. Open the meeting and choose Copy Linked Recording Into Library to keep a copy of its own."
     /// `runQwenInstallRecovery` seam, so this hop is headless-testable without spawning a process.
     ///
     /// `runtimeDirectory` defaults to this model's library's `Runtime/Qwen3ASR` (F655) — the managed

@@ -143,6 +143,12 @@ public enum IntegrityFinding: Sendable, Equatable {
     /// What an import of an alias made before F705: `copyItem` copied the alias's bytes as
     /// `recording.<ext>`, so the meeting is 0:00 with no audio of its own.
     case recordingIsAlias
+    /// The recording file is a symbolic link to a file elsewhere (F704). What an import of a link made
+    /// before F494: `copyItem` copied the link as a link. The meeting plays only while the original
+    /// stays where it is, and backups skip it (`BackupCoordinator` copies regular files only). Reported
+    /// beside whatever the checks of the file it points to find — a link whose original has gone is
+    /// also `recordingMissing`.
+    case recordingIsSymbolicLink
 
     /// Whether this is a problem with the recording, as opposed to a note about what the check
     /// could not look at (F638). Verify Library's header counts a recording as having problems only
@@ -151,7 +157,7 @@ public enum IntegrityFinding: Sendable, Equatable {
     public var isProblem: Bool {
         switch self {
         case .recordingMissing, .recordingEmpty, .wavHeaderUnreadable, .wavTruncated,
-             .sourceTrackFrameMismatch, .durationInconsistent, .recordingIsAlias:
+             .sourceTrackFrameMismatch, .durationInconsistent, .recordingIsAlias, .recordingIsSymbolicLink:
             return true
         case .sourceTrackManifestMissing:
             return false
@@ -201,10 +207,17 @@ public enum MeetingIntegrityChecker {
         var findings: [IntegrityFinding] = []
         let fileManager = FileManager.default
 
+        // F704: asked of the entry itself (`attributesOfItem` does not follow a link), before the
+        // checks below, which all read through it.
+        if isSymbolicLink(descriptor.recordingURL) {
+            findings.append(.recordingIsSymbolicLink)
+        }
         if !fileManager.fileExists(atPath: descriptor.recordingURL.path) {
             findings.append(.recordingMissing)
         } else {
-            let actualBytes = fileSize(descriptor.recordingURL)
+            // The size of what the file is, through a link (F704): `attributesOfItem` does not follow
+            // one, and a link's own few bytes read as a truncated WAV.
+            let actualBytes = fileSize(descriptor.recordingURL.resolvingSymlinksInPath())
             if actualBytes == 0 {
                 findings.append(.recordingEmpty)
             } else if isFinderAlias(descriptor.recordingURL) {
@@ -269,5 +282,11 @@ public enum MeetingIntegrityChecker {
     static func isFinderAlias(_ url: URL) -> Bool {
         guard let values = try? url.resourceValues(forKeys: [.isAliasFileKey, .isSymbolicLinkKey]) else { return false }
         return values.isAliasFile == true && values.isSymbolicLink != true
+    }
+
+    /// Whether the entry at `url` is itself a symbolic link (F704). `attributesOfItem` reads the
+    /// entry, not what it points to.
+    public static func isSymbolicLink(_ url: URL) -> Bool {
+        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType) == .typeSymbolicLink
     }
 }
