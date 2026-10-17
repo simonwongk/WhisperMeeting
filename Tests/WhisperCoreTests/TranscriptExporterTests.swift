@@ -106,6 +106,35 @@ func subRipCueTextDisplaysAsWritten() throws {
     #expect(everyOpenerIsBroken)
 }
 
+@Test("A SubRip cue shows brace and backslash sequences exactly as the transcript has them (F917)")
+func subRipBraceAndBackslashSequencesDisplayAsWritten() throws {
+    // Each form a player read as markup, measured on this Mac (F917's entry): ffmpeg 8.1.2's SubRip
+    // decoder dropped `{\…}` and `{y:…}`, and VLC 3.0.23 hid `{\…}`, italicised after `{y:i}`, moved
+    // a cue to the top for `{\an8}`, and broke lines at `\N` and `\n` and spaced at `\h`.
+    let lines = [
+        #"{\i1}brace{\i0} end"#, "{y:i}microdvd italic", #"path C:\Notes\new file \h end"#,
+        #"one\Ntwo \n three"#, "plain {braces} here", #"{\an8}top"#,
+    ]
+    let segments = lines.enumerated().map {
+        TranscriptSegment(speaker: nil, start: Double($0.offset), end: Double($0.offset + 1), text: $0.element)
+    }
+    let request = TranscriptExportRequest(
+        title: "t", languageCode: "en", durationSeconds: 6,
+        transcriptText: TranscriptFormatter.timestamped(segments), segments: segments
+    )
+    let srt = TranscriptExporter.render(.srt, request)
+
+    #expect(subRipScreenText(srt) == lines)
+    // Every `{` and every `\` is followed by the joiner, so neither player reads an override, a
+    // MicroDVD style or an escape: VLC 3.0.23 then showed every line above as written.
+    let everyMarkupOpenerIsBroken = srt.indices.allSatisfy { index in
+        (srt[index] != "{" && srt[index] != "\\") || srt[srt.index(after: index)...].hasPrefix("\u{2060}")
+    }
+    #expect(everyMarkupOpenerIsBroken)
+    // And the file reads back as the transcript (the joiners go), as F743's `<` does.
+    #expect(SubtitleParser.parse(srt).map(\.text) == lines)
+}
+
 @Test("Plain-text export strips the leading timestamps from each line")
 func exportsPlainText() {
     let text = TranscriptExporter.render(.plainText, sampleRequest())

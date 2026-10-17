@@ -113,7 +113,8 @@ public enum SubtitleParser {
     ///
     /// SubRip decodes no references (F743), so its `&lt;` stays text — except that a leading run of
     /// `&gt;` is still a speaker change, whatever the file (`speakerLabelPrefixes`). A `<` followed by
-    /// the exporter's word joiner is text, not a tag, and the joiner goes — after `-->`'s too.
+    /// the exporter's word joiner is text, not a tag, and the joiner goes — after `-->`'s, `{` and
+    /// `\` too (F917).
     static func cleanCueText(_ text: String, isWebVTT: Bool) -> String {
         // Remove every angle-bracket tag (timing cues, <c> color spans, <v Name> voice spans).
         let untagged = text.replacingOccurrences(of: #"<(?!\x{2060})[^>]*>"#, with: "", options: .regularExpression)
@@ -122,6 +123,8 @@ public enum SubtitleParser {
             return stripSpeakerLabels(
                 untagged.replacingOccurrences(of: "<" + breaker, with: "<")
                     .replacingOccurrences(of: "--" + breaker + ">", with: "-->")
+                    .replacingOccurrences(of: "{" + breaker, with: "{")
+                    .replacingOccurrences(of: "\\" + breaker, with: "\\")
             )
         }
         return stripSpeakerLabels(decodeCharacterReferences(untagged))

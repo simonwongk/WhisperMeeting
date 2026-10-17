@@ -572,7 +572,7 @@ public enum TranscriptExporter {
     }
 
     /// An invisible character that is not a letter, `/` or space (U+2060 WORD JOINER), written after
-    /// every `<` of SubRip cue text; `SubtitleParser` removes it again.
+    /// every `<`, `{` and `\` of SubRip cue text; `SubtitleParser` removes it again.
     static let subRipTagBreaker = "\u{2060}"
 
     /// SubRip cue text, which the players show with NO character reference decoded (F743). F44
@@ -587,9 +587,22 @@ public enum TranscriptExporter {
     /// optional `/` and spaces) and ffmpeg keeps an unknown non-ASCII tag as text, so no tag can open,
     /// and VLC 3.0.23 on screen draws the joiner as nothing. `-->` gets one before its `>` so no line
     /// of cue text can read as a timing line. `&` and everything else is written as it is.
+    ///
+    /// `{` and `\` get one after them too (F917). Measured on this Mac, not assumed: ffmpeg 8.1.2's
+    /// decoder dropped `{\…}` and `{X:…}` (X in `CcFfoPSsYy`) and passed `\N` `\n` `\h` into its ASS
+    /// output, where libass reads `\N` as a line break, `\n` as a space or a break, and `\h` as a
+    /// hard space (its `ass_get_next_char`, read, not run); VLC 3.0.23 on screen hid
+    /// `{\i1}`, italicised after `{y:i}`, moved `{\an8}` to the top, and broke `C:\Notes\new` into
+    /// three lines. With the joiner, VLC showed all of them as written, and ffmpeg's decoder kept
+    /// them as text. libass's own `\{` escape was no answer: VLC showed its backslash. What remains
+    /// is libass (mpv, IINA) reading any `{…}` that reaches it as an override block and hiding it —
+    /// with or without a joiner, and since F44 for a plain `{braces}` too; no SubRip text shows a
+    /// brace pair in both VLC and libass.
     private static func escapeSubRipCueText(_ text: String) -> String {
         text.replacingOccurrences(of: "<", with: "<" + subRipTagBreaker)
             .replacingOccurrences(of: "-->", with: "--" + subRipTagBreaker + ">")
+            .replacingOccurrences(of: "{", with: "{" + subRipTagBreaker)
+            .replacingOccurrences(of: "\\", with: "\\" + subRipTagBreaker)
     }
 
     /// `HH:MM:SS,mmm` (SRT) or `HH:MM:SS.mmm` (WebVTT).
