@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import WhisperCore
 
@@ -52,6 +53,11 @@ private struct Meeting {
     var lineSentences: [[Int]] = []
     /// The sentences the other engine heard at all.
     var heard: Set<Int> = []
+    /// The sentences of each segment of `secondary`, those it heard differently, and each sentence's
+    /// length — what `realWords` needs to write the same meeting in real words (review of F868).
+    var secondarySentences: [[Int]] = []
+    var heardDifferently: Set<Int> = []
+    var seconds: [Double] = []
 }
 
 private func simulate(seed: UInt64, jitter: Double, sameSplit: Bool, sentences count: Int = 6_000,
@@ -94,10 +100,13 @@ private func simulate(seed: UInt64, jitter: Double, sameSplit: Bool, sentences c
         let words = said.map { rng.chance(0.3) ? "v\($0)." : "w\($0)." }
         guard !said.isEmpty else { continue }
         meeting.heard.formUnion(said)
+        meeting.secondarySentences.append(said)
+        meeting.heardDifferently.formUnion(zip(said, words).filter { $0.1.hasPrefix("v") }.map(\.0))
         let start = spans[group.first!].start + rng.uniform(-jitter...jitter)
         let end = max(start + 0.05, spans[group.last!].end + rng.uniform(-jitter...jitter))
         meeting.secondary.append(TranscriptSegment(speaker: nil, start: start, end: end, text: words.joined(separator: " ")))
     }
+    meeting.seconds = spans.map { $0.end - $0.start }
     return meeting
 }
 
@@ -224,4 +233,152 @@ func bothEnginesJitteredStillOfferOnlyTheLinesOwn() {
     let (_, independent) = run(jitter: 0.5, sameSplit: false, shortest: 1.0, primaryJitter: 0.5)
     #expect(independent.outside + independent.dropped <= 1, "\(independent)")
     #expect(Double(independent.offered) >= 0.08 * Double(independent.diverging), "\(independent)")
+}
+
+// MARK: - The same meetings in real words (review of F868)
+//
+// Every sentence above is one unique token, so no two sentences share a word and F868's edge check can
+// never match by coincidence. Real speech can: line edges are dominated by a few words ("so", "and",
+// "I", "yeah", "okay"; 好的, 对). `realWords` writes the SAME meeting — the same lines, segments,
+// timings, misses and mishearings — in real English or Chinese: a short sentence (≤ 1.5 s) is an
+// interjection, a long one an opener + a clause + a closer drawn from meeting speech, and a sentence
+// heard differently has one word (one character in Chinese) changed. Since only the words differ, a
+// row the token meeting offers correctly and the real one withholds is withheld by coincidence: that
+// is F868's cost on real words.
+
+private enum Speech { case english, chinese }
+
+private let englishShort = ["Yeah.", "Okay.", "Right.", "Sure.", "Got it.", "Okay, sure.", "Nice.", "Agreed.",
+                            "Thank you.", "Exactly.", "So, yes.", "I think so.", "No.", "Yes.", "Mm-hmm.",
+                            "That works.", "And then?", "So?", "Me too.", "Fair enough."]
+private let englishOpeners = ["", "So ", "And ", "I think ", "But ", "Okay, so ", "Then ", "Yeah, ", "The thing is, ",
+                              "And so ", "I mean ", "So yeah, "]
+private let englishClauses = [
+    "the release is moving to next week", "we should ship the installer on Friday", "the build passed all of its checks",
+    "Maria will review the export", "the survey had about forty answers", "search in the library is still too slow",
+    "we need six new microphones", "the budget was approved this morning", "I can take the PDF export",
+    "the timestamps are off by a second", "nobody has looked at the crash report", "it works on my machine",
+    "we can talk about it offline", "the customer asked for a refund", "I'll send the notes after the call",
+    "the meeting ran over again", "let's move on to the next item", "the numbers look better than last month",
+    "we still have two open bugs", "the design review is on Thursday", "that is a good question",
+    "I'm not sure about the date", "we decided to keep the old layout", "the server was down for an hour",
+    "the new hire starts on Monday", "we should write that down", "the demo went well", "I agree with that",
+    "it depends on the vendor", "there is one more thing",
+]
+private let englishClosers = ["", " too", " then", " as well", " for now", " I guess", " right", " so", " I think", " again", " okay"]
+private let chineseShort = ["好的。", "对。", "嗯。", "是的。", "可以。", "没问题。", "行。", "明白。", "好。", "对对对。"]
+private let chineseOpeners = ["", "那", "所以", "我觉得", "然后", "但是", "好的，", "对，"]
+private let chineseClauses = [
+    "我们下周发布新版本", "安装程序还需要再看一遍", "这个问题我们线下再聊", "客户要求退款", "预算今天上午批下来了",
+    "我来负责导出功能", "搜索还是太慢了", "服务器宕机了一个小时", "新同事周一入职", "设计评审在周四",
+    "我们还有两个问题没解决", "演示很顺利", "数字比上个月好", "这个时间我不太确定", "我会在会后发会议纪要",
+]
+private let chineseClosers = ["", "吧", "了", "啊", "对吧", "就这样"]
+
+/// Sentence `id` in real words: an interjection when it is short, else opener + clause + closer.
+private func realSentence(_ id: Int, seconds: Double, _ speech: Speech) -> String {
+    var rng = SplitMix(state: 0xF868_0000_0000 ^ UInt64(id))
+    func pick(_ list: [String]) -> String { list[Int(rng.next() % UInt64(list.count))] }
+    switch speech {
+    case .english:
+        if seconds <= 1.5 { return pick(englishShort) }
+        let sentence = pick(englishOpeners) + pick(englishClauses) + pick(englishClosers) + "."
+        return sentence.prefix(1).uppercased() + sentence.dropFirst()
+    case .chinese:
+        if seconds <= 1.5 { return pick(chineseShort) }
+        return pick(chineseOpeners) + pick(chineseClauses) + pick(chineseClosers) + "。"
+    }
+}
+
+/// `text` as the other engine heard it differently: one word (one character in Chinese) changed.
+private func misheard(_ text: String, id: Int, _ speech: Speech) -> String {
+    var rng = SplitMix(state: 0x00F8_68F8_6800 ^ UInt64(id))
+    switch speech {
+    case .english:
+        var words = text.split(separator: " ").map(String.init)
+        let index = Int(rng.next() % UInt64(words.count))
+        let word = words[index]
+        let letters = word.filter(\.isLetter)
+        words[index] = letters.count > 3 ? word.replacingOccurrences(of: String(letters.prefix(3)), with: String(letters.prefix(2)) + "e")
+                                         : "the" + word
+        return words.joined(separator: " ")
+    case .chinese:
+        var characters = Array(text)
+        let ideographs = characters.indices.filter { characters[$0].unicodeScalars.allSatisfy { ActionItemEvidence.isCJKIdeograph($0) } }
+        guard !ideographs.isEmpty else { return text + "嗯" }
+        characters[ideographs[Int(rng.next() % UInt64(ideographs.count))]] = "某"
+        return String(characters)
+    }
+}
+
+/// `meeting` with every sentence written in real words, everything else unchanged.
+private func realWords(_ meeting: Meeting, _ speech: Speech) -> (primary: [TranscriptSegment], secondary: [TranscriptSegment]) {
+    let separator = speech == .english ? " " : ""
+    func line(_ sentences: [Int], heardBy other: Bool) -> String {
+        sentences.map { id in
+            let text = realSentence(id, seconds: meeting.seconds[id], speech)
+            return other && meeting.heardDifferently.contains(id) ? misheard(text, id: id, speech) : text
+        }.joined(separator: separator)
+    }
+    let primary = zip(meeting.primary, meeting.lineSentences).map { segment, sentences in
+        TranscriptSegment(speaker: nil, start: segment.start, end: segment.end, text: line(sentences, heardBy: false))
+    }
+    let secondary = zip(meeting.secondary, meeting.secondarySentences).map { segment, sentences in
+        TranscriptSegment(speaker: nil, start: segment.start, end: segment.end, text: line(sentences, heardBy: true))
+    }
+    return (primary, secondary)
+}
+
+private struct WordCost: CustomStringConvertible {
+    /// Rows diverging in both, offered in the token meeting and correct there (only the line's own
+    /// sentences, all of those heard).
+    var correctOffers = 0
+    /// Of those, withheld in real words: F868 matching a common word by coincidence.
+    var withheldByCoincidence = 0
+    /// Rows offered in real words that carry a neighbour's sentence or leave one of the line's out.
+    var wrongRealOffers = 0
+    var description: String {
+        let rate = correctOffers == 0 ? 0 : 100 * Double(withheldByCoincidence) / Double(correctOffers)
+        return "correctOffers=\(correctOffers) withheldByCoincidence=\(withheldByCoincidence) (\(String(format: "%.2f", rate)) %) wrongRealOffers=\(wrongRealOffers)"
+    }
+}
+
+private func wordCost(_ speech: Speech, sameSplit: Bool, shortest: Double, jitter: Double = 0.5) -> WordCost {
+    var cost = WordCost()
+    for seed in 0..<3 {
+        let meeting = simulate(seed: 0xF868_F868 + UInt64(seed) * 0x1_0001, jitter: jitter, sameSplit: sameSplit,
+                               sentences: 3_000, shortest: shortest)
+        let tokenRows = TranscriptComparison.compare(meeting.primary, meeting.secondary)
+        let real = realWords(meeting, speech)
+        let realRows = TranscriptComparison.compare(real.primary, real.secondary)
+        for line in tokenRows.indices where tokenRows[line].kind == .diverge && realRows[line].kind == .diverge {
+            let own = Set(meeting.lineSentences[line])
+            let offered = Set(sentences(in: tokenRows[line].secondaryText ?? ""))
+            let correct = offered.isSubset(of: own) && own.intersection(meeting.heard).isSubset(of: offered)
+            if tokenRows[line].offersReplacement, correct {
+                cost.correctOffers += 1
+                if !realRows[line].offersReplacement { cost.withheldByCoincidence += 1 }
+            }
+            if realRows[line].offersReplacement, !correct { cost.wrongRealOffers += 1 }
+        }
+    }
+    return cost
+}
+
+// Measured (F868 round 2's log entry has every configuration, and the variants): in English, 1.2–1.7 % of
+// the rows the token meeting offers correctly are withheld by a coincidental match, and the check removes
+// 35 of the 42 wrong offers timing alone makes (independent groupings, 0.25 s sentences). Requiring two
+// matching words would halve the cost (0.4–0.9 %) and give back most of that protection (28 wrong
+// offers): the one-word match is the point, because the sentences it is for are one word — "Yeah.",
+// "Okay.", "No." — so it stays. Chinese is F868's known gap (a run is one word) and changes nothing
+// either way. The bounds hold the English cost and protection near what was measured.
+@Test("On real English, F868's edge check withholds under 2.5 % of correct Replaces and stops most wrong ones (F868)")
+func edgeWordsCostLittleOnRealEnglish() {
+    let independent = wordCost(.english, sameSplit: false, shortest: 0.25)
+    #expect(independent.correctOffers > 500, "\(independent)")
+    #expect(Double(independent.withheldByCoincidence) <= 0.025 * Double(independent.correctOffers), "\(independent)")
+    #expect(independent.wrongRealOffers <= 10, "timing alone makes 42 here: \(independent)")
+    let same = wordCost(.english, sameSplit: true, shortest: 0.6)
+    #expect(Double(same.withheldByCoincidence) <= 0.025 * Double(same.correctOffers), "\(same)")
+    #expect(same.wrongRealOffers == 0, "\(same)")
 }
