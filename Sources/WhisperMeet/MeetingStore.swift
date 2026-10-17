@@ -748,8 +748,17 @@ final class MeetingStore: ObservableObject {
     /// Only ever assigned through `degrade(to:)` outside `revalidateHealth`, so the meeting index's
     /// two verdicts in `loadMeetings` — its load's, then the suspect-empty check — and a reload that
     /// does not reset first (`reloadForConflictRecovery`) can only ever worsen it.
-    @Published private(set) var health: PersistedStoreHealth = .complete
+    @Published private(set) var health: PersistedStoreHealth = .complete {
+        didSet { syncNotesSidecarGate() }
+    }
     var isDegraded: Bool { !health.allowsMutation }
+
+    /// `health` and `isRestoringLibrary`, as the detached notes backfill can read them (F751).
+    nonisolated let notesSidecarGate = NotesSidecarWriteGate()
+
+    private func syncNotesSidecarGate() {
+        notesSidecarGate.setAllowed(!isDegraded && !isRestoringLibrary)
+    }
 
     /// What the meeting index's load found on disk that `health` cannot say (F844, F881): a missing
     /// `meetings.json`, or an empty version on disk beside finished recordings. Every read-only
@@ -771,7 +780,9 @@ final class MeetingStore: ObservableObject {
     /// not even caught as a conflict: with no ledger to contradict it, it is adopted over the
     /// restored index. Separate from `health` because nothing here is damaged: it ends when the
     /// restore does, with `endLibraryRestore()`, whichever way the restore went.
-    @Published private(set) var isRestoringLibrary = false
+    @Published private(set) var isRestoringLibrary = false {
+        didSet { syncNotesSidecarGate() }
+    }
 
     /// `nonisolated`: an immutable string read from `MeetingStoreError.errorDescription`, which is
     /// not on the main actor — the release build treats the isolated reference as an error.
@@ -946,6 +957,8 @@ final class MeetingStore: ObservableObject {
         loadVocabulary()
         loadVocabularyPriority()
         loadReplacementRules()
+        // Not left to `health`'s observer for a load made during `init` (F751).
+        syncNotesSidecarGate()
     }
 
     /// Creates (and returns) a meeting's recording folder. Refuses while the library is not
@@ -1061,6 +1074,8 @@ final class MeetingStore: ObservableObject {
     /// record no longer equals its snapshot is queued again and flushed from the live record,
     /// which makes the last write the current one. Meetings deleted meanwhile are skipped. The flush
     /// keeps its own guards: degraded writes nothing, and mid-restore leaves the ids pending (F506).
+    /// The pass keeps them too, per file, through `notesSidecarGate` (F751): the guard below is
+    /// asked once, and the state can change while the pass runs.
     func backfillNotesSidecars() async {
         guard !isDegraded else { return }
         let snapshot = meetings
@@ -1080,12 +1095,14 @@ final class MeetingStore: ObservableObject {
     /// snapshot record whose file is stale and returns how many files were written. Injectable only
     /// so a test can land an edit and its flush while the pass is running (F496); defaults to
     /// `runNotesBackfillPass`.
-    lazy var notesBackfillPass: @Sendable ([MeetingRecord], URL) async -> Int = { [folderWriters = self.folderWriters] snapshot, root in
-        await MeetingStore.runNotesBackfillPass(snapshot, root: root, writers: folderWriters)
+    lazy var notesBackfillPass: @Sendable ([MeetingRecord], URL) async -> Int = { [folderWriters = self.folderWriters, gate = self.notesSidecarGate] snapshot, root in
+        await MeetingStore.runNotesBackfillPass(snapshot, root: root, writers: folderWriters, gate: gate)
     }
 
+    /// `gate` is asked before each meeting's file, not once before the pass (F751): a library that
+    /// goes read-only, or a restore that begins, while the pass runs stops it at the next file.
     nonisolated static func runNotesBackfillPass(
-        _ snapshot: [MeetingRecord], root: URL, writers: MeetingFolderWriters
+        _ snapshot: [MeetingRecord], root: URL, writers: MeetingFolderWriters, gate: NotesSidecarWriteGate
     ) async -> Int {
         await Task.detached(priority: .utility) {
             snapshot.reduce(into: 0) { count, meeting in
@@ -1093,7 +1110,7 @@ final class MeetingStore: ObservableObject {
                 // meanwhile is refused; one already under way turns this write away.
                 guard writers.begin(meeting.id) else { return }
                 defer { writers.end(meeting.id) }
-                if Self.writeSidecarIfStale(for: meeting, root: root) { count += 1 }
+                if gate.ifAllowed({ Self.writeSidecarIfStale(for: meeting, root: root) }) { count += 1 }
             }
         }.value
     }

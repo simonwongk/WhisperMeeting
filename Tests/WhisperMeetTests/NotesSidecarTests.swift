@@ -273,7 +273,9 @@ func backfillDoesNotOverwriteAnEditFlushedMidPass() async throws {
             store.update(id: id) { $0.title = "Renamed after launch" }
             store.flushPendingNotesSidecars()
         }
-        return await MeetingStore.runNotesBackfillPass(snapshot, root: root, writers: store.folderWriters)
+        return await MeetingStore.runNotesBackfillPass(
+            snapshot, root: root, writers: store.folderWriters, gate: store.notesSidecarGate
+        )
     }
 
     await store.backfillNotesSidecars()

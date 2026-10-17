@@ -186,11 +186,12 @@ func deleteDuringNotesBackfillIsNeverHalfDone() async throws {
     try Data("an old composition".utf8).write(to: folder.appendingPathComponent("notes.md"))
     let gate = WriterGate()
     let writers = store.folderWriters
+    let sidecarGate = store.notesSidecarGate
     store.notesBackfillPass = { snapshot, root in
         gate.enter()
         defer { gate.land() }
         guard gate.block(until: { $0.isReleased }) else { Issue.record("the backfill was never let go"); return 0 }
-        return await MeetingStore.runNotesBackfillPass(snapshot, root: root, writers: writers)
+        return await MeetingStore.runNotesBackfillPass(snapshot, root: root, writers: writers, gate: sidecarGate)
     }
     removeInTwoHalves(store, letting: gate)
     let backfill = Task { @MainActor in await store.backfillNotesSidecars() }
