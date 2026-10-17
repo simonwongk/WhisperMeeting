@@ -190,7 +190,8 @@ func theViewsUseTheSharedDraft() throws {
     #expect(title.contains("draft.userTyped("), "typing must reach the draft through the binding's setter")
     // F675: the re-seed asks the shared rule, not a local `focused && windowIsActive`.
     #expect(title.contains("MeetingFieldSync.isEditing(.title, focused: focused"))
-    #expect(title.contains("isEditingHere: isBeingEdited"))
+    // F811: the follow goes through the shared committed-field rule, which is given the same predicate.
+    #expect(title.contains("committedFieldLibraryChanged(&draft, to: title ?? \"\", focused: isBeingEdited)"))
     #expect(!title.contains("isEditingHere: focused && windowIsActive"))
 
     #expect(content.contains("MeetingFieldSync.isEditing(.notes, focused: notesFocused"))

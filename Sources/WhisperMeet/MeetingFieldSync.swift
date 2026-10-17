@@ -45,6 +45,51 @@ enum MeetingFieldSync {
         }
     }
 
+    /// A committed-on-exit field (the title; an action item's owner and due) seeing the library's
+    /// value change underneath it. Returns true when the view should take the cursor out of the field.
+    ///
+    /// Not focused, or holding typing of its own: F564/F675's rule, unchanged — follow unless focused,
+    /// keep the typing.
+    ///
+    /// **Focused with nothing typed, and now stale (F811).** F675 stopped re-seeding a focused title,
+    /// because AppKit's field editor keeps first responder in a background window and may hand its
+    /// old string back as typing. But nothing else re-seeds it either, and the field keeps the cursor
+    /// when its window comes back to the front — so the user was shown the old value, typed onto it,
+    /// and saved "old + edit" over the other window's change. So the field gives up the cursor
+    /// instead. Its view's focus change commits (nothing: nothing was typed) and catches up
+    /// (`libraryChanged(…, isEditingHere: false)`). The draft is untouched until then, so if the field
+    /// editor hands its string back as it ends editing, that string equals the draft's and reads as no
+    /// typing at all (`userTyped` ignores an unchanged value).
+    static func committedFieldLibraryChanged(_ draft: inout SharedFieldDraft, to stored: String, focused: Bool) -> Bool {
+        if focused, !draft.hasUnsavedEdit, draft.text != stored { return true }
+        // Focus alone is editing for a committed-on-exit field (`isEditing(.title, …)`, F675).
+        draft.libraryChanged(to: stored, isEditingHere: focused)
+        return false
+    }
+
+    /// An action item's owner or due field's commit (F676): on Return, on focus loss, and when the
+    /// card goes away — the title's rule (`commitTitle`) for a value that may be empty. It used to
+    /// write whenever the field's text differed from the item, which is also true of an untouched
+    /// field in a second window after the owner was set in the first, so that window's card going
+    /// away wrote its empty owner back over it.
+    ///
+    /// Only typing writes. A typed value is trimmed, and an emptied field clears the value, as before.
+    /// `readBack` reports what the item holds after the write, so a refused write (a read-only
+    /// library) keeps the typing in the field.
+    static func commitActionItemField(
+        _ draft: inout SharedFieldDraft,
+        stored: String?,
+        write: (String?) -> Void,
+        readBack: () -> String?
+    ) {
+        guard let typed = draft.takeEdit(stored: stored ?? "") else { return }
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value: String? = trimmed.isEmpty ? nil : trimmed
+        guard value != stored else { return }
+        write(value)
+        if readBack() != value { draft.writeWasRefused() }
+    }
+
     /// The notes field's keystroke: written straight through (debounced by the store, F133), so the
     /// draft holds no edit between keystrokes and the other window's field can follow it.
     static func typeNotes(_ text: String, into draft: inout SharedFieldDraft, store: MeetingStore, meetingID: UUID) {

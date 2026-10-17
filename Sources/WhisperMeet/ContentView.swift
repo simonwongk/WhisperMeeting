@@ -3527,6 +3527,10 @@ private struct TranscriptDetailView: View {
                             },
                             onPlaySource: summary.actionItems[index].timestamp.map { time in
                                 { transcriptMode = .read; seekRequest = time }
+                            },
+                            current: {
+                                let items = store.meeting(id: meetingID)?.summary?.actionItems ?? []
+                                return items.indices.contains(index) ? items[index] : nil
                             }
                         )
                     }
@@ -4617,9 +4621,14 @@ private struct ActionItemCard: View {
     let onCommitDue: (String?) -> Void
     /// Non-nil only when the item resolved to a timestamp; the closure seeks the transcript player.
     let onPlaySource: (() -> Void)?
+    /// The item as the library holds it now, read at commit time (F676): `item` is the value this
+    /// card was last drawn with, which is stale right after this card's own write.
+    let current: () -> ActionItem?
 
-    @State private var ownerDraft = ""
-    @State private var dueDraft = ""
+    /// F676: F564's typed-here drafts. The card used to keep plain strings and write them whenever
+    /// they differed from the item, which an untouched card in a second window always did.
+    @State private var ownerDraft = SharedFieldDraft(stored: "")
+    @State private var dueDraft = SharedFieldDraft(stored: "")
     @FocusState private var focus: Field?
 
     private enum Field { case owner, due }
@@ -4638,12 +4647,13 @@ private struct ActionItemCard: View {
                     .foregroundStyle(item.done ? Color.secondary : Color.primary)
 
                 HStack(spacing: 8) {
-                    TextField("Owner", text: $ownerDraft)
+                    // Only typing reaches the setters, so only typing counts as an edit (F564).
+                    TextField("Owner", text: Binding(get: { ownerDraft.text }, set: { ownerDraft.userTyped($0) }))
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 150)
                         .focused($focus, equals: .owner)
                         .onSubmit(commitOwner)
-                    TextField("Due", text: $dueDraft)
+                    TextField("Due", text: Binding(get: { dueDraft.text }, set: { dueDraft.userTyped($0) }))
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 130)
                         .focused($focus, equals: .due)
@@ -4671,8 +4681,19 @@ private struct ActionItemCard: View {
         .background(.background.opacity(0.4), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(.separator.opacity(0.6)))
         .onAppear {
-            ownerDraft = item.owner ?? ""
-            dueDraft = item.due ?? ""
+            ownerDraft = SharedFieldDraft(stored: item.owner ?? "")
+            dueDraft = SharedFieldDraft(stored: item.due ?? "")
+        }
+        // A change made in another window: followed, as the title is (F676, F811).
+        .onChange(of: item.owner) { _, owner in
+            if MeetingFieldSync.committedFieldLibraryChanged(&ownerDraft, to: owner ?? "", focused: focus == .owner) {
+                focus = nil
+            }
+        }
+        .onChange(of: item.due) { _, due in
+            if MeetingFieldSync.committedFieldLibraryChanged(&dueDraft, to: due ?? "", focused: focus == .due) {
+                focus = nil
+            }
         }
         // Commit on Return (onSubmit above), on focus loss (a field the user leaves by clicking the
         // checkbox / Play source / another field), and on teardown — the detail view is `.id(meetingID)`,
@@ -4688,20 +4709,19 @@ private struct ActionItemCard: View {
         }
     }
 
-    /// Commit guarded on an actual change so leaving an untouched field doesn't rewrite the index.
+    /// Writes only what was typed in this card (F676), so a card in a second window that was never
+    /// touched cannot write its old value back over a change made in the first; then shows the
+    /// library's value, as the title's `commit()` does.
     private func commitOwner() {
-        let value = normalized(ownerDraft)
-        if value != item.owner { onCommitOwner(value) }
+        MeetingFieldSync.commitActionItemField(&ownerDraft, stored: current()?.owner,
+                                               write: onCommitOwner, readBack: { current()?.owner })
+        ownerDraft.libraryChanged(to: current()?.owner ?? "", isEditingHere: false)
     }
 
     private func commitDue() {
-        let value = normalized(dueDraft)
-        if value != item.due { onCommitDue(value) }
-    }
-
-    private func normalized(_ text: String) -> String? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        MeetingFieldSync.commitActionItemField(&dueDraft, stored: current()?.due,
+                                               write: onCommitDue, readBack: { current()?.due })
+        dueDraft.libraryChanged(to: current()?.due ?? "", isEditingHere: false)
     }
 }
 
@@ -5263,9 +5283,13 @@ private struct EditableMeetingTitle: View {
             .onChange(of: focused) { _, isFocused in
                 if !isFocused { commit() }
             }
-            // A rename in another window: follow it unless this field holds typing of its own or has the cursor (F675).
+            // A rename in another window: follow it unless this field holds typing of its own (F564).
+            // With the cursor in it and nothing typed, give the cursor up (F811): the focus change
+            // commits nothing and catches up, so the user never types onto the old title.
             .onChange(of: store.meeting(id: meetingID)?.title) { _, title in
-                draft.libraryChanged(to: title ?? "", isEditingHere: isBeingEdited)
+                if MeetingFieldSync.committedFieldLibraryChanged(&draft, to: title ?? "", focused: isBeingEdited) {
+                    focused = false
+                }
             }
             .onDisappear(perform: commit)
     }
