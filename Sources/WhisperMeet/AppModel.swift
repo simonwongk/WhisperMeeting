@@ -661,6 +661,11 @@ final class AppModel: ObservableObject {
     /// delete files a backup is reading, and a backup must not start while Shrink deletes.
     @Published private(set) var isBackingUp = false
     @Published var storageFacts: [UUID: MeetingStoragePlan.DiskFacts] = [:]
+    /// How many `refreshStorage` calls have started, and which one published each meeting's current
+    /// `storageFacts` (F802), so an older refresh finishing last cannot replace a newer one's
+    /// reading, nor any refresh a reading Shrink wrote while it measured. Set only by `refreshStorage`.
+    var storageRefreshCount = 0
+    var storageFactsByRefresh: [UUID: (sequence: Int, facts: MeetingStoragePlan.DiskFacts?)] = [:]
     /// The refusals Shrink found only after a whole encode and remembers for the session, by meeting: a file whose
     /// two channels cancel when mixed into one, with that file's identity then (F1006). While the file is unchanged
     /// the refusal is the meeting's reason up front, so nothing is encoded again only to be refused again.

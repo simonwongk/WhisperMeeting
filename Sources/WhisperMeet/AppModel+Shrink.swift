@@ -37,13 +37,43 @@ extension AppModel {
 
     /// Measures these meetings off the main actor and caches what the disk says. Facts for meetings
     /// no longer in the index are dropped.
+    ///
+    /// **One publish per call (F802).** It used to assign `storageFacts[id]` per meeting, so the
+    /// Settings row and the Storage sheet, which each measure the whole library when they appear,
+    /// published once per meeting to every view observing the model. The readings are collected and
+    /// assigned together.
+    ///
+    /// **A Shrink's reading wins (F802).** Every reading is taken across a suspension, and a Shrink can
+    /// run in between: the meeting page re-measures when `recordingPath` changes mid-shrink, and a
+    /// reading of the originals taken then landed after `shrinkOne`'s final one, so a just-shrunk
+    /// meeting showed its deleted files and an enabled Shrink… right after "Shrunk". So a meeting is
+    /// not measured while it is being shrunk, and a reading is dropped when the meeting's facts were
+    /// changed while it was taken by anything but an older refresh: a Shrink writes its own readings
+    /// (`shrinkOne`), each at least as new as this one. A newer refresh's reading is kept over an
+    /// older one's whichever finishes last.
     func refreshStorage(ids: [UUID]) async {
-        let indexed = Set(store.meetings.map(\.id))
-        for stale in storageFacts.keys where !indexed.contains(stale) { storageFacts[stale] = nil }
-        for id in ids {
-            guard let meeting = store.meeting(id: id) else { storageFacts[id] = nil; continue }
-            storageFacts[id] = await diskFacts(for: meeting)
+        storageRefreshCount += 1
+        let sequence = storageRefreshCount
+        var readings: [UUID: (before: MeetingStoragePlan.DiskFacts?, after: MeetingStoragePlan.DiskFacts?)] = [:]
+        for id in ids where shrinkRunningID != id {
+            let before = storageFacts[id]
+            guard let meeting = store.meeting(id: id) else { readings[id] = (before, nil); continue }
+            readings[id] = (before, await diskFacts(for: meeting))
         }
+        var facts = storageFacts
+        for (id, reading) in readings where shrinkRunningID != id {
+            let current = facts[id]
+            let changedOnlyByAnOlderRefresh = storageFactsByRefresh[id].map {
+                $0.sequence < sequence && $0.facts == current
+            } ?? false
+            guard current == reading.before || changedOnlyByAnOlderRefresh else { continue }
+            facts[id] = reading.after
+            storageFactsByRefresh[id] = (sequence, reading.after)
+        }
+        let indexed = Set(store.meetings.map(\.id))
+        for stale in facts.keys where !indexed.contains(stale) { facts[stale] = nil }
+        for stale in storageFactsByRefresh.keys where !indexed.contains(stale) { storageFactsByRefresh[stale] = nil }
+        if facts != storageFacts { storageFacts = facts }
     }
 
     /// Why Shrink can't run for this meeting now, or nil when it can.
