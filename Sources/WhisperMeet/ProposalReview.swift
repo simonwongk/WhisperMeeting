@@ -30,6 +30,12 @@ struct ProposalReview: Identifiable, Equatable {
     static let pageSize = 200
 
     init(proposals: [GlossaryCorrection], source: Source) {
+        // In line order, each line's rows in the order given (F818, round 2): Correct with Local AI
+        // lists rows by correction and then by line, so the model's two readings of one word could
+        // sit 200 rows apart and land on different pages, neither page seeing the other.
+        let proposals = proposals.enumerated()
+            .sorted { ($0.element.segmentIndex, $0.offset) < ($1.element.segmentIndex, $1.offset) }
+            .map(\.element)
         self.proposals = proposals
         self.source = source
         var pages: [Range<Int>] = []
@@ -89,11 +95,12 @@ struct ProposalReview: Identifiable, Equatable {
     }
 
     /// Whether the sheet's Select All button reads Deselect All: every place on the page (all of the
-    /// review by default) that Select All would tick has a tick, and something is ticked (F817, F966).
+    /// review by default) with a row Select All may tick has a tick — any of its rows, a hand-ticked
+    /// sound-alike one too — and something is ticked (F817, F966).
     func allTicked(_ selected: Set<Int>, on page: Range<Int>? = nil, groups: [Int: Int] = [:]) -> Bool {
         let rows = Set(page ?? proposals.indices)
         guard !selected.isDisjoint(with: rows) else { return false }
-        return Self.places(of: selectableAll.intersection(rows), groups: groups).allSatisfy { !selected.isDisjoint(with: $0) }
+        return selectablePlaces(of: rows, groups: groups).allSatisfy { !selected.isDisjoint(with: $0) }
     }
 
     /// The ticks after the Select All / Deselect All button (F817), on one page (F818; all of the
@@ -104,11 +111,16 @@ struct ProposalReview: Identifiable, Equatable {
         let rows = Set(page ?? proposals.indices)
         if allTicked(selected, on: page, groups: groups) { return selected.subtracting(rows) }
         var result = selected
-        for place in Self.places(of: selectableAll.intersection(rows), groups: groups)
-        where result.isDisjoint(with: place) {
-            if let first = place.min() { result.insert(first) }
+        for place in selectablePlaces(of: rows, groups: groups) where result.isDisjoint(with: place) {
+            if let first = place.intersection(selectableAll).min() { result.insert(first) }
         }
         return result
+    }
+
+    /// `rows` grouped by place, keeping the places with a row Select All may tick. Built from every
+    /// row, so a hand-ticked row Select All may not tick still stands for its place (F966, round 2).
+    private func selectablePlaces(of rows: Set<Int>, groups: [Int: Int]) -> [Set<Int>] {
+        Self.places(of: rows, groups: groups).filter { !$0.isDisjoint(with: selectableAll) }
     }
 
     /// `rows` grouped by place: each group of alternatives together, every other row alone.

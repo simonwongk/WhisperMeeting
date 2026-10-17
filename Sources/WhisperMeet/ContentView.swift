@@ -4820,8 +4820,11 @@ private struct GlossarySuggestionSheet: View {
     /// The page shown (F818): a review of thousands of rows is shown `ProposalReview.pageSize` at a
     /// time. Ticks are kept across pages, and Apply applies every tick.
     @State private var page = 0
-    /// Pages whose warnings, sentences and alternatives are known and whose rows were preselected.
+    /// Pages whose sentences are known.
     @State private var loadedPages: Set<Int> = []
+    /// Whether the whole review's warnings, alternatives and Keep Together offers are known and its
+    /// rows preselected (F818, F966, round 2). Nothing can be ticked or applied until then.
+    @State private var loaded = false
     /// The proposals that touch a vocabulary term, worked out per page off the main actor (F536,
     /// F818). This was asked per row on every render and in `init`, which SwiftUI re-runs whenever
     /// the parent redraws: 2–12 s per pass over 50 proposals against 5,000 terms.
@@ -4918,7 +4921,7 @@ private struct GlossarySuggestionSheet: View {
                             }
                         }
                     }
-                    .disabled(keptWord(for: index) != nil)
+                    .disabled(!loaded || keptWord(for: index) != nil)
                     // F816: beside a rule row whose change sits inside a longer word, outside the
                     // toggle so a click is the button's.
                     if let word = keptWord(for: index) {
@@ -4967,7 +4970,7 @@ private struct GlossarySuggestionSheet: View {
                     selected = review.toggledAll(selected, on: review.pages[page], groups: groups)
                         .subtracting(keptRows)
                 }
-                .disabled(review.selectableAll.isEmpty && selected.isEmpty)
+                .disabled(!loaded || (review.selectableAll.isEmpty && selected.isEmpty))
                 Spacer()
                 // F537: Escape and Return.
                 Button("Cancel") { dismiss() }
@@ -4979,15 +4982,17 @@ private struct GlossarySuggestionSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(selected.isEmpty)
+                .disabled(!loaded || selected.isEmpty)
             }
             .padding()
         }
         .frame(width: 440, height: 540)
         // F245's pre-selection — everything except a proposal that touches a term, and (F536) a
-        // Chinese near-miss from Correct Toward Vocabulary, one row per place (F966) — once a page's
-        // touching set is known. Until then nothing on it is ticked.
-        .task(id: page) { await load(page) }
+        // Chinese near-miss from Correct Toward Vocabulary, one row per place (F966) — over the whole
+        // review once it is known, as before pages (F818, round 2: a page never opened used to add
+        // nothing to Apply). Each page's sentences when it is first shown.
+        .task { await loadReview() }
+        .task(id: page) { await loadSentences(page) }
     }
 
     /// The word kept together from this sheet that row `index` sits inside, if any (F816).
@@ -5012,31 +5017,32 @@ private struct GlossarySuggestionSheet: View {
         selected.subtract(keptRows)
     }
 
-    /// Works out one page's warnings, alternatives and sentences, off the main actor, the first time
-    /// it is shown, and ticks its preselected rows (F818).
-    private func load(_ page: Int) async {
+    /// Works out the whole review's warnings, alternatives and Keep Together offers, off the main
+    /// actor, and ticks its preselected rows (F245, F966, F816; F818 round 2).
+    private func loadReview() async {
+        let all = proposals
+        let terms = protectedTerms
+        let found = await Task.detached(priority: .userInitiated) {
+            GlossaryReviewDefaults.touching(all, protectedTerms: terms)
+        }.value
+        let foundGroups = await alternatives(all)
+        if review.source == .replacementRules {
+            for (index, words) in await longerWords(all).enumerated() where !words.isEmpty {
+                offers[index] = words
+            }
+        }
+        touching = found
+        groups = foundGroups
+        selected = review.preselected(touching: found, groups: foundGroups).subtracting(keptRows)
+        loaded = true
+    }
+
+    /// Works out one page's sentences, off the main actor, the first time it is shown (F952, F818).
+    private func loadSentences(_ page: Int) async {
         guard !loadedPages.contains(page) else { return }
         loadedPages.insert(page)
         let rows = review.pages[page]
         let slice = Array(proposals[rows])
-        let terms = protectedTerms
-        let found = await Task.detached(priority: .userInitiated) {
-            GlossaryReviewDefaults.touching(slice, protectedTerms: terms)
-        }.value
-        let pageTouching = Set(found.map { $0 + rows.lowerBound })
-        let local = await alternatives(slice)
-        var pageGroups: [Int: Int] = [:]
-        for (row, first) in local { pageGroups[row + rows.lowerBound] = first + rows.lowerBound }
-        touching.formUnion(pageTouching)
-        groups.merge(pageGroups) { _, new in new }
-        if review.source == .replacementRules {
-            for (offset, words) in await longerWords(slice).enumerated() where !words.isEmpty {
-                offers[rows.lowerBound + offset] = words
-            }
-        }
-        selected.formUnion(review.preselected(touching: pageTouching, on: rows, groups: pageGroups))
-        selected.subtract(keptRows)
-        // F952: the page's sentences once, off the main actor, after the ticks are known.
         let pageSentences = await contexts(slice)
         for (offset, context) in pageSentences.enumerated() {
             if let context { sentences[rows.lowerBound + offset] = context }

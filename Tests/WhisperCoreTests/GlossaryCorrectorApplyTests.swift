@@ -131,3 +131,18 @@ func rowsForOnePlaceAreAlternatives() {
     #expect(GlossaryCorrector.apply(rows, to: segments).map(\.text) == ["the Kestrel build and the Kestrel fix", "Jonathan said hi"])
     #expect(GlossaryCorrector.alternatives(of: [rows[3]], in: segments).isEmpty)
 }
+
+@Test("Two places that touch with no gap are two places, not alternatives (F966, round 2)")
+func touchingPlacesAreNotAlternatives() {
+    // The review of lane E: grouping places that merely touch survived every F966 test. In Chinese
+    // text, where words meet with no space, that is the common case — 会议 and 纪要 are two changes.
+    let segments = [line("整理会议纪要")]
+    let rows = [
+        GlossaryCorrection(segmentIndex: 0, from: "会议", to: "会议室"),
+        GlossaryCorrection(segmentIndex: 0, from: "纪要", to: "记要"),
+        GlossaryCorrection(segmentIndex: 0, from: "会议纪", to: "会议记"),
+    ]
+    // 会议 is characters 2..<4 and 纪要 4..<6: they touch. 会议纪 (2..<5) overlaps both.
+    #expect(GlossaryCorrector.alternatives(of: Array(rows.prefix(2)), in: segments).isEmpty)
+    #expect(GlossaryCorrector.alternatives(of: rows, in: segments) == [0: 0, 1: 0, 2: 0])
+}

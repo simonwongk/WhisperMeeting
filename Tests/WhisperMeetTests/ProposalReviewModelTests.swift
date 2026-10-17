@@ -88,3 +88,42 @@ func appFindsAlternatives() async throws {
     let rows = [row(0, "Kestral", "Kestrel"), row(0, "Kestral", "Kestrol")]
     #expect(await model.proposalAlternatives(rows, in: id) == [0: 0, 1: 0])
 }
+
+@Test("Rows for one place stay on one page even when a source lists them apart, as Correct with Local AI does (F818, round 2)")
+func rowsForOnePlaceStayOnOnePageWhateverTheirOrder() {
+    // The review of lane E, finding 5: the local model's rows come by correction, then by line, so
+    // its two readings of one word were rows 199 and 201 and landed on different pages, where
+    // neither page saw the other as its alternative.
+    let unsorted: [GlossaryCorrection] = (0..<199).map { row($0 + 1, "w", "t") }
+        + [row(0, "Kestral", "Kestrel"), row(500, "x", "y"), row(0, "Kestral", "Kestrol")]
+    let review = ProposalReview(proposals: unsorted, source: .localModel)
+    let kestral = review.proposals.indices.filter { review.proposals[$0].segmentIndex == 0 }
+    #expect(kestral.count == 2)
+    #expect(review.pages.filter { page in kestral.contains(where: page.contains) }.count == 1)
+    // Line order, and each line's rows in the order the source gave them.
+    #expect(review.proposals.map(\.segmentIndex) == review.proposals.map(\.segmentIndex).sorted())
+    #expect(review.proposals.prefix(2).map(\.to) == ["Kestrel", "Kestrol"])
+}
+
+@Test("A place whose rows Select All may not tick is still one place: a hand-ticked sound-alike row counts as its tick (F966, round 2)")
+func handTickedAlternativeCountsForItsPlace() {
+    // The review of lane E, finding 7: places were built from the rows Select All may tick, so a
+    // hand-ticked Chinese alternative was invisible and Select All ticked the other row of its place too.
+    let mixed = ProposalReview(proposals: [row(0, "Kestrol", "Kestrel"), row(0, "Kestrol网关", "Kestrel网关")], source: .vocabulary)
+    let groups = [0: 0, 1: 0]
+    let handPicked = mixed.ticking(1, on: true, in: [0], groups: groups)
+    #expect(handPicked == [1])
+    #expect(mixed.allTicked(handPicked, groups: groups))
+    #expect(mixed.toggledAll([], groups: groups) == [0])
+}
+
+@Test("The sheet ticks the whole review when it opens, as before pages, and allows nothing until it has (F818, F966, round 2)")
+func sheetPreselectsTheWholeReviewBeforeAnythingCanBeApplied() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    // Finding 6: a page never opened contributed nothing to Apply. Finding 7: Select All and Apply
+    // ran before a page's alternatives were known.
+    #expect(source.contains("selected = review.preselected(touching: found, groups: foundGroups).subtracting(keptRows)"))
+    #expect(source.contains(".task { await loadReview() }"))
+    #expect(source.contains(".disabled(!loaded || selected.isEmpty)"))
+    #expect(source.contains(".disabled(!loaded || (review.selectableAll.isEmpty && selected.isEmpty))"))
+}
