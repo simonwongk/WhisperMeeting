@@ -410,6 +410,15 @@ public final class RecordingHealthMonitor {
     /// the disk advice is dropped only when the disk is known not to be the problem.
     private var microphoneRunHitStorage = false
     private var systemAudioRunHitStorage = false
+    /// Whether any system-audio buffer has arrived, saved or not (F982). Detection only, never
+    /// staleness: `receive` runs only after a successful append, so a system track failing from its
+    /// first buffer never set `lastReceivedAt` and read as "not detected" as well as not saved, and
+    /// the saved report then blamed the source for audio the app failed to save. A failing track is
+    /// still not a track that is being saved, so `lastReceivedAt` stays what staleness reads (F931).
+    private var systemAudioArrived = false
+
+    /// Whether system audio has ever arrived, whether or not it was saved (F982).
+    private var systemAudioDetected: Bool { systemAudioArrived || systemAudio.lastReceivedAt != nil }
 
     // Accumulated across the capture for the post-meeting report (F58).
     private var seenWarnings: Set<RecordingHealthWarning> = []
@@ -503,7 +512,7 @@ public final class RecordingHealthMonitor {
                 warnings.append(.systemAudioCaptureStopped)
             }
         }
-        if systemAudio.lastReceivedAt == nil,
+        if !systemAudioDetected,
            time - startedAt >= systemDetectionGracePeriod {
             warnings.append(.systemAudioNotDetected)
         }
@@ -571,7 +580,7 @@ public final class RecordingHealthMonitor {
             worstStatus: worstStatus,
             microphoneStaleSeconds: microphoneStaleSeconds,
             systemAudioStaleSeconds: systemAudioStaleSeconds,
-            systemAudioEverDetected: systemAudio.lastReceivedAt != nil,
+            systemAudioEverDetected: systemAudioDetected,
             microphoneFramesMeasured: microphone.framesMeasured,
             microphoneFramesAtFullScale: microphone.framesAtFullScale,
             systemAudioFramesMeasured: systemAudio.framesMeasured,
@@ -605,6 +614,8 @@ public final class RecordingHealthMonitor {
             microphoneWriteFailures = succeeded ? 0 : microphoneWriteFailures + 1
             microphoneRunHitStorage = !succeeded && (microphoneRunHitStorage || storage)
         case .systemAudio:
+            // F982: a buffer reached the append, so system audio is there, saved or not.
+            systemAudioArrived = true
             systemAudioWriteFailures = succeeded ? 0 : systemAudioWriteFailures + 1
             systemAudioRunHitStorage = !succeeded && (systemAudioRunHitStorage || storage)
         }
