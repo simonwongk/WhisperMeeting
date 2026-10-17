@@ -1667,6 +1667,13 @@ final class AppModel: ObservableObject {
         RecordingFolderLiveness.openState(of: $0.path)
     }
 
+    /// The names of the processes holding a file open (F973), so the launch notice for a link
+    /// import left alone can say what to quit. Same F47 shape; defaults to the kernel's answer
+    /// (`RecordingFolderLiveness.holderNames(of:)`).
+    var importFileHolderNames: @Sendable (URL) -> [String] = {
+        RecordingFolderLiveness.holderNames(of: $0.path)
+    }
+
     /// Converts an interrupted link import's download into the `recording.wav` the import was
     /// making, and returns it (F453; `InterruptedLinkImportExtraction`). Injectable so startup
     /// recovery's handling is tested without ffmpeg. The default runs the user's ffmpeg, killed only
@@ -3812,7 +3819,10 @@ final class AppModel: ObservableObject {
                 for candidate in candidates where !live.contains(candidate.directory)
                     && MediaSource.read(in: candidate.directory) != nil {
                     let held = await importFilesHeldOpen(in: candidate.directory)
-                    if !held.isEmpty { live.insert(candidate.directory) }
+                    if !held.isEmpty {
+                        live.insert(candidate.directory)
+                        heldImportFiles[candidate.directory] = held
+                    }
                 }
                 if !live.isEmpty {
                     // F453: since the probe also watches an import's files, a live folder can be a
@@ -3820,11 +3830,29 @@ final class AppModel: ObservableObject {
                     // sidecar only a link import writes. Nothing adds it "when that recording
                     // stops"; the next launch after it finishes does, so it gets its own sentence.
                     let liveImports = live.filter { MediaSource.read(in: $0) != nil }
+                var heldImportFiles: [URL: [String]] = [:]
                     if liveImports.count < live.count {
                         messages.append(Self.recordingStillInProgress)
                     }
                     if !liveImports.isEmpty {
-                        messages.append(Self.linkImportStillBeingWritten)
+                        // F973: by the name of whatever holds its files, so a user with a stuck
+                        // writer knows what to quit. A folder found live by growth alone is asked
+                        // which of its files are held too.
+                        var holders = Set<String>()
+                        for directory in liveImports {
+                            let held: [String]
+                            if let known = heldImportFiles[directory] {
+                                held = known
+                            } else {
+                                held = await importFilesHeldOpen(in: directory)
+                            }
+                            let names = importFileHolderNames
+                            let found = await Task.detached(priority: .utility) {
+                                held.flatMap { names(directory.appendingPathComponent($0)) }
+                            }.value
+                            holders.formUnion(found)
+                        }
+                        messages.append(Self.linkImportStillBeingWritten(heldBy: holders.sorted()))
                     }
                 }
             }
@@ -5932,6 +5960,19 @@ final class AppModel: ObservableObject {
     /// installed. Both import entry points — local file and link — call this, so there is exactly one
     /// place where a meeting becomes real (F183).
     ///
+    /// `linkImportStillBeingWritten`, naming the processes that hold the import's files (F973) —
+    /// yt-dlp, ffmpeg, another WhisperMeet — so a user with a stuck writer can tell what to quit.
+    /// The plain sentence when no holder could be named (found live by growth, or the holder exited
+    /// before its name was read).
+    static func linkImportStillBeingWritten(heldBy names: [String]) -> String {
+        guard !names.isEmpty else { return linkImportStillBeingWritten }
+        let quoted = names.map { "“\($0)”" }
+        let list = quoted.count == 1
+            ? quoted[0]
+            : quoted.dropLast().joined(separator: ", ") + " and " + quoted[quoted.count - 1]
+        return "A link import on this Mac is still being written by \(list), so it was left alone. Nothing was changed, and it will be added to your history the next time WhisperMeet opens after it finishes. If it seems stuck, quit \(list), and WhisperMeet will add it the next time it opens."
+    }
+
     /// It carries NO read-only guard of its own, and that is a deliberate dependency on its callers,
     /// not an oversight: `importRecordings` (for the batch) and `importOne` (for each file) call
     /// `libraryAcceptsChanges`, and `importFromURL` asks `libraryRefusal` (the same check, answered

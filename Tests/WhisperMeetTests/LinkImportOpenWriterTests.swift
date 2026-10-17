@@ -102,7 +102,11 @@ func aLinkImportHeldOpenIsLeftAlone() async throws {
     await model.performStartupRecovery()
 
     #expect(model.store.meetings.isEmpty, "a folder whose writer is alive was indexed: \(model.store.meetings.map(\.recordingPath))")
-    #expect(model.alertMessage?.contains(AppModel.linkImportStillBeingWritten) == true, "\(model.alertMessage ?? "nil")")
+    // F973: named by the kernel's own answer. The holder is `sh` with `sleep` as its child, both
+    // holding the WAV through the inherited descriptor; `sleep` is the one alive for the whole wait.
+    let alert = model.alertMessage ?? "nil"
+    #expect(alert.contains("A link import on this Mac is still being written by "), "\(alert)")
+    #expect(alert.contains("“sleep”"), "the notice does not name the process holding the import: \(alert)")
     #expect(try Data(contentsOf: wav) == before, "the WAV was touched")
     #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("recording.m4a").path))
 
@@ -114,4 +118,41 @@ func aLinkImportHeldOpenIsLeftAlone() async throws {
     await next.performStartupRecovery()
     let meeting = try #require(next.store.meeting(id: id), "the import was not recovered once nothing held it")
     #expect(meeting.recordingPath.hasSuffix("recording.m4a"), "indexed against \(meeting.recordingPath)")
+}
+
+@MainActor
+@Test("The launch notice names the process holding a link import's file, so the user knows what to quit (F973)")
+func theStillBeingWrittenNoticeNamesTheHolder() async throws {
+    let scratch = FileManager.default.temporaryDirectory
+        .appendingPathComponent("F973-\(UUID().uuidString)", isDirectory: true)
+    let root = scratch.appendingPathComponent("library", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: scratch) }
+    let folder = root.appendingPathComponent("Recordings/\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let source = MediaSource(
+        kind: MediaSource.webKind, pageURL: "https://example.com/watch?v=abc123", host: "example.com",
+        fetchedAt: Date(timeIntervalSince1970: 1_700_000_000)
+    )
+    try JSONEncoder().encode(source).write(to: folder.appendingPathComponent(MediaSource.sidecarFilename))
+    try writeM4A(seconds: 2, to: folder.appendingPathComponent("recording.m4a"))
+    try unfinishedWAV(seconds: 1).write(to: folder.appendingPathComponent("recording.wav"))
+
+    let model = makeModel(root: root)
+    // The stand-in: two processes hold the WAV, and nothing else is open.
+    model.importFileOpenState = { $0.lastPathComponent == "recording.wav" ? .held : .notHeld }
+    model.importFileHolderNames = { $0.lastPathComponent == "recording.wav" ? ["yt-dlp", "ffmpeg"] : [] }
+    await model.performStartupRecovery()
+
+    #expect(model.store.meetings.isEmpty, "a held import was indexed")
+    let alert = model.alertMessage ?? "nil"
+    #expect(alert.contains(AppModel.linkImportStillBeingWritten(heldBy: ["ffmpeg", "yt-dlp"])), "\(alert)")
+    #expect(alert.contains("still being written by “ffmpeg” and “yt-dlp”"), "\(alert)")
+    #expect(alert.contains("quit “ffmpeg” and “yt-dlp”"), "\(alert)")
+}
+
+@MainActor
+@Test("With no holder named, the notice is the plain sentence it always was (F973)")
+func theStillBeingWrittenNoticeWithoutAHolder() {
+    #expect(AppModel.linkImportStillBeingWritten(heldBy: []) == AppModel.linkImportStillBeingWritten)
+    #expect(AppModel.linkImportStillBeingWritten(heldBy: ["ffmpeg"]).contains("by “ffmpeg”, so it was left alone"))
 }

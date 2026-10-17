@@ -121,6 +121,31 @@ extension RecordingFolderLiveness {
         return bytes > 0 ? .held : .notHeld
     }
 
+    /// The names of the processes holding the file at `path` open, sorted and without repeats, as
+    /// `openState(of:)` finds them (F973) — so a notice can say what to quit (yt-dlp, ffmpeg, another
+    /// WhisperMeet). Empty when nothing holds it, when the kernel cannot be asked, or when a holder
+    /// has exited before its name is read. A name is the process's own (`proc_name`), at most 32
+    /// characters, never a path.
+    public static func holderNames(of path: String) -> [String] {
+        var pids = [pid_t](repeating: 0, count: 1_024)
+        let bytes = pids.withUnsafeMutableBytes { buffer in
+            proc_listpidspath(
+                UInt32(PROC_ALL_PIDS), 0, path, UInt32(PROC_LISTPIDSPATH_EXCLUDE_EVTONLY),
+                buffer.baseAddress, Int32(buffer.count)
+            )
+        }
+        guard bytes > 0 else { return [] }
+        let count = min(pids.count, Int(bytes) / MemoryLayout<pid_t>.size)
+        var names = Set<String>()
+        for pid in pids.prefix(count) where pid > 0 {
+            var buffer = [CChar](repeating: 0, count: 256)
+            guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0 else { continue }
+            let name = String(cString: buffer).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty { names.insert(name) }
+        }
+        return names.sorted()
+    }
+
     /// The import files in `directory` — the `recording.*` names `sample` watches — that some process
     /// has open, in name order (F946).
     ///
