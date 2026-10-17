@@ -1881,6 +1881,12 @@ struct SettingsView: View {
                         Text(language.displayName).tag(language)
                     }
                 }
+                // F847: the script Chinese dictation is written in, whatever the recognizer chose.
+                Picker("Chinese script", selection: $dictation.chineseScript) {
+                    ForEach(DictationChineseScript.allCases, id: \.self) { script in
+                        Text(script.displayName).tag(script)
+                    }
+                }
                 Toggle("Paste into the focused field (else copy to clipboard)", isOn: $dictation.autoPaste)
                 Toggle("Use business vocabulary for dictation", isOn: $dictation.useVocabulary)
                     .disabled(!dictation.selectedEngine.supportsVocabularyPrompt)

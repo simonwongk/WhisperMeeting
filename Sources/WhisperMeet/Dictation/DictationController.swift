@@ -66,6 +66,11 @@ final class DictationController: ObservableObject {
     /// Whether Quick Dictation feeds the business vocabulary into Whisper's initial prompt. On by
     /// default (same spelling nudge meetings get); can be turned off for plain dictation.
     @Published var useVocabulary: Bool { didSet { persist() } }
+    /// Which Chinese script dictation writes (F847, the user's decision of 2026-10-16). Saved only
+    /// when the user picks one, so until then it keeps following the Mac's preferred language.
+    @Published var chineseScript: DictationChineseScript {
+        didSet { defaults.set(chineseScript.rawValue, forKey: Self.chineseScriptKey) }
+    }
     /// F200: opt-in local-AI cleanup of dictated text before delivery. Off by default — the
     /// documented "local-instant feel" stays untouched unless the user chooses the trade.
     @Published var refineEnabled: Bool { didSet { persist(); applyRefineSetting() } }
@@ -284,6 +289,7 @@ final class DictationController: ObservableObject {
     private static let languageKey = "dictationLanguage"
     private static let autoPasteKey = "dictationAutoPaste"
     private static let useVocabularyKey = "dictationUseVocabulary"
+    private static let chineseScriptKey = "dictationChineseScript"
     private static let engineKey = "dictationTranscriptionEngine"
 
     /// The `Application Support` folder whose runtimes the helper sync looks at (F879). nil is the
@@ -347,6 +353,10 @@ final class DictationController: ObservableObject {
         language = WhisperLanguage(rawValue: defaults.string(forKey: Self.languageKey) ?? "") ?? .automatic
         autoPaste = defaults.object(forKey: Self.autoPasteKey) as? Bool ?? true
         useVocabulary = defaults.object(forKey: Self.useVocabularyKey) as? Bool ?? true
+        // F847: the user's choice, else the Mac's preferred language — but never the host's in a
+        // test process (F442's rule), where an unset choice reads As heard.
+        chineseScript = DictationChineseScript(rawValue: defaults.string(forKey: Self.chineseScriptKey) ?? "")
+            ?? (TestProcess.isRunning ? .asHeard : DictationChineseScript.preferred(byLanguages: Locale.preferredLanguages))
         refineEnabled = defaults.object(forKey: Self.refineEnabledKey) as? Bool ?? false
         armedHotkey = hotkey
         self.overlay.onCopy = { [weak self] in self?.copyHeldSecureDictation() }
@@ -1460,6 +1470,8 @@ final class DictationController: ObservableObject {
         // is the engine that writes 王老师 as "Wang老师" — but only while the user lets dictation
         // use the vocabulary.
         let transliterationTerms = useVocabulary ? knownTermsProvider() : []
+        // F847: the script the user chose, as it is when this dictation ended.
+        let chineseScript = self.chineseScript
         let refinerRelease = refinerReleaseForCapture
         let gpuUtilization = self.gpuUtilization
         let clock = self.dictationClock
@@ -1525,11 +1537,14 @@ final class DictationController: ObservableObject {
                 // so the refiner sees, and must keep, the user's own term. The history keeps what
                 // the recognizer heard in `rawText`.
                 let recognized = cleaned
-                // Off the main actor, like the replacement rules below: the whole vocabulary can be
-                // thousands of terms (the review measured 21 ms for 1,000).
-                if !transliterationTerms.isEmpty {
+                // F847 first, so a vocabulary term is matched in the script the user writes. Off the
+                // main actor, like the replacement rules below: the whole vocabulary can be thousands
+                // of terms (the review measured 21 ms for 1,000).
+                if chineseScript != .asHeard || !transliterationTerms.isEmpty {
                     cleaned = await Task.detached {
-                        TransliteratedTermCorrection.corrected(recognized, terms: transliterationTerms)
+                        TransliteratedTermCorrection.corrected(
+                            chineseScript.converted(recognized), terms: transliterationTerms
+                        )
                     }.value
                 }
                 var rawText: String? = cleaned == recognized ? nil : recognized
