@@ -41,7 +41,11 @@ func theLeadingWarningIsTheWorstByRank() {
     #expect(RecordingHUD.leadingWarning(in: [.systemAudioClipping, .lowStorage, .systemAudioNotDetected]) == .lowStorage)
     // A tie keeps the first, as `RecordingHUD.topWarning` always has, so the panel and the HUD
     // cannot disagree about which of two rank-0 warnings leads.
-    #expect(RecordingHUD.leadingWarning(in: [.microphoneCaptureStopped, .captureWritesFailing]) == .microphoneCaptureStopped)
+    #expect(RecordingHUD.leadingWarning(in: [.microphoneCaptureStopped, .systemAudioCaptureStopped]) == .microphoneCaptureStopped)
+    #expect(RecordingHUD.leadingWarning(in: [.systemAudioCaptureStopped, .microphoneCaptureStopped]) == .systemAudioCaptureStopped)
+    // Except the write failure, which leads a stopped warning in either order (F984): together they
+    // mean nothing is being saved (`NothingSavedLeadsTests`).
+    #expect(RecordingHUD.leadingWarning(in: [.microphoneCaptureStopped, .captureWritesFailing]) == .captureWritesFailing)
     #expect(RecordingHUD.leadingWarning(in: [.captureWritesFailing, .microphoneCaptureStopped]) == .captureWritesFailing)
     #expect(RecordingHUD.leadingWarning(in: []) == nil)
     // Every warning alone leads itself.

@@ -58,8 +58,18 @@ public enum RecordingHUD {
     /// so with no system audio yet and the microphone's writes failing it led with "No system audio
     /// has been detected yet…" under a headline saying the recording needed attention, while the
     /// HUD, the banner, the menu bar and the announcement all led with the write failure.
+    ///
+    /// One exception to "the first of a tie" (F984): `.captureWritesFailing` leads a stopped-capture
+    /// warning it ties with. Since F931 a stopped warning is never raised for a track whose own writes
+    /// are failing, so the two together always mean one track is not being saved and the other has
+    /// stopped: nothing at all is being saved, and the sentence that says so, and says to stop, is
+    /// the one to lead with. Array order put "System audio capture stopped" first there.
     public static func leadingWarning(in warnings: [RecordingHealthWarning]) -> RecordingHealthWarning? {
-        warnings.min(by: { rank($0) < rank($1) })
+        guard let worst = warnings.min(by: { rank($0) < rank($1) }) else { return nil }
+        if rank(worst) == rank(.captureWritesFailing), warnings.contains(.captureWritesFailing) {
+            return .captureWritesFailing
+        }
+        return worst
     }
 
     /// Severity rank (lower = worse). Consistent with `RecordingHealthSnapshot.overallStatus`, which

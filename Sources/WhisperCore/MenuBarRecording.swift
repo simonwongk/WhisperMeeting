@@ -73,9 +73,10 @@ public enum MenuBarRecording {
         isStopping: Bool,
         health: RecordingHealthSnapshot?
     ) -> String? {
+        // `leadingWarning`, not a `min(by:)` of its own (F984): a second copy of the selector kept
+        // array order on a tie after the shared one stopped doing so for the write failure.
         guard isAtRisk(isRecording: isRecording, isStopping: isStopping, health: health),
-              let worst = health?.warnings.filter(\.isAtRisk)
-                  .min(by: { RecordingHUD.rank($0) < RecordingHUD.rank($1) }) else {
+              let worst = RecordingHUD.leadingWarning(in: health?.warnings.filter(\.isAtRisk) ?? []) else {
             return nil
         }
         let line = RecordingHUD.message(
@@ -179,7 +180,10 @@ public struct RecordingRiskAnnouncer: Sendable {
                 warning, writeFailureCause: snapshot.writeFailureCause, unsavedTrack: snapshot.unsavedTrack
             ))
         }.filter { !announced.contains($0.line) }
-        guard let worst = fresh.min(by: { RecordingHUD.rank($0.warning) < RecordingHUD.rank($1.warning) }) else {
+        // The same selector as every live surface (F984), so with nothing being saved the
+        // notification says "not being saved — stop" first too, rather than one tick later.
+        guard let lead = RecordingHUD.leadingWarning(in: fresh.map(\.warning)),
+              let worst = fresh.first(where: { $0.warning == lead }) else {
             return nil
         }
         // Only the one announced is marked, so a second problem hidden behind it still gets its turn.
