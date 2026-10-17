@@ -416,3 +416,51 @@ func meetingViewOpensHeldProposals() throws {
     // the sheet with it.
     #expect(!source.contains("proposalReviews.present(ProposalReview(proposals: proposals"))
 }
+
+@MainActor
+@Test("Proposals held for a meeting are dropped when the meeting is deleted, and dropped with a message when its lines change (F1000, round 2)")
+func heldProposalsGoWithTheirMeetingAndItsLines() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ReplacementRuleWiringTests-heldgone-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+    model.store.addReplacementRule(heard: "jon", preferred: "Jonathan")
+    // No meeting is on screen, so each finished pass is held and said.
+    let edited = meeting(model, lines: ["um um", "jon said hi"])
+    await model.reviewReplacementRules(for: edited)
+    #expect(model.heldProposals[edited] != nil)
+    model.alertMessage = nil
+    // The lines change before the user comes back (an edit in another window, Remove Lines…): the
+    // held rows describe text that is gone, so they are dropped and the user is told.
+    _ = model.removeTranscriptLines(at: IndexSet([0]), from: edited)
+    #expect(model.takeHeldProposals(for: edited) == nil)
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("changed") && message.contains("Apply Replacement Rules"))
+    #expect(model.heldProposals[edited] == nil)
+
+    // A deleted meeting takes its held proposals with it.
+    let deleted = meeting(model, lines: ["jon said hi"])
+    await model.reviewReplacementRules(for: deleted)
+    #expect(model.heldProposals[deleted] != nil)
+    model.deleteMeetings(ids: [deleted])
+    #expect(model.heldProposals[deleted] == nil)
+}
+
+@MainActor
+@Test("A Correct Toward Vocabulary pass that finishes after the user switched meetings is held and said, as the rules pass is (F1000, round 2)")
+func vocabularyPassFinishingAfterASwitchIsKeptAndSaid() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ReplacementRuleWiringTests-vocabswitch-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+    model.store.addVocabulary(["Kestrel"])
+    let id = meeting(model, lines: ["the Kestrol build"])
+    let other = meeting(model, lines: ["nothing here"])
+    model.meetingDetailAppeared(other)
+    await model.reviewGlossaryCorrections(for: id)
+    let message = try #require(model.alertMessage)
+    #expect(message.contains("Correct Toward Vocabulary") && message.contains("1 proposal"))
+    let held = try #require(model.takeHeldProposals(for: id))
+    #expect(held.source == .vocabulary)
+    #expect(held.proposals.map(\.from) == ["Kestrol"])
+}

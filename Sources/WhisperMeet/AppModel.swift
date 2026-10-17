@@ -6623,6 +6623,8 @@ final class AppModel: ObservableObject {
         let removed = store.delete(ids: ids)
         let gone = Set(removed).union(ids.filter(isNoLongerListed))
         stopJobs(ofMeetingsGone: gone)
+        // F1000 round 2: a deleted meeting's held proposals go with it.
+        for id in gone { heldProposals.removeValue(forKey: id) }
         return gone
     }
 
@@ -6642,6 +6644,8 @@ final class AppModel: ObservableObject {
         ]
         running.formUnion(auxiliary.compactMap { $0 })
         stopJobs(ofMeetingsGone: running.filter(isNoLongerListed))
+        // F1000 round 2: and a meeting the re-read no longer lists loses its held proposals.
+        for id in heldProposals.keys where isNoLongerListed(id) { heldProposals.removeValue(forKey: id) }
     }
 
     /// Whether a meeting has left the library, as far as its jobs are concerned (F666, F713): not
@@ -7052,18 +7056,35 @@ final class AppModel: ObservableObject {
         )
     }
 
-    /// The proposals held for meeting `id`, removed so one sheet opens them, or nil.
+    /// The proposals held for meeting `id`, removed so one sheet opens them, or nil. Nil, and
+    /// dropped, when the meeting is gone — and when any of its rows' lines changed since the pass
+    /// (an edit in another window, Remove Lines…, Transcribe Again): the sheet would ask for a
+    /// review of text that no longer exists, so the user is told to run the pass again (F1000,
+    /// round 2; `apply` would also skip such rows, F971).
     func takeHeldProposals(for id: UUID) -> HeldProposals? {
-        heldProposals.removeValue(forKey: id)
+        guard let held = heldProposals.removeValue(forKey: id), let meeting = store.meeting(id: id) else { return nil }
+        guard GlossaryCorrector.rowsOnChangedLines(held.proposals, in: meeting.segments).isEmpty else {
+            alertMessage = Self.heldProposalsOnChangedLinesMessage(source: held.source)
+            return nil
+        }
+        return held
+    }
+
+    static func heldProposalsOnChangedLinesMessage(source: ProposalReview.Source) -> String {
+        let tool = toolName(source)
+        return "The transcript changed after \(tool) finished, so its proposals were not shown. Choose \(tool) again."
+    }
+
+    private static func toolName(_ source: ProposalReview.Source) -> String {
+        switch source {
+        case .vocabulary: "Correct Toward Vocabulary"
+        case .replacementRules: "Apply Replacement Rules"
+        case .localModel: "Correct with Local AI"
+        }
     }
 
     static func proposalsHeldMessage(count: Int, source: ProposalReview.Source, title: String) -> String {
-        let tool: String
-        switch source {
-        case .vocabulary: tool = "Correct Toward Vocabulary"
-        case .replacementRules: tool = "Apply Replacement Rules"
-        case .localModel: tool = "Correct with Local AI"
-        }
+        let tool = toolName(source)
         let rows = count == 1 ? "1 proposal" : "\(count) proposals"
         return "\(tool) finished for \u{201C}\(title)\u{201D} after you left it. Open that meeting to review its \(rows)."
     }
