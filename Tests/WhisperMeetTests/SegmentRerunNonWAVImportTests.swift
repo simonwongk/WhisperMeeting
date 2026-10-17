@@ -109,6 +109,37 @@ func segmentReRunOfACAFImportHearsTheLine() async throws {
     #expect(try Data(contentsOf: recording) == before, "the recording was modified")
 }
 
+// The review of F660: decoding a compressed import's span is real work (AAC, MP3), and a line can be
+// minutes long — a long silence, or a Qwen line without alignment. It ran on the main actor, so the
+// window froze for the decode. The clip functions are nonisolated now, and the re-run calls them from
+// a detached task.
+@Test("A segment clip can be cut off the main actor, and the re-run cuts it there (F660)")
+func segmentClipsAreCutOffTheMainActor() async throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("F660-off-main-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let recording = dir.appendingPathComponent("memo.m4a")
+    try await writeFixtureRawTracks(to: recording, [[fixtureTone(frequency: 700, amplitude: 0.2, seconds: 3)]])
+
+    // Synchronous calls from a detached, nonisolated task: these compile only when the clip functions
+    // are not main-actor isolated (an `await` would hop to the main actor and hide it), and they decode
+    // on the task's own thread.
+    let clips = try await Task.detached { () -> [URL] in
+        #expect(!Thread.isMainThread)
+        let decoded = try AppModel.decodedSegmentClip(from: recording, startSeconds: 1, endSeconds: 2)
+        #expect(throws: SegmentReRunError.unsupportedRecordingFormat) {
+            try AppModel.makeSegmentClip(from: recording, startSeconds: 1, endSeconds: 2)
+        }
+        return [decoded]
+    }.value
+    defer { clips.forEach(AppModel.removeSegmentClip) }
+    #expect(clips.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+
+    let app = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppModel.swift")
+    #expect(app.contains("let clipURL = try await Task.detached(priority: .userInitiated) {\n                    try await Self.segmentClip(from: recordingURL,"),
+            "the re-run does not cut its clip in a detached task")
+}
+
 @MainActor
 @Test("A segment re-run of an import with several audio tracks is still refused, and says why (F660)")
 func segmentReRunOfASeveralTrackImportIsRefused() async throws {

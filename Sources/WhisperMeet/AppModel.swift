@@ -2924,9 +2924,13 @@ final class AppModel: ObservableObject {
         // must not idle-sleep partway through it.
         await withEngineActivityHeld(reason: "Re-transcribing a segment") {
             do {
-                let clipURL = try await Self.segmentClip(
-                    from: store.recordingURL(for: meeting), startSeconds: start, endSeconds: end
-                )
+                // Off the main actor (F660 review): a compressed import's span is decoded here, and a
+                // line can be minutes long. Detached rather than relying on `segmentClip` being
+                // nonisolated, so where it runs does not depend on the language mode's default.
+                let recordingURL = store.recordingURL(for: meeting)
+                let clipURL = try await Task.detached(priority: .userInitiated) {
+                    try await Self.segmentClip(from: recordingURL, startSeconds: start, endSeconds: end)
+                }.value
                 defer { Self.removeSegmentClip(clipURL) }
                 let result = try await executeEngine(selection, on: clipURL)
                 // A re-run can validly return text with no timestamped segments (alignment failure).
@@ -3056,7 +3060,7 @@ final class AppModel: ObservableObject {
     /// heard every track mixed (F942), and AVAudioFile reads the first one only, so a clip of it would be
     /// other audio than the line came from. A file AVFoundation cannot read at all is refused as before
     /// (`unsupportedRecordingFormat`). The recording is only read.
-    static func segmentClip(from recording: URL, startSeconds: Double, endSeconds: Double) async throws -> URL {
+    nonisolated static func segmentClip(from recording: URL, startSeconds: Double, endSeconds: Double) async throws -> URL {
         do {
             return try makeSegmentClip(from: recording, startSeconds: startSeconds, endSeconds: endSeconds)
         } catch SegmentReRunError.unsupportedRecordingFormat {
@@ -3081,7 +3085,7 @@ final class AppModel: ObservableObject {
     /// anything, and a stereo or 24-bit file used to be re-wrapped as mono — audio at the wrong time
     /// and the wrong speed, transcribed and spliced in with nothing said (F471). Anything else is
     /// decoded instead, span only, by `decodedSegmentClip` (F581).
-    static func makeSegmentClip(from wavURL: URL, startSeconds: Double, endSeconds: Double) throws -> URL {
+    nonisolated static func makeSegmentClip(from wavURL: URL, startSeconds: Double, endSeconds: Double) throws -> URL {
         let handle = try FileHandle(forReadingFrom: wavURL)
         defer { try? handle.close() }
         guard let magic = try handle.read(upToCount: 12), magic.count == 12 else {
@@ -3169,7 +3173,7 @@ final class AppModel: ObservableObject {
     /// The one raise the SDK headers name on this path is `AVAudioPCMBuffer`'s initializer, for a
     /// non-PCM format (`AVAudioBuffer.h`); a file's processing format is always PCM — deinterleaved
     /// float, which is also why `floatChannelData` is there to average.
-    static func decodedSegmentClip(from wavURL: URL, startSeconds: Double, endSeconds: Double) throws -> URL {
+    nonisolated static func decodedSegmentClip(from wavURL: URL, startSeconds: Double, endSeconds: Double) throws -> URL {
         let file: AVAudioFile
         do {
             file = try AVAudioFile(forReading: wavURL)
