@@ -1674,6 +1674,13 @@ final class AppModel: ObservableObject {
         RecordingFolderLiveness.holderNames(of: $0.path)
     }
 
+    /// Writes one indexed capture's missing `source-tracks.json` from the alignment its session kept
+    /// (F753), returning whether it wrote one. Injectable in the F47 shape; defaults to the real core
+    /// (`SourceTrackManifest.writeFromCapturedAlignment`), which writes nothing it cannot measure.
+    var retrySourceTrackManifest: @Sendable (URL) -> Bool = { directory in
+        (try? SourceTrackManifest.writeFromCapturedAlignment(in: directory)) ?? false
+    }
+
     /// Converts an interrupted link import's download into the `recording.wav` the import was
     /// making, and returns it (F453; `InterruptedLinkImportExtraction`). Injectable so startup
     /// recovery's handling is tested without ffmpeg. The default runs the user's ffmpeg, killed only
@@ -1681,26 +1688,26 @@ final class AppModel: ObservableObject {
     /// wait is `linkImportConversionWait`), and in a test process refuses as if none were installed
     /// (F442), so an unstubbed test never runs a real subprocess or depends on what the host has
     /// installed.
-    var finishInterruptedLinkImportExtraction: @Sendable (URL) async throws -> URL = { download in
-        guard TestProcess.allowsRealAccess(to: "ffmpeg") else { throw MediaDownloadError.ffmpegMissing }
-        return try await InterruptedLinkImportExtraction.finish(
-            download: download,
-            ffmpeg: MediaDownloadRuntime.findFFmpeg(),
-            outputStallTimeout: AppModel.linkImportConversionStallLimit
-        )
     ///
     /// A conversion whose output keeps growing is bounded too (F989): `timeLimit` is derived from the
     /// download's own length (`InterruptedLinkImportExtraction.conversionTimeLimit`), read the way
     /// recovery reads it elsewhere (AVAudioFile), or from its size when that cannot open it.
-    }
-
+    var finishInterruptedLinkImportExtraction: @Sendable (URL) async throws -> URL = { download in
+        guard TestProcess.allowsRealAccess(to: "ffmpeg") else { throw MediaDownloadError.ffmpegMissing }
         let downloadBytes = (try? FileManager.default.attributesOfItem(atPath: download.path)[.size] as? NSNumber)?.int64Value
-    /// How long startup recovery waits for one interrupted link import's conversion before leaving
-    /// it to finish in the background (F912). `linkImportConversionTimeLimit` in the app; a test
-    /// shortens it.
+        return try await InterruptedLinkImportExtraction.finish(
+            download: download,
+            ffmpeg: MediaDownloadRuntime.findFFmpeg(),
             timeLimit: InterruptedLinkImportExtraction.conversionTimeLimit(
                 downloadSeconds: DecodedAudio.declaredDuration(of: download), downloadBytes: downloadBytes
             ),
+            outputStallTimeout: AppModel.linkImportConversionStallLimit
+        )
+    }
+
+    /// How long startup recovery waits for one interrupted link import's conversion before leaving
+    /// it to finish in the background (F912). `linkImportConversionTimeLimit` in the app; a test
+    /// shortens it.
     var linkImportConversionWait: TimeInterval = AppModel.linkImportConversionTimeLimit
 
     /// Runs one reviewed source-tracks rebuild (F267/F459). Injectable in the same F47 shape as
@@ -3700,6 +3707,9 @@ final class AppModel: ObservableObject {
         // naming that offset (F568).
         // Awaited, but the sweep itself runs detached off the main actor — see the store.
         await store.backfillNotesSidecars()
+        // F753: an indexed capture whose `stop()` failed to write `source-tracks.json` gets it from
+        // the alignment its session kept. A restore cannot begin meanwhile (F612).
+        await retryMissingSourceTrackManifests()
         // F295: deletions older than the grace window lose their text from the saved history.
         store.processPendingShreds()
 
@@ -3824,6 +3834,7 @@ final class AppModel: ObservableObject {
                 // process holds open is live too — for as long as that process holds them, which ends
                 // when it exits, however it exits. Link imports only (`source.json`); a capture's
                 // folder has its own lock (F297).
+                var heldImportFiles: [URL: [String]] = [:]
                 for candidate in candidates where !live.contains(candidate.directory)
                     && MediaSource.read(in: candidate.directory) != nil {
                     let held = await importFilesHeldOpen(in: candidate.directory)
@@ -3838,7 +3849,6 @@ final class AppModel: ObservableObject {
                     // sidecar only a link import writes. Nothing adds it "when that recording
                     // stops"; the next launch after it finishes does, so it gets its own sentence.
                     let liveImports = live.filter { MediaSource.read(in: $0) != nil }
-                var heldImportFiles: [URL: [String]] = [:]
                     if liveImports.count < live.count {
                         messages.append(Self.recordingStillInProgress)
                     }
@@ -4529,6 +4539,12 @@ final class AppModel: ObservableObject {
             // as progress, so a long save is never mistaken for a stuck one.
             let artifact = try await WriteProgress.$current.withValue(finalizeWriteProgress) {
                 try await recorder.stop()
+            }
+            // F753: what `source-tracks.json` says beyond the frame counts, kept in the session
+            // sidecar before the meeting is indexed, so the launch can write the manifest if `stop()`'s
+            // own best-effort write failed (F502) without inventing alignment (F754).
+            if let alignment = artifact.capturedAlignment {
+                updateRecordingSession { $0.capturedAlignment = alignment }
             }
             let fallbackTitle = "Meeting \(Date.now.formatted(date: .abbreviated, time: .shortened))"
             let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5951,6 +5967,19 @@ final class AppModel: ObservableObject {
     /// does for an import: it is picked up by the next launch after the writer finishes.
     static let linkImportStillBeingWritten = "A link import on this Mac is still being written, so it was left alone. Nothing was changed, and it will be added to your history the next time WhisperMeet opens after it finishes."
 
+    /// `linkImportStillBeingWritten`, naming the processes that hold the import's files (F973) —
+    /// yt-dlp, ffmpeg, another WhisperMeet — so a user with a stuck writer can tell what to quit.
+    /// The plain sentence when no holder could be named (found live by growth, or the holder exited
+    /// before its name was read).
+    static func linkImportStillBeingWritten(heldBy names: [String]) -> String {
+        guard !names.isEmpty else { return linkImportStillBeingWritten }
+        let quoted = names.map { "“\($0)”" }
+        let list = quoted.count == 1
+            ? quoted[0]
+            : quoted.dropLast().joined(separator: ", ") + " and " + quoted[quoted.count - 1]
+        return "A link import on this Mac is still being written by \(list), so it was left alone. Nothing was changed, and it will be added to your history the next time WhisperMeet opens after it finishes. If it seems stuck, quit \(list), and WhisperMeet will add it the next time it opens."
+    }
+
     /// The tag a link import carries so it can be found among ordinary meetings, or nil when there
     /// is no source or it suggests nothing usable.
     ///
@@ -5973,19 +6002,6 @@ final class AppModel: ObservableObject {
     /// installed. Both import entry points — local file and link — call this, so there is exactly one
     /// place where a meeting becomes real (F183).
     ///
-    /// `linkImportStillBeingWritten`, naming the processes that hold the import's files (F973) —
-    /// yt-dlp, ffmpeg, another WhisperMeet — so a user with a stuck writer can tell what to quit.
-    /// The plain sentence when no holder could be named (found live by growth, or the holder exited
-    /// before its name was read).
-    static func linkImportStillBeingWritten(heldBy names: [String]) -> String {
-        guard !names.isEmpty else { return linkImportStillBeingWritten }
-        let quoted = names.map { "“\($0)”" }
-        let list = quoted.count == 1
-            ? quoted[0]
-            : quoted.dropLast().joined(separator: ", ") + " and " + quoted[quoted.count - 1]
-        return "A link import on this Mac is still being written by \(list), so it was left alone. Nothing was changed, and it will be added to your history the next time WhisperMeet opens after it finishes. If it seems stuck, quit \(list), and WhisperMeet will add it the next time it opens."
-    }
-
     /// It carries NO read-only guard of its own, and that is a deliberate dependency on its callers,
     /// not an oversight: `importRecordings` (for the batch) and `importOne` (for each file) call
     /// `libraryAcceptsChanges`, and `importFromURL` asks `libraryRefusal` (the same check, answered
@@ -8715,6 +8731,9 @@ extension AppModel {
             // it points to. Nothing is resolved or rebuilt here — the user decides whether to import
             // the original again — and deleting the entry removes only the alias's bytes.
             return "“\(title)”: the recording file is a Finder alias — a pointer to a file somewhere else — not audio. It was imported from an alias by an earlier version of WhisperMeet, so this meeting has no audio of its own. If the original recording still exists, import it again; this entry can then be deleted."
+        case .recordingIsSymbolicLink:
+            // F704: an import of a link before F494 kept the link. Named with what to do, and where.
+            return "“\(title)”: the recording file is a link to a file somewhere else, not a copy. It was imported from a link by an earlier version of WhisperMeet, so it plays only while the original stays where it is, and backups leave it out. Open the meeting and choose Copy Linked Recording Into Library to keep a copy of its own."
         case .sourceTrackManifestMissing:
             // "Missing or unreadable", not "failed to write": the folder alone cannot say why.
             return "“\(title)”: its separate microphone and system tracks were not checked, because the file describing them (source-tracks.json) is missing or unreadable."
@@ -8731,9 +8750,6 @@ extension AppModel {
     /// `.Qwen3ASR-backup-*` dir while `Qwen3ASR/` is gone and Qwen reports "not installed"; the tested
     /// recovery-only reclaim restores it (or clears an incomplete one) without a manual reinstall
     /// (F33). Returns whether the reclaim was run. The reclaim itself is the injected
-        case .recordingIsSymbolicLink:
-            // F704: an import of a link before F494 kept the link. Named with what to do, and where.
-            return "“\(title)”: the recording file is a link to a file somewhere else, not a copy. It was imported from a link by an earlier version of WhisperMeet, so it plays only while the original stays where it is, and backups leave it out. Open the meeting and choose Copy Linked Recording Into Library to keep a copy of its own."
     /// `runQwenInstallRecovery` seam, so this hop is headless-testable without spawning a process.
     ///
     /// `runtimeDirectory` defaults to this model's library's `Runtime/Qwen3ASR` (F655) — the managed

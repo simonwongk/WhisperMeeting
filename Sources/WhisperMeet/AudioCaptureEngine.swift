@@ -19,6 +19,9 @@ struct RecordingArtifact: Sendable {
     /// The capture died before Stop and was not revived, so the audio ends before the recording
     /// did (F292). The file is still a normal, aligned finalize of everything captured.
     var captureStoppedEarly = false
+    /// What `source-tracks.json` says beyond the frame counts, for the session sidecar (F753), so a
+    /// manifest this stop failed to write can be written later without inventing alignment.
+    var capturedAlignment: RecordingSession.CapturedAlignment?
 }
 
 enum AudioCaptureError: LocalizedError {
@@ -456,6 +459,15 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             healthReport: healthMonitor?.report()
         )
         artifact.captureStoppedEarly = captureHadDied
+        artifact.capturedAlignment = SourceTrackManifest.capturedAlignment(
+            system: systemTrack,
+            microphone: microphoneTrack,
+            paddedGaps: paddedGaps,
+            droppedFrames: (
+                system: systemWriter?.droppedFrames ?? 0,
+                microphone: microphoneWriter?.droppedFrames ?? 0
+            )
+        )
         return artifact
     }
 

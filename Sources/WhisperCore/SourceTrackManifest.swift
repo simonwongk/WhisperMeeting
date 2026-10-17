@@ -317,6 +317,76 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
         try encoder.encode(manifest).write(to: outputURL, options: .atomic)
     }
 
+    /// What `write(system:microphone:…)` derives beyond the frame counts, for the session sidecar
+    /// (F753): the same offsets by the same rule, so a manifest written later from it is the one
+    /// `stop()` would have written. Nil when neither track received a buffer, as `write` throws then.
+    public static func capturedAlignment(
+        system: FloatTrack,
+        microphone: FloatTrack,
+        paddedGaps: [PaddedGap] = [],
+        droppedFrames: (system: Int64, microphone: Int64) = (0, 0)
+    ) -> RecordingSession.CapturedAlignment? {
+        guard let earliestStart = [system.firstPresentationTime, microphone.firstPresentationTime]
+            .compactMap({ $0 }).min() else { return nil }
+        func offset(_ track: FloatTrack) -> Double {
+            max(0, (track.firstPresentationTime ?? earliestStart) - earliestStart)
+        }
+        return RecordingSession.CapturedAlignment(
+            systemStartOffsetSeconds: offset(system),
+            microphoneStartOffsetSeconds: offset(microphone),
+            systemDroppedFrames: droppedFrames.system,
+            microphoneDroppedFrames: droppedFrames.microphone,
+            paddedGaps: paddedGaps
+        )
+    }
+
+    /// Writes the `source-tracks.json` a finished capture's `stop()` failed to write (F502), from the
+    /// alignment it kept in the session sidecar (F753). Returns whether it wrote one.
+    ///
+    /// Writes nothing — and never invents alignment (F754) — unless all of this holds: no manifest of
+    /// either name is there; `meeting.wav` is the folder's finished recording (a capture's, not a
+    /// rebuild's or an import's); both raw tracks are there; and the session sidecar carries
+    /// `capturedAlignment`. A session from a build without that field gets no manifest, not zeros.
+    /// Frame counts come from the tracks' sizes, which is what `stop()` counted. Never touches audio.
+    @discardableResult
+    public static func writeFromCapturedAlignment(in directory: URL, sampleRate: Double = 48_000) throws -> Bool {
+        let fileManager = FileManager.default
+        let manifestURL = directory.appendingPathComponent("source-tracks.json")
+        guard !fileManager.fileExists(atPath: manifestURL.path),
+              !fileManager.fileExists(atPath: directory.appendingPathComponent("source-tracks.recovered.json").path),
+              let finished = InterruptedRecordingRecovery.finalizedRecording(in: directory),
+              finished.source == .existingCapture,
+              finished.recordingURL.lastPathComponent == "meeting.wav",
+              let alignment = RecordingSessionSidecar.read(in: directory)?.capturedAlignment
+        else { return false }
+        func frames(_ name: String) -> Int64? {
+            let url = directory.appendingPathComponent(name)
+            guard ((try? fileManager.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType) == .typeRegular,
+                  let bytes = (try? fileManager.attributesOfItem(atPath: url.path))?[.size] as? NSNumber
+            else { return nil }
+            return bytes.int64Value / Int64(MemoryLayout<Float>.size)
+        }
+        guard let systemFrames = frames("system-audio.f32"),
+              let microphoneFrames = frames("microphone-audio.f32") else { return false }
+        func track(_ file: String, _ frameCount: Int64, _ offset: Double, _ dropped: Int64) -> Track {
+            Track(
+                file: file, format: "float32-little-endian", sampleRate: sampleRate, channels: 1,
+                frameCount: frameCount, startOffsetSeconds: offset,
+                droppedFrameCount: dropped > 0 ? dropped : nil
+            )
+        }
+        let manifest = Self(
+            recoveryAlignment: alignment.paddedGaps.isEmpty ? capturedAlignment : paddedAlignment,
+            paddedGaps: alignment.paddedGaps,
+            systemAudio: track("system-audio.f32", systemFrames, alignment.systemStartOffsetSeconds, alignment.systemDroppedFrames),
+            microphoneAudio: track("microphone-audio.f32", microphoneFrames, alignment.microphoneStartOffsetSeconds, alignment.microphoneDroppedFrames)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(manifest).write(to: manifestURL, options: .atomic)
+        return true
+    }
+
     private static func track(
         _ track: FloatTrack,
         sampleRate: Double,

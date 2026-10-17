@@ -324,13 +324,19 @@ public enum InterruptedRecordingRecovery {
                 //
                 // Labelled as a capture whose offsets are unknown, not `captured-timeline` (F754):
                 // `rebuilt` writes 0 for each track's offset, and under the capture label that read
-                // as measured alignment.
-                try? writeRecoveryManifestIfNeeded(
-                    in: directory,
-                    sampleRate: sampleRate,
-                    alignment: SourceTrackManifest.capturedUnknownOffsetsAlignment,
-                    sizeOf: sizeLookup
-                )
+                // as measured alignment. Unless the session kept what `stop()` measured (F753): then
+                // the manifest `stop()` failed to write is written as it would have been.
+                let wroteCaptured = (try? SourceTrackManifest.writeFromCapturedAlignment(
+                    in: directory, sampleRate: sampleRate
+                )) ?? false
+                if !wroteCaptured {
+                    try? writeRecoveryManifestIfNeeded(
+                        in: directory,
+                        sampleRate: sampleRate,
+                        alignment: SourceTrackManifest.capturedUnknownOffsetsAlignment,
+                        sizeOf: sizeLookup
+                    )
+                }
             }
             return finished
         }

@@ -66,6 +66,41 @@ public struct RecordingSession: Codable, Sendable, Equatable {
     /// is the durable record of what happened; this is the live state.
     public var outageBeganAt: Date?
 
+    /// How the finished capture's two tracks line up, as `AudioCaptureEngine.stop()` measured it
+    /// (F753): what `source-tracks.json` says beyond the frame counts, which the files themselves give.
+    ///
+    /// Kept here because that manifest's write is best-effort once the mix has succeeded (F502), and
+    /// the offsets exist only in memory at `stop()`. Without them a later write could only invent
+    /// alignment (F754); with them, the manifest a failed write left out is written as `stop()` would
+    /// have written it (`SourceTrackManifest.writeFromCapturedAlignment`).
+    public struct CapturedAlignment: Codable, Sendable, Equatable {
+        public let systemStartOffsetSeconds: Double
+        public let microphoneStartOffsetSeconds: Double
+        /// Frames each track padded for dropped buffers (F151); 0 for a clean track.
+        public let systemDroppedFrames: Int64
+        public let microphoneDroppedFrames: Int64
+        /// The gaps a restart padded, positioned as the capture placed them (F282).
+        public let paddedGaps: [SourceTrackManifest.PaddedGap]
+
+        public init(
+            systemStartOffsetSeconds: Double,
+            microphoneStartOffsetSeconds: Double,
+            systemDroppedFrames: Int64 = 0,
+            microphoneDroppedFrames: Int64 = 0,
+            paddedGaps: [SourceTrackManifest.PaddedGap] = []
+        ) {
+            self.systemStartOffsetSeconds = systemStartOffsetSeconds
+            self.microphoneStartOffsetSeconds = microphoneStartOffsetSeconds
+            self.systemDroppedFrames = systemDroppedFrames
+            self.microphoneDroppedFrames = microphoneDroppedFrames
+            self.paddedGaps = paddedGaps
+        }
+    }
+
+    /// Optional and append-only (F188): a session from a build without it decodes to nil, and an
+    /// older build ignores the key. Nil means "not measured", never "zero".
+    public var capturedAlignment: CapturedAlignment?
+
     public init(
         id: UUID,
         startedAt: Date,
@@ -117,6 +152,8 @@ public struct RecordingSession: Codable, Sendable, Equatable {
         )
         paddedGaps = try container.decodeIfPresent([PaddedGap].self, forKey: .paddedGaps) ?? []
         outageBeganAt = try container.decodeIfPresent(Date.self, forKey: .outageBeganAt)
+        // `try?`: a shape this build cannot read costs only this field, never the markers (F753).
+        capturedAlignment = (try? container.decodeIfPresent(CapturedAlignment.self, forKey: .capturedAlignment)) ?? nil
     }
 }
 
