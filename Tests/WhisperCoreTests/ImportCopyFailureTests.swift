@@ -26,6 +26,22 @@ func transientCopyFailures() {
     #expect(ImportCopyFailure.isTransient(POSIXError(.EDQUOT)))
 }
 
+// F708 — the chains `FileManager.copyItem` actually threw on this Mac (macOS 27, arm64), copying
+// into a 20 MB disk image that filled mid-copy (APFS, HFS+ and ExFAT alike), and off a disk image
+// force-detached 0.15 s into a 400 MB copy, which is what an ejected drive does. Pinned as measured, so
+// a narrowing of the transient set that would refuse one of them for good fails here. A dropped SMB
+// share was not measured: no share was available (it is with the user).
+@Test("The copy failures measured for a full disk and an ejected drive are transient (F708)")
+func measuredCopyFailuresAreTransient() {
+    // Destination full, every file system: Cocoa 640 over POSIX 28.
+    #expect(ImportCopyFailure.isTransient(cocoa(NSFileWriteOutOfSpaceError, wrapping: posix(ENOSPC))))
+    // Source volume force-detached: Cocoa 512 over POSIX 5 (APFS) or POSIX 6 (ExFAT).
+    #expect(ImportCopyFailure.isTransient(cocoa(NSFileWriteUnknownError, wrapping: posix(EIO))))
+    #expect(ImportCopyFailure.isTransient(cocoa(NSFileWriteUnknownError, wrapping: posix(ENXIO))))
+    #expect(NSFileWriteOutOfSpaceError == 640 && NSFileWriteUnknownError == 512 && ENXIO == 6 && EIO == 5,
+            "the codes above are the ones the probe printed")
+}
+
 @Test("A source whose volume went away is transient: it is back when the volume is (F554)")
 func missingSourceIsTransient() {
     #expect(ImportCopyFailure.isTransient(cocoa(NSFileReadNoSuchFileError, wrapping: posix(ENOENT))))
