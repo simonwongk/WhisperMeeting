@@ -37,7 +37,7 @@ private func makeModel(_ label: String) -> (AppModel, URL, Posted, () -> Void) {
 
 @MainActor
 @Test("A diagnostics save that cannot be written says so, and leaves no file (F513)")
-func diagnosticsSaveFailureIsReported() throws {
+func diagnosticsSaveFailureIsReported() async throws {
     let (model, root, posted, cleanup) = makeModel("unwritable")
     defer { cleanup() }
     // The parent folder does not exist, so the write fails on every host, deterministically.
@@ -45,7 +45,7 @@ func diagnosticsSaveFailureIsReported() throws {
         .appendingPathComponent("missing-\(UUID().uuidString)", isDirectory: true)
         .appendingPathComponent("WhisperMeet Diagnostics.json")
 
-    model.saveDiagnostics(to: destination)
+    await model.saveDiagnostics(to: destination)
 
     let alert = try #require(model.alertMessage, "a failed save produced no message")
     // The app's own words, not Foundation's: Foundation's sentence depends on the host's locale.
@@ -56,12 +56,12 @@ func diagnosticsSaveFailureIsReported() throws {
 
 @MainActor
 @Test("A diagnostics save that works writes the bundle and says nothing (F513)")
-func diagnosticsSaveSuccessWritesTheBundle() throws {
+func diagnosticsSaveSuccessWritesTheBundle() async throws {
     let (model, root, posted, cleanup) = makeModel("writable")
     defer { cleanup() }
     let destination = root.appendingPathComponent("WhisperMeet Diagnostics.json")
 
-    model.saveDiagnostics(to: destination)
+    await model.saveDiagnostics(to: destination)
 
     #expect(model.alertMessage == nil)
     #expect(posted.bodies.isEmpty)

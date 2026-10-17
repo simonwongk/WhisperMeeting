@@ -8146,7 +8146,10 @@ final class AppModel: ObservableObject {
     /// its exclusion guarantee (never transcript, summary, vocabulary, title, or paths) are unit-tested
     /// in `DiagnosticsExport`; this hop only supplies the live store, real recording byte sizes, and
     /// the crash reports from `diagnosticsCrashReports`.
-    func diagnosticsJSON() -> String {
+    ///
+    /// `crashReports` is what `saveDiagnostics` has already read off the main actor (F789); nil reads
+    /// them here, on the caller's actor, which only a test should do.
+    func diagnosticsJSON(crashReports: [CrashReportRecord]? = nil) -> String {
         let input = DiagnosticsExport.input(
             meetings: store.meetings,
             // Diagnostics report what is actually stored (a count, never the terms), so this is the
@@ -8155,7 +8158,7 @@ final class AppModel: ObservableObject {
             // F370: everything macOS has written for this app, not just what this launch noticed.
             // A user exporting diagnostics is answering "what went wrong", and the crash from two
             // launches ago is part of the answer.
-            crashReports: diagnosticsCrashReports(),
+            crashReports: crashReports ?? diagnosticsCrashReports(),
             recordingBytes: { meeting in
                 let path = store.recordingURL(for: meeting).path
                 let size = try? FileManager.default.attributesOfItem(atPath: path)[.size]
@@ -8173,9 +8176,16 @@ final class AppModel: ObservableObject {
     /// failed write leaves no half-written bundle under that name; through `report(_:)` rather than
     /// `alertMessage`, because Settings can be open on its own with no library window to show an
     /// alert (F257). Nothing is said on success, as the transcript exporters say nothing.
-    func saveDiagnostics(to url: URL) {
+    ///
+    /// The crash reports are read off the main actor (F789). Since F389 that read opens up to five
+    /// reports of up to 4 MB each and parses them, and inline here it stopped the whole app while it
+    /// did. The rest — the index, one size per recording, the JSON and the write — stays here: it
+    /// reads the store, which is main-actor state.
+    func saveDiagnostics(to url: URL) async {
+        let readCrashReports = diagnosticsCrashReports
+        let crashReports = await Task.detached(priority: .userInitiated) { readCrashReports() }.value
         do {
-            try Data(diagnosticsJSON().utf8).write(to: url, options: .atomic)
+            try Data(diagnosticsJSON(crashReports: crashReports).utf8).write(to: url, options: .atomic)
         } catch {
             let reason = ErrorPresentation.sentence(for: error, fallback: "That location could not be written to.")
             report("The diagnostics file was not saved. \(reason) Choose another location and export again.")

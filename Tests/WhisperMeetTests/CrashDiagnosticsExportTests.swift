@@ -106,8 +106,13 @@ func diagnosticsCrashReportsDefaultIsTheRealDirectory() throws {
     )
     #expect(readsTheRealDirectory, "\(body)")
 
-    let export = try #require(source.range(of: "func diagnosticsJSON() -> String {"))
+    let export = try #require(source.range(of: "func diagnosticsJSON(crashReports: [CrashReportRecord]? = nil) -> String {"))
     let exportBody = String(source[export.upperBound...].prefix(1_200))
-    let usesTheSeam = exportBody.contains("crashReports: diagnosticsCrashReports()")
+    let usesTheSeam = exportBody.contains("crashReports: crashReports ?? diagnosticsCrashReports()")
     #expect(usesTheSeam, "diagnosticsJSON does not read crash reports through the seam:\n\(exportBody)")
+    // F789: the save reads them through the same seam, off the main actor.
+    let save = try #require(source.range(of: "func saveDiagnostics(to url: URL) async {"))
+    let saveBody = String(source[save.upperBound...].prefix(600))
+    #expect(saveBody.contains("let readCrashReports = diagnosticsCrashReports")
+        && saveBody.contains("Task.detached(priority: .userInitiated) { readCrashReports() }"), "\(saveBody)")
 }
