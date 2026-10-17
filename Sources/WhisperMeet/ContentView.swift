@@ -3660,8 +3660,10 @@ private struct TranscriptDetailView: View {
                             Text(model.queuedStatusDetail(for: meeting)).foregroundStyle(.secondary)
                         } else if let error = meeting.errorMessage {
                             Text(error).foregroundStyle(.secondary)
-                            // F624: the engine's whole log, when its failed run left one.
+                            // F624: the engine's log, when its failed run left one — said here, beside
+                            // the button and while the file is there, never in the stored message.
                             if model.transcriptionFailureLogURL(for: meeting) != nil {
+                                Text(AppModel.transcriptionFailureLogNote).foregroundStyle(.secondary)
                                 Button("Show Full Log") {
                                     model.revealTranscriptionFailureLog(for: meeting.id)
                                 }

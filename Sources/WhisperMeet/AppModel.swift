@@ -7897,10 +7897,11 @@ final class AppModel: ObservableObject {
         await withEngineActivityHeld(reason: "Transcribing a meeting") {
             do {
                 let recordingURL = store.recordingURL(for: meeting)
-                // F624: the helper's whole log when this run fails, beside the recording. Removed
-                // first, so a log there always belongs to the meeting's latest run, which failed.
-                let failureLog = Self.transcriptionFailureLogURL(recordingURL: recordingURL)
-                try? FileManager.default.removeItem(at: failureLog)
+                // F624: the log the helper kept when this run fails, in the meeting's own folder —
+                // none when it has no folder of its own. Removed first, so a log there always belongs
+                // to the meeting's latest run, which failed.
+                let failureLog = transcriptionFailureLogLocation(for: meeting)
+                if let failureLog { try? FileManager.default.removeItem(at: failureLog) }
                 let result = try await executeEngine(settings, on: recordingURL, failureLogURL: failureLog) { progress in
                     await self.apply(progress: progress, to: id)
                 }
@@ -8102,19 +8103,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Where a meeting's transcription keeps the whole log of its latest failed run (F624): one file,
-    /// `TranscriptionFailureLog.fileName`, in the recording's folder. One per meeting, so it is bounded
-    /// without a retention rule; it goes with the folder when the meeting is deleted.
-    nonisolated static func transcriptionFailureLogURL(recordingURL: URL) -> URL {
-        recordingURL.deletingLastPathComponent().appendingPathComponent(TranscriptionFailureLog.fileName)
+    /// Where a meeting's transcription keeps the log of its latest failed run (F624): one file,
+    /// `TranscriptionFailureLog.fileName`, in the meeting's OWN recording folder
+    /// (`MeetingStore.ownRecordingFolder`, the folder `delete` removes). One per meeting, so it is
+    /// bounded without a retention rule, and it goes with the folder when the meeting is deleted. Nil
+    /// for a record whose recording is not in a folder of its own (review of F624): it gets no log
+    /// rather than one written into, removed from, or read out of another meeting's folder.
+    func transcriptionFailureLogLocation(for meeting: MeetingRecord) -> URL? {
+        store.ownRecordingFolder(of: meeting)?.appendingPathComponent(TranscriptionFailureLog.fileName)
     }
 
-    /// The failed meeting's full log, when its latest run left one (F624) — what the card's
+    /// The failed meeting's log, when its latest run left one (F624) — what the card's
     /// **Show Full Log** reveals. Nil for a meeting that has not failed: a log is removed when the next
     /// run starts, so one beside a meeting that is not failed is not about what is on screen.
     func transcriptionFailureLogURL(for meeting: MeetingRecord) -> URL? {
-        guard meeting.status == .failed else { return nil }
-        let url = Self.transcriptionFailureLogURL(recordingURL: store.recordingURL(for: meeting))
+        guard meeting.status == .failed, let url = transcriptionFailureLogLocation(for: meeting) else { return nil }
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
@@ -8124,7 +8127,9 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
-    /// Ends a failure's message when the engine's whole log was kept (F624).
+    /// Points at **Show Full Log** (F624). Said only where that button is, and only while the file is
+    /// there: on the failed card beside it, and in the one-time alert. Never stored in `errorMessage`,
+    /// where it would outlive a log the user removed (review of F624).
     static let transcriptionFailureLogNote = "The full log is saved beside the recording — choose Show Full Log to see it."
 
     private func handle(error: Error, id: UUID) {
@@ -8146,13 +8151,6 @@ final class AppModel: ObservableObject {
                 FileManager.default.fileExists(atPath: store.recordingURL(for: $0).path)
             } ?? false
             if recordingIsSafe { message += " The recording is safe on this Mac." }
-            // F624: the summary above is capped; the whole log, when the engine left one, is a file
-            // the failed meeting's card offers to show (`transcriptionFailureLogURL(for:)`). Said
-            // only where that card will be: a re-run that keeps its transcript stays completed.
-            if let meeting = store.meeting(id: id), !Self.holdsTranscript(meeting),
-               FileManager.default.fileExists(atPath: Self.transcriptionFailureLogURL(recordingURL: store.recordingURL(for: meeting)).path) {
-                message += " " + Self.transcriptionFailureLogNote
-            }
         }
         // F515: a failed re-run keeps the transcript it would have replaced, so the meeting stays
         // completed and the alert says the old one is still there. The record is judged on the copy
@@ -8166,6 +8164,12 @@ final class AppModel: ObservableObject {
             let keepsTranscript = Self.holdsTranscript($0)
             $0.status = keepsTranscript ? .completed : .failed
             $0.errorMessage = keepsTranscript ? nil : stored
+        }
+        // F624: the summary is capped; the log the engine kept, when it left one, is a file the failed
+        // card offers to show. Said in this alert only, not stored (the card says it beside the button
+        // while the file is there), and only where the card is: a failed re-run stays completed.
+        if let meeting = store.meeting(id: id), transcriptionFailureLogURL(for: meeting) != nil {
+            message += " " + Self.transcriptionFailureLogNote
         }
         transcriptionProgress[id] = nil
         alertMessage = message
