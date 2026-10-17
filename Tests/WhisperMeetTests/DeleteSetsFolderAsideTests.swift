@@ -235,3 +235,112 @@ func launchSweepsSetAsideFoldersAndNamesTheStuckOnes() async throws {
     let said = try #require(model.alertMessage, "the launch said nothing about the folder it could not remove")
     #expect(said.contains("Recordings/\(stubborn)"), "\(said)")
 }
+
+// F609 review, finding 5: the sweep's two other deferrals, each with its own test. Both protect audio:
+// the sweep removes folders.
+
+/// Another copy of the app committing `change` over what it has just read.
+private func otherCopyCommits(in root: URL, _ change: ([MeetingRecord]) -> [MeetingRecord]) throws {
+    let rival = BackupJSONStore<[MeetingRecord]>(
+        primaryURL: root.appendingPathComponent("meetings.json"),
+        backupURL: root.appendingPathComponent("meetings.backup.json"),
+        writer: "ffff9999",
+        recordCount: { $0.count }
+    )
+    let existing = try rival.load()
+    _ = try rival.save(change(existing?.value ?? []), expecting: existing?.token)
+}
+
+// A library that did not load cannot say which meetings are listed, so it cannot say a remnant's
+// meeting is gone (F187). The wipe shape: an empty list beside a finished recording loads read-only.
+@MainActor
+@Test("The sweep removes nothing while the library is read-only (F609)")
+func sweepRemovesNothingFromAReadOnlyLibrary() throws {
+    let (store, root) = try makeLibrary("readonly")
+    defer { try? FileManager.default.removeItem(at: root) }
+    // A finished recording, as the wipe check counts one: a compressed capture needs no decoding.
+    let id = UUID()
+    let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try Data("audio".utf8).write(to: folder.appendingPathComponent("meeting.m4a"))
+    store.upsert(MeetingRecord(id: id, title: "Board review", recordingPath: "Recordings/\(id.uuidString)/meeting.m4a", status: .completed))
+    try otherCopyCommits(in: root) { _ in [] }
+    let remnant = root.appendingPathComponent("Recordings/.deleted-\(UUID().uuidString)-0a1b2c3d")
+    try FileManager.default.createDirectory(at: remnant, withIntermediateDirectories: true)
+    try Data("audio".utf8).write(to: remnant.appendingPathComponent("meeting.wav"))
+    let relaunched = MeetingStore(rootDirectory: root)
+    try #require(relaunched.isDegraded, "fixture: the empty list beside a finished recording was meant to load read-only")
+    var removals = 0
+    relaunched.removeRecordingDirectory = { _ in removals += 1 }
+
+    #expect(relaunched.sweepSetAsideRecordings() == nil)
+
+    #expect(removals == 0, "the sweep removed a folder from a library it could not read")
+    #expect(FileManager.default.fileExists(atPath: remnant.appendingPathComponent("meeting.wav").path))
+}
+
+// A listed meeting whose recording path points into a remnant (a hand-edited index) keeps it, whatever
+// id the remnant's name carries.
+@MainActor
+@Test("The sweep leaves a remnant that a listed meeting's recording path points into (F609)")
+func sweepLeavesARemnantAListedMeetingUses() throws {
+    let (store, root) = try makeLibrary("pointed")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let name = ".deleted-\(UUID().uuidString)-0a1b2c3d"
+    let remnant = root.appendingPathComponent("Recordings/\(name)")
+    try FileManager.default.createDirectory(at: remnant, withIntermediateDirectories: true)
+    try Data("audio".utf8).write(to: remnant.appendingPathComponent("meeting.wav"))
+    store.upsert(MeetingRecord(id: UUID(), title: "Points into it", recordingPath: "Recordings/\(name)/meeting.wav", status: .completed))
+
+    #expect(store.sweepSetAsideRecordings() == nil)
+
+    #expect(setAsideFolders(in: root) == [name], "the sweep removed the folder a listed meeting plays from")
+}
+
+// F579 review, finding 6: the message is put back after the shred pass, so that when the kept rows'
+// restoring save failed, its own words come first and the shred's are said once. Without that, the
+// shred's sentence took the failure's place and was then said again.
+@MainActor
+@Test("A failed restoring save keeps its words first, and the shred pass is said once beside them (F579)")
+func failedRestoringSaveKeepsItsWordsBesideTheShred() throws {
+    let (store, root) = try makeLibrary("restore")
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+        try? FileManager.default.removeItem(at: root)
+    }
+    // An earlier deletion, two weeks old, held by a torn quarantine copy, so the shred pass has
+    // something to say (as in `batchDeleteSaysEveryOutcome`).
+    let earlier = UUID()
+    store.upsert(MeetingRecord(id: earlier, title: "Old standup", status: .completed, transcriptText: "the confidential-kestrel figures"))
+    let index = try Data(contentsOf: root.appendingPathComponent("meetings.json"))
+    store.delete(ids: [earlier])
+    try index.prefix(index.count - 10).write(to: root.appendingPathComponent("meetings.unreadable-20260901T100000Z.json"))
+    let twoWeeksAgo = Int(Date().timeIntervalSince1970) - 2 * Int(MeetingStore.shredGracePeriod)
+    try JSONEncoder().encode([earlier.uuidString: twoWeeksAgo])
+        .write(to: root.appendingPathComponent("meetings.pending-shred.json"))
+    let relaunched = MeetingStore(rootDirectory: root)
+    let (kept, _) = try addMeeting(relaunched, root: root, title: "Kept review")
+    let (gone, _) = try addMeeting(relaunched, root: root, title: "Gone review")
+    relaunched.setRecordingDirectoryAside = { folder in
+        guard !folder.lastPathComponent.contains(kept.uuidString) else { throw CocoaError(.fileWriteNoPermission) }
+        return try MeetingStore.moveAsideForDeletion(folder)
+    }
+    // The delete's own save works; the save putting the kept row back cannot stage its file, an
+    // ordinary failure and not a race, as a full disk is.
+    var saves = 0
+    relaunched.beforeIndexSaveForTesting = {
+        saves += 1
+        if saves == 2 { try? FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: root.path) }
+    }
+
+    #expect(relaunched.delete(ids: [kept, gone]) == [gone])
+    relaunched.beforeIndexSaveForTesting = nil
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: root.path)
+
+    try #require(saves == 2, "fixture: the restoring save was meant to run")
+    let message = try #require(relaunched.storageErrorMessage)
+    #expect(message.hasPrefix("Meeting changes could not be saved."), "the failure's own words are not first: \(message)")
+    let shredPhrase = "meetings.unreadable-20260901T100000Z.json"
+    try #require(message.contains(shredPhrase), "fixture: the shred pass was meant to say something: \(message)")
+    #expect(message.components(separatedBy: shredPhrase).count == 2, "the shred's sentence was said more than once: \(message)")
+}
