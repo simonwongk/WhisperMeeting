@@ -459,7 +459,7 @@ enum VocabularyExtractor {
     ///
     /// Chosen over the first token's `.lexicalClass` tag. F623 measured the two as giving the same
     /// output, but on fixtures that opened only with articles, possessives and demonstratives (Our,
-    /// The, This). F787 measured the classes it adds (gates/F787-lexicalclass.log in its closure):
+    /// The, This). F787 measured the classes it adds (its closure):
     /// the tagger agrees on most of them — and also calls "All" a determiner and "Will" a verb, so a
     /// tag rule would cut "All Hands" and "Will Smith", which this list keeps. A list also does not
     /// inherit the tagger's local-versus-CI model risk that F593 recorded.

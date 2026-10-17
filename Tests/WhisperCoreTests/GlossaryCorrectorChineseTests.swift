@@ -202,7 +202,7 @@ func soundAlikeWindowsAreNotProposedForNames() {
 @Test("A three-character name gets no sound-alike row either; a surname with a title still does (F995)")
 func threeCharacterNamesGetNoSoundAlikeRow() {
     // F921 stopped at two characters, because NLTokenizer reads 张伟明 as 张 | 伟明 exactly as it
-    // reads 张经理 as 张 | 经理 (gates/F995-probe-terms.log in the F995 closure: 王建国, 李小龙,
+    // reads 张经理 as 张 | 经理 (the F995 closure: 王建国, 李小龙,
     // 周杰伦 the same; 马拉松, 黄金周, 林业局 whole; 高可用 as 高 | 可 | 用). So 张伟民 was offered as
     // 张伟明 — another person. A title list tells the two apart: surname | a word that is no title
     // is a name. This segmenter is the probe's reading of these words.

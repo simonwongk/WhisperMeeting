@@ -17,7 +17,7 @@ import Foundation
 ///
 /// **Three characters (F995).** NLTokenizer reads 张伟明 as 张 | 伟明 — exactly as it reads 张经理 as
 /// 张 | 经理 — and 王建国, 李小龙, 周杰伦 the same way, while it reads 马拉松, 黄金周, 林业局 whole and
-/// 高可用 as 高 | 可 | 用 (F995's closure, gates/F995-probe-terms.log). So a three-character term is
+/// 高可用 as 高 | 可 | 用 (F995's closure). So a three-character term is
 /// a name when it is a surname followed by one two-character word that is not a title (`titles`):
 /// 张经理 stays a title term, proposed as before (张经里 → 张经理). A surname before an ordinary
 /// two-character word (周报告: 周 | 报告) reads as a name too, and loses its sound-alike rows — a
