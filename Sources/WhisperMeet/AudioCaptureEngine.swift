@@ -895,31 +895,76 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// answered: a call that returns or throws after the bound changes nothing, because Stop has
     /// already finalized the tracks and reset the engine. Its stream is no longer `_stream`, so the
     /// sample handler drops anything it still delivers.
+    ///
+    /// Every answer is logged with how long it took (F930), `stream-stop=<ms>ms`, because
+    /// `captureSettleBound` is a reused choice that nothing measured. A call that returns after the
+    /// bound has already been answered logs a second time, `confirmed=late`, with its real duration:
+    /// that line is the evidence for tuning the bound, and the only way to get it.
     private func stopCaptureWithinBound(_ call: CaptureStopCall) async -> CaptureStopOutcome {
         let deadline = stopCaptureDeadline
+        let record = stopTimingRecorder
+        let began = ProcessInfo.processInfo.systemUptime
+        let elapsed: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime - began }
         return await withCheckedContinuation { continuation in
             let answered = OSAllocatedUnfairLock(initialState: false)
-            let answer: @Sendable (CaptureStopOutcome) -> Void = { outcome in
+            // Returns whether this was the first answer, the one Stop or Cancel acts on.
+            let answer: @Sendable (CaptureStopOutcome) -> Bool = { outcome in
                 let first = answered.withLock { done in
                     let first = !done
                     done = true
                     return first
                 }
-                if first { continuation.resume(returning: outcome) }
+                if first {
+                    record(Self.stopTimingLine(elapsed: elapsed(), outcome: outcome, late: false))
+                    continuation.resume(returning: outcome)
+                }
+                return first
             }
             let expiry = Task {
                 await deadline()
-                if !Task.isCancelled { answer(.expired) }
+                if !Task.isCancelled { _ = answer(.expired) }
             }
             Task {
+                let outcome: CaptureStopOutcome
                 do {
                     try await call.run()
-                    answer(.stopped)
+                    outcome = .stopped
                 } catch {
-                    answer(.failed(error))
+                    outcome = .failed(error)
+                }
+                if !answer(outcome) {
+                    record(Self.stopTimingLine(elapsed: elapsed(), outcome: outcome, late: true))
                 }
                 expiry.cancel()
             }
+        }
+    }
+
+    /// The `stream-stop=` line for one answer (F930): `confirmed=yes` for a stop that returned within
+    /// the bound, `no` for one that threw or that the bound ran out on, and `late` for a call that
+    /// returned, either way, after the bound had been answered. Milliseconds, `saturating:` because
+    /// a `Double` conversion that overflows traps (AGENTS.md).
+    private static func stopTimingLine(elapsed: TimeInterval, outcome: CaptureStopOutcome, late: Bool) -> String {
+        let milliseconds = Int(saturating: (max(0, elapsed) * 1_000).rounded())
+        let (confirmed, name): (String, String) = switch outcome {
+        case .stopped: (late ? "late" : "yes", "stopped")
+        case .failed: (late ? "late" : "no", "failed")
+        case .expired: ("no", "expired")
+        }
+        return "stream-stop=\(milliseconds)ms confirmed=\(confirmed) outcome=\(name)"
+    }
+
+    /// Where `stream-stop=` lines go: the log, and in a DEBUG build a test's probe (F930). Read once
+    /// per stop, before the call starts, so the closures above carry no reference to the engine.
+    private var stopTimingRecorder: @Sendable (String) -> Void {
+        #if DEBUG
+        let probe = stopTimingLinesForTesting
+        #endif
+        return { line in
+            Self.logger.notice("Recording capture stop: \(line, privacy: .public)")
+            #if DEBUG
+            probe?(line)
+            #endif
         }
     }
 
@@ -964,6 +1009,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// Test seam (F809): returns when Stop's wait for `stopCapture()` runs out, in place of
     /// sleeping out `captureSettleBound`. Nothing in the app sets it.
     var stopCaptureDeadlineForTesting: (@Sendable () async -> Void)?
+
+    /// Test seam (F930): told each `stream-stop=` line the logger gets. Nothing in the app sets it.
+    var stopTimingLinesForTesting: (@Sendable (String) -> Void)?
 
     var sessionGenerationForTesting: Int { sessionGeneration }
     var pendingRestartPaddingForTesting: Int64 { captureQueue.sync { _pendingRestartPadding } }
