@@ -30,9 +30,27 @@ def describe(err):
     return f"{errno.errorcode.get(err, err)} ({os.strerror(err)})"
 
 
+def classify(err):
+    """The verdict word for an error from a lock request another process should have blocked."""
+    if err in (errno.EWOULDBLOCK, errno.EAGAIN):
+        return "locks"
+    if err in (errno.ENOTSUP, errno.EOPNOTSUPP):
+        return "unsupported"
+    return "other"
+
+
 def holder(path):
-    """Child: open with O_EXLOCK, say so, hold for a few seconds."""
-    fd = os.open(path, os.O_RDWR | O_EXLOCK)
+    """Child: open with O_EXLOCK, say so, hold for a few seconds. Says `refused <errno>` instead when
+    the volume refuses the lock, so the parent can still print a verdict (F997 round 2).
+    FLOCK_PROBE_SIMULATE_ERRNO makes it answer as a refusing share would, to check that path here."""
+    simulated = os.environ.get("FLOCK_PROBE_SIMULATE_ERRNO")
+    try:
+        if simulated:
+            raise OSError(int(simulated), os.strerror(int(simulated)))
+        fd = os.open(path, os.O_RDWR | O_EXLOCK)
+    except OSError as e:
+        print(f"refused {e.errno}", flush=True)
+        return
     print("held", flush=True)
     time.sleep(6)
     os.close(fd)
@@ -60,8 +78,14 @@ def main():
     child = subprocess.Popen([sys.executable, __file__, "--hold", path], stdout=subprocess.PIPE, text=True)
     try:
         line = child.stdout.readline().strip()
+        if line.startswith("refused "):
+            err = int(line.split()[1])
+            print(f"2/3. a second process could not take the lock at all: {describe(err)}")
+            print(f"verdict: {classify(err)}")
+            return
         if line != "held":
-            print(f"2/3. the holder could not take the lock (it said {line!r}); see step 1")
+            print(f"2/3. the holder process failed before it could answer (it said {line!r})")
+            print("verdict: other")
             return
         verdicts = []
         fd = os.open(path, os.O_RDWR)
@@ -71,7 +95,7 @@ def main():
             verdicts.append("lies")
         except OSError as e:
             print(f"2. flock(LOCK_EX|LOCK_NB) while another process holds it: {describe(e.errno)}")
-            verdicts.append("locks" if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN) else "unsupported" if e.errno in (errno.ENOTSUP, errno.EOPNOTSUPP) else "other")
+            verdicts.append(classify(e.errno))
         finally:
             os.close(fd)
         try:
@@ -81,7 +105,7 @@ def main():
             verdicts.append("lies")
         except OSError as e:
             print(f"3. open(O_EXLOCK|O_NONBLOCK) while another process holds it: {describe(e.errno)}")
-            verdicts.append("locks" if e.errno in (errno.EWOULDBLOCK, errno.EAGAIN) else "unsupported" if e.errno in (errno.ENOTSUP, errno.EOPNOTSUPP) else "other")
+            verdicts.append(classify(e.errno))
         print(f"verdict: {', '.join(verdicts)}")
     finally:
         child.wait()
