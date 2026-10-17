@@ -15,9 +15,15 @@ import Foundation
 ///
 /// Only a real directory is removed (never a link, nor what one points at), only when its name is
 /// exactly one `name(prefix:processID:id:)` makes, and only when its process is not this one and no
-/// longer exists. A folder still in use always has a live process: this one, a second copy of the app,
-/// or one that cannot be checked. So no run in progress loses its folder. A folder whose process ID
-/// has since been reused is kept until macOS clears it, which costs only space.
+/// longer exists. A folder still in use normally has a live process: this one, a second copy of the app,
+/// or one that cannot be checked. So no run of a process that is still running loses its folder. A
+/// folder whose process ID has since been reused is kept until macOS clears it, which costs only space.
+///
+/// The one exception, and why it is harmless here (F996 review): a helper the app started — `whisper`,
+/// Qwen's python, ffmpeg — can outlive an app that crashed and still be writing into a folder named
+/// for the dead app's PID, and the next launch removes that folder under it. Nothing ever adopts such
+/// an orphan's output, so nothing is lost. A feature that does adopt a helper's output after a crash
+/// (as F912/F976's conversions do) must not use this rule; it needs F976's lock and age checks.
 public enum OwnedTemporaryFolders {
     /// A new folder's name under `prefix`, for this process unless a test names another.
     public static func name(prefix: String, processID: pid_t = getpid(), id: UUID = UUID()) -> String {
