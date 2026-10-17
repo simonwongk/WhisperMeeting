@@ -7535,8 +7535,15 @@ final class AppModel: ObservableObject {
     /// Bounded, because a session can visit a whole library.
     private var askIndexCache: [UUID: SegmentEmbeddings] = [:]
 
-    /// About 16 MB of vectors — a 384-dimension index of ~10,000 rows is ~15 MB, so an ordinary
-    /// library fits whole and a very large one simply stops caching rather than growing without end.
+    /// About 16 MB of vectors: ~10,400 rows at the search model's 384 dimensions. Past it the cache
+    /// stops growing, and each query reads the rest of the library's vectors from beside the
+    /// recordings, off the main actor.
+    ///
+    /// Kept as it is after measuring what crossing it costs (F840, `askIndexQueryCostAtScale`, debug
+    /// build, stand-in embedder): 431 ms a query at 10,000 rows, all cached, and 879 ms at 20,000, of
+    /// which the bound held 10,400 — the same ~44 µs a row read from disk as held in memory. The
+    /// per-query time is not in the disk reads, so a bound sized to the library would spend memory
+    /// (1 GB at the 700,000-segment library F538 extrapolated) without making a query faster.
     private static let askIndexCacheVectorLimit = 4_000_000
 
     /// Passages per helper run when meetings are embedded for search by meaning (F538). Whole
@@ -7559,10 +7566,33 @@ final class AppModel: ObservableObject {
         try index.write(to: directory)
     }
 
-    /// How many `askIndexes` calls are embedding right now. Two can overlap — a search the user just
-    /// replaced is still winding down when the new one starts — and the first to finish must not
-    /// clear `isIndexingForAsk` under the other.
-    private var askIndexingRuns = 0
+    /// Passages embedded so far out of the passages the indexing job was asked for (F840).
+    struct AskIndexingProgress: Equatable, Sendable {
+        let done: Int
+        let total: Int
+    }
+
+    /// The running indexing job's progress, or nil when nothing is indexing (F840).
+    @Published private(set) var askIndexingProgress: AskIndexingProgress?
+
+    /// How many searches have waited on a job another search started (F840); for tests.
+    private(set) var askIndexJobJoins = 0
+
+    /// The one job embedding meetings for search by meaning (F840), owned here rather than by the
+    /// search that started it. Each search used to embed for itself, and the view cancels a search
+    /// when a newer one starts — every Ask, scope tap and return to the tab — so a first index kept
+    /// being thrown away and begun again from its last saved group, with two embedders running while
+    /// the old one wound down. A search that arrives while this runs waits for it, then embeds only
+    /// what it left; cancelling a search no longer cancels the job.
+    private var askIndexJob: (id: UUID, task: Task<[UUID: SegmentEmbeddings], Error>)?
+
+    /// Stops the indexing job (F840). The Ask view calls it when it goes away, as leaving Ask
+    /// stopped indexing before the job existed: the model runs on the GPU the user's dictation uses
+    /// (F890), so a long first index does not carry on behind another screen. Groups already saved
+    /// are kept, and the next search resumes after them.
+    func pauseAskIndexing() {
+        askIndexJob?.task.cancel()
+    }
 
     /// `meetings` in order, grouped into runs of about `passages` segments; a meeting larger than
     /// that is a run of its own, since its index is only ever saved whole.
@@ -7612,68 +7642,113 @@ final class AppModel: ObservableObject {
             missing.append(meeting)
         }
         if !missing.isEmpty {
-            askIndexingRuns += 1
-            isIndexingForAsk = true
-            defer {
-                askIndexingRuns -= 1
-                isIndexingForAsk = askIndexingRuns > 0
-            }
-            for chunk in Self.askEmbeddingChunks(missing, passages: askEmbeddingChunkPassages) {
-                let texts = chunk.flatMap { $0.segments.map(\.text) }
-                let embedded = try await askEmbedder(texts, .passage)
-                // Checked rather than trusted: a short answer would trap in the slicing below.
-                let (expected, overflow) = texts.count.multipliedReportingOverflow(by: embedded.dimension)
-                guard embedded.dimension > 0, !overflow, embedded.vectors.count == expected else {
-                    throw LocalEmbedderError.unreadableOutput
-                }
-                var offset = 0
-                var built: [(id: UUID, index: SegmentEmbeddings)] = []
-                for meeting in chunk {
-                    let length = meeting.segments.count * embedded.dimension
-                    let index = SegmentEmbeddings(
-                        modelID: AskEmbeddingRuntime.modelID,
-                        fingerprint: SegmentEmbeddings.fingerprint(of: meeting.segments.map(\.text)),
-                        dimension: embedded.dimension,
-                        vectors: Array(embedded.vectors[offset..<(offset + length)])
-                    )
-                    offset += length
-                    ready[meeting.id] = index
-                    cacheAskIndex(index, for: meeting.id)
-                    built.append((meeting.id, index))
-                }
-                // Saved before the next run starts, so a search that cancels this one keeps every
-                // group finished so far (F538) — and saved here, on the main actor, with no
-                // suspension between a meeting's folder check and its save (F849). F538 wrote these
-                // from a detached task, and `MeetingStore.delete` runs on the main actor: a save
-                // landing while a delete was emptying the same folder put files back into it, the
-                // folder's own removal then failed, and F146's rollback listed the meeting again
-                // without its audio. Here a save runs wholly before a delete, which then removes the
-                // index with the folder, or wholly after one, when the folder is gone and the check
-                // skips it.
-                //
-                // One meeting at a time, with the main actor given back between them (F871). A save
-                // costs about 0.3 ms a meeting plus its size (measured median, Apple M3 Pro: ~1 ms
-                // for a 2,000-passage meeting, 6.5 ms for one of 20,000 lines), and a group is ~2,000
-                // passages, so a group of 400 five-line meetings saved in one stretch: the main thread's
-                // longest stall while indexing them measured 162–167 ms on this Mac (debug build, three
-                // runs, `askIndexSaveStallAtScale`). The check is re-made after each yield: a delete can
-                // run in it.
-                for (position, entry) in built.enumerated() {
-                    if position > 0 { await Task.yield() }
-                    // A read-only library still searches by meaning; it just does not keep the index
-                    // on disk — the session cache above is what keeps it from re-embedding every query.
-                    let directory = store.recordingDirectoryURL(for: entry.id)
-                    guard !store.isDegraded, FileManager.default.fileExists(atPath: directory.path) else { continue }
-                    try? askIndexSave(entry.index, directory)
-                }
-            }
+            for (id, index) in try await embedForAsk(missing) { ready[id] = index }
         }
         return meetings.compactMap { meeting in ready[meeting.id].map { (meeting, $0) } }
     }
 
+    /// Embeds `meetings` through the one indexing job (F840): joins the job already running, if any,
+    /// then starts one for whatever is still missing. Returns every index it waited for.
+    private func embedForAsk(_ meetings: [SearchableMeeting]) async throws -> [UUID: SegmentEmbeddings] {
+        var built: [UUID: SegmentEmbeddings] = [:]
+        var remaining = meetings
+        while !remaining.isEmpty {
+            if let running = askIndexJob {
+                askIndexJobJoins += 1
+                built.merge(try await running.task.value) { _, newer in newer }
+                remaining.removeAll { built[$0.id] != nil }
+                continue
+            }
+            // A search replaced while it waited does not start indexing of its own.
+            try Task.checkCancellation()
+            let jobID = UUID()
+            let job = remaining
+            let task = Task { () async throws -> [UUID: SegmentEmbeddings] in
+                defer { self.endAskIndexJob(jobID) }
+                return try await self.runAskIndexJob(job)
+            }
+            askIndexJob = (jobID, task)
+            built.merge(try await task.value) { _, newer in newer }
+            // A job returns an index for every meeting it was given, or throws.
+            remaining.removeAll { built[$0.id] != nil }
+        }
+        return built
+    }
+
+    private func endAskIndexJob(_ id: UUID) {
+        guard askIndexJob?.id == id else { return }
+        askIndexJob = nil
+        isIndexingForAsk = false
+        askIndexingProgress = nil
+    }
+
+    /// The job's work: `meetings` a group per model run, each group saved as it finishes (F538),
+    /// with passages done out of passages to do published after each group (F840).
+    private func runAskIndexJob(_ meetings: [SearchableMeeting]) async throws -> [UUID: SegmentEmbeddings] {
+        isIndexingForAsk = true
+        let total = meetings.reduce(0) { $0 + $1.segments.count }
+        var done = 0
+        askIndexingProgress = AskIndexingProgress(done: 0, total: total)
+        var made: [UUID: SegmentEmbeddings] = [:]
+        for chunk in Self.askEmbeddingChunks(meetings, passages: askEmbeddingChunkPassages) {
+            // Paused between groups (F840): the embedder stops itself when cancelled mid-run.
+            try Task.checkCancellation()
+            let texts = chunk.flatMap { $0.segments.map(\.text) }
+            let embedded = try await askEmbedder(texts, .passage)
+            // Checked rather than trusted: a short answer would trap in the slicing below.
+            let (expected, overflow) = texts.count.multipliedReportingOverflow(by: embedded.dimension)
+            guard embedded.dimension > 0, !overflow, embedded.vectors.count == expected else {
+                throw LocalEmbedderError.unreadableOutput
+            }
+            var offset = 0
+            var built: [(id: UUID, index: SegmentEmbeddings)] = []
+            for meeting in chunk {
+                let length = meeting.segments.count * embedded.dimension
+                let index = SegmentEmbeddings(
+                    modelID: AskEmbeddingRuntime.modelID,
+                    fingerprint: SegmentEmbeddings.fingerprint(of: meeting.segments.map(\.text)),
+                    dimension: embedded.dimension,
+                    vectors: Array(embedded.vectors[offset..<(offset + length)])
+                )
+                offset += length
+                made[meeting.id] = index
+                cacheAskIndex(index, for: meeting.id)
+                built.append((meeting.id, index))
+            }
+            // Saved before the next run starts, so a paused job keeps every group finished so far
+            // (F538, F840) — and saved here, on the main actor, with no
+            // suspension between a meeting's folder check and its save (F849). F538 wrote these
+            // from a detached task, and `MeetingStore.delete` runs on the main actor: a save
+            // landing while a delete was emptying the same folder put files back into it, the
+            // folder's own removal then failed, and F146's rollback listed the meeting again
+            // without its audio. Here a save runs wholly before a delete, which then removes the
+            // index with the folder, or wholly after one, when the folder is gone and the check
+            // skips it.
+            //
+            // One meeting at a time, with the main actor given back between them (F871). A save
+            // costs about 0.3 ms a meeting plus its size (measured median, Apple M3 Pro: ~1 ms
+            // for a 2,000-passage meeting, 6.5 ms for one of 20,000 lines), and a group is ~2,000
+            // passages, so a group of 400 five-line meetings saved in one stretch: the main thread's
+            // longest stall while indexing them measured 162–167 ms on this Mac (debug build, three
+            // runs, `askIndexSaveStallAtScale`). The check is re-made after each yield: a delete can
+            // run in it.
+            for (position, entry) in built.enumerated() {
+                if position > 0 { await Task.yield() }
+                // A read-only library still searches by meaning; it just does not keep the index
+                // on disk — the session cache above is what keeps it from re-embedding every query.
+                let directory = store.recordingDirectoryURL(for: entry.id)
+                guard !store.isDegraded, FileManager.default.fileExists(atPath: directory.path) else { continue }
+                try? askIndexSave(entry.index, directory)
+            }
+            done += texts.count
+            askIndexingProgress = AskIndexingProgress(done: done, total: total)
+        }
+        return made
+    }
+
     /// Running total of `askIndexCache`'s vectors, so the bound costs O(1) rather than a walk of
     /// every cached index on every insert.
-    private var askIndexCacheVectorCount = 0
+    private(set) var askIndexCacheVectorCount = 0
 
     private func cacheAskIndex(_ index: SegmentEmbeddings, for id: UUID) {
         let replacing = askIndexCache[id]?.vectors.count ?? 0

@@ -124,7 +124,7 @@ private actor Flag {
 }
 
 @MainActor
-@Test("Indexing for search by meaning saves each chunk as it finishes, so a cancelled search keeps them (F538)")
+@Test("Indexing for search by meaning saves each chunk as it finishes, so a paused job keeps them (F538, F840)")
 func cancelledIndexingKeepsFinishedChunks() async throws {
     let model = try makeModel(installed: true)
     model.askEmbeddingChunkPassages = 1 // one meeting per helper run
@@ -138,7 +138,7 @@ func cancelledIndexingKeepsFinishedChunks() async throws {
     let calls = EmbedderCalls()
     model.askEmbedder = { texts, kind in
         guard kind == .passage else { return (2, [1, 0]) }
-        // The second helper run parks until the search is cancelled, as a real run does until
+        // The second helper run parks until indexing is paused, as a real run does until
         // `ProcessGroupRunner` kills it.
         if await calls.startPassageRun(texts) == 2 { try await Task.sleep(nanoseconds: 600_000_000_000) }
         return (2, texts.flatMap { _ in [Float(1), 0] })
@@ -155,7 +155,10 @@ func cancelledIndexingKeepsFinishedChunks() async throws {
         try await Task.sleep(nanoseconds: 1_000_000)
     }
     try #require(await calls.passageRuns >= 2, "the meetings were embedded in one all-or-nothing run")
+    // What leaving Ask does (F840): since the job became the model's, cancelling a search alone no
+    // longer stops it — a newer search waits for it instead (`AskIndexingJobTests`).
     search.cancel()
+    model.pauseAskIndexing()
     await search.value
 
     let modelID = AskEmbeddingRuntime.modelID
@@ -198,6 +201,15 @@ func askViewRanksOnceInTheBackground() throws {
     // The fused search is handed the keyword pass rather than ranking the query again.
     #expect(runSearch.contains("await model.askMeetingsByMeaning(pass"))
     #expect(runSearch.contains("asked == query"))
-    // Leaving the tab cancels the search, so returning does not start a second run beside it.
-    #expect(structure.contains(".onDisappear { searchTask?.cancel() }"))
+    // Leaving the tab cancels the search and pauses the indexing job (F840), so returning does not
+    // start a second run beside it.
+    var leaving: Substring?
+    var from = structure.startIndex
+    while let marker = structure.range(of: ".onDisappear", range: from..<structure.endIndex) {
+        let candidate = try body(following: ".onDisappear", in: String(structure[marker.lowerBound...]))
+        if candidate.contains("searchTask?.cancel()") { leaving = candidate; break }
+        from = marker.upperBound
+    }
+    let onLeave = try #require(leaving, "the Ask view no longer cancels its search when it goes away")
+    #expect(onLeave.contains("model.pauseAskIndexing()"))
 }

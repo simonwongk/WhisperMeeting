@@ -2448,7 +2448,12 @@ private struct AskMeetingsView: View {
         }
         // F538: the search stops with the tab. It used to run on while `.onAppear` above started a
         // second one beside it; indexing saves each finished group, so the next one resumes.
-        .onDisappear { searchTask?.cancel() }
+        .onDisappear {
+            searchTask?.cancel()
+            // F840: indexing is the model's job now, so a cancelled search no longer stops it; leaving
+            // Ask does, as it did before.
+            model.pauseAskIndexing()
+        }
     }
 
     private var scopeCaption: String {
@@ -2527,7 +2532,16 @@ private struct AskMeetingsView: View {
                     Label(model.isIndexingForAsk ? "Preparing your meetings for search by meaning…" : "Also searching by meaning, on this Mac",
                           systemImage: "sparkle.magnifyingglass")
                         .font(.caption).foregroundStyle(.secondary)
-                    if model.isIndexingForAsk { ProgressView().controlSize(.mini) }
+                    // F840: passages done out of passages to do, so a first index of a large library
+                    // says how far along it is rather than spinning.
+                    if let progress = model.askIndexingProgress, progress.total > 0 {
+                        ProgressView(value: Double(progress.done), total: Double(progress.total))
+                            .frame(width: 80)
+                        Text("\(progress.done.formatted()) of \(progress.total.formatted()) passages")
+                            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    } else if model.isIndexingForAsk {
+                        ProgressView().controlSize(.mini)
+                    }
                 } else if model.isInstallingAskEmbeddings {
                     ProgressView().controlSize(.small)
                     Text("Downloading the search model…").font(.caption).foregroundStyle(.secondary)
