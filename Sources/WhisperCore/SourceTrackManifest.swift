@@ -190,8 +190,10 @@ public struct SourceTrackManifest: Codable, Equatable, Sendable {
         // padded counterpart registered here, so a padded capture's recovered manifest kept the
         // clean-capture label even though `paddedGaps` (read from the session sidecar) was
         // non-empty right beside it. Since F754 that fallback's base is
-        // `capturedUnknownOffsetsAlignment` when it has no capture-time offsets; the plain capture
-        // base is kept for a recovery that has them (F753).
+        // `capturedUnknownOffsetsAlignment`. The plain capture base reaches here from no current
+        // caller: a recovery that has capture-time offsets (F753) writes its manifest through
+        // `writeFromCapturedAlignment`, which picks its label itself. The case stays so the closed
+        // set keeps a padded counterpart for every capture label.
         case capturedAlignment: return paddedAlignment
         case capturedUnknownOffsetsAlignment: return paddedUnknownOffsetsAlignment
         // An unrecognised base means a caller introduced an alignment without adding its padded
