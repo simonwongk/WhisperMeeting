@@ -748,6 +748,9 @@ final class AppModel: ObservableObject {
     var flushForShrink: @Sendable (URL) throws -> Void = { try DurableFlush.flush($0) }
     /// Called before each file Shrink removes. Lets a test observe the order (F795).
     var willRemoveForShrink: (String) -> Void = { _ in }
+    /// Called off the main actor at the moment of each removal, after its last identity check and before the file is
+    /// set aside and compared (F1005): lets a test change the file where only that comparison can see it.
+    var willUnlinkForShrink: @Sendable (URL) -> Void = { _ in }
     #if DEBUG
     var isBackingUpForTesting: Bool {
         get { isBackingUp }

@@ -278,6 +278,7 @@ extension AppModel {
             let besideRecording = MeetingStoragePlan.twoChannelRecordingsToVerify(disk)
             let unread = MeetingStoragePlan.unreadRecordingsToVerify(disk), decodeUnread = decodeUnreadableForShrink
             let decodedWAV = folder.appendingPathComponent(".shrink-\(token).decoded.wav")
+            let otherSeconds = disk.otherRecordingSeconds
             let flush = flushForShrink
             let declaredLength = disk.durationSeconds
             let needed = MeetingStoragePlan.totalBytes([
@@ -372,11 +373,13 @@ extension AppModel {
                             throw ShrinkFailure.otherUnchecked(name: other.name)
                         }
                     }
-                    // F1004: and so is one AVFoundation cannot read — a WebM/Opus download — once the installed ffmpeg
-                    // has decoded it. One that cannot be decoded, or holds more than two channels, is not shown.
+                    // F1004: and so is one whose channels AVFoundation does not show — a WebM/Opus download — once the
+                    // installed ffmpeg has decoded it. One that cannot be decoded, whose decode is shorter than its
+                    // measured length, or that holds more than two channels, is not shown.
                     for other in unread {
                         do {
                             try await Self.checkUnreadChannelsInCopy(folder.appendingPathComponent(other.name), scratch: decodedWAV,
+                                                                     seconds: otherSeconds[other.name],
                                                                      copy: tempM4A, decodeUnread: decodeUnread,
                                                                      decode: decode, measure: presence)
                         } catch let ShrinkFailure.leftoverChannelNotInCopy(name, finding) {
@@ -497,6 +500,18 @@ extension AppModel {
             // ffmpeg first; kept when it cannot be.
             let unread = MeetingStoragePlan.unreadRecordingsToVerify(disk), decodeUnread = decodeUnreadableForShrink
             let decodedWAV = folder.appendingPathComponent(".shrink-\(UUID().uuidString).decoded.wav")
+            let otherSeconds = disk.otherRecordingSeconds
+            // The decode writes 16 kHz 16-bit stereo, 64 kB a second, as the encode's estimate counts it (review 2 of Wave 8
+            // lane A, finding 4a): a resume encodes nothing, but it must not fill the volume decoding a download either.
+            if !unread.isEmpty {
+                let longest = unread.compactMap { otherSeconds[$0.name] }.max() ?? disk.durationSeconds
+                let needed = MeetingStoragePlan.totalBytes([.init(name: "", bytes: Int64(saturating: longest * 64_000)),
+                                                            .init(name: "", bytes: 100_000_000)])
+                if let available = availableBytesForShrink(folder), available < needed {
+                    return .failed(title: meeting.title,
+                                   message: ShrinkFailure.insufficientSpace(needed: needed, available: available).localizedDescription)
+                }
+            }
             let copyURL = store.recordingURL(for: meeting)
             let decode = decodeForShrink, presence = channelPresenceForShrink
             let checked: ShrinkFailure? = leftovers.isEmpty && unread.isEmpty ? nil : await Task.detached(priority: .userInitiated) {
@@ -516,6 +531,7 @@ extension AppModel {
                 for leftover in unread {
                     do {
                         try await Self.checkUnreadChannelsInCopy(folder.appendingPathComponent(leftover.name), scratch: decodedWAV,
+                                                                 seconds: otherSeconds[leftover.name],
                                                                  copy: copyURL, decodeUnread: decodeUnread,
                                                                  decode: decode, measure: presence)
                     } catch let failure as ShrinkFailure {
@@ -540,6 +556,7 @@ extension AppModel {
         for entry in now.remove {
             willRemoveForShrink(entry.name)
             let url = folder.appendingPathComponent(entry.name)
+            let willUnlink = willUnlinkForShrink
             do {
                 try await Task.detached {
                     // F1005: only the file that was measured, as it was then. A removal by path removes whatever has
@@ -551,6 +568,7 @@ extension AppModel {
                     // F943: a copy an import made before F804 may still carry Finder's Locked flag,
                     // which blocks the unlink; it is the app's own file in the meeting's own folder.
                     MeetingStore.clearUserFlags(at: url)
+                    willUnlink(url)
                     guard InterruptedLinkImportExtraction.removeIfUnchanged(url, identity: identity) else {
                         throw CocoaError(.fileWriteUnknown)
                     }
@@ -589,10 +607,12 @@ extension AppModel {
     /// Decodes `url` — a file Shrink would remove whose tracks AVFoundation cannot read, a link import's WebM/Opus
     /// download — with `decodeUnread` into `scratch`, then checks its channels against `copy` as
     /// `checkChannelsInCopy` checks a two-channel file (F1004): one channel has nothing to cancel against; two are
-    /// measured; any other count, or a decode or read that fails, throws `leftoverUnchecked` with the file's name, and
-    /// a cancellation `leftoverChannelNotInCopy`. `scratch` is removed whatever happens.
+    /// measured; any other count, a decode or read that fails, or a decode shorter than the file's measured length
+    /// `seconds` (less F911's tolerance; none measured is not shown either) — ffmpeg can exit 0 on a decode that stopped
+    /// early, and the rest would go unchecked (review 2 of Wave 8 lane A, finding 4b) — throws `leftoverUnchecked` with
+    /// the file's name, and a cancellation `leftoverChannelNotInCopy`. `scratch` is removed whatever happens.
     nonisolated static func checkUnreadChannelsInCopy(
-        _ url: URL, scratch: URL, copy: URL,
+        _ url: URL, scratch: URL, seconds: TimeInterval?, copy: URL,
         decodeUnread: @Sendable (_ input: URL, _ output: URL) async throws -> Void,
         decode: @Sendable (URL) async throws -> DecodedAudio.Decoded,
         measure: @Sendable (_ original: URL, _ copy: URL) async throws -> RecordingMixPlan.ChannelPresence
@@ -606,6 +626,10 @@ extension AppModel {
             channels = Int(header.channels)
             decoded = try await decode(scratch)
         } catch {
+            throw ShrinkFailure.leftoverUnchecked(name: name)
+        }
+        guard let seconds, seconds.isFinite, decoded.duration.isFinite,
+              decoded.duration >= seconds - InterruptedLinkImportExtraction.lengthTolerance else {
             throw ShrinkFailure.leftoverUnchecked(name: name)
         }
         switch channels {

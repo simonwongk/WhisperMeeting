@@ -129,6 +129,37 @@ func shrinkKeepsALeftoverRewrittenAtTheRemoval() async throws {
             "the set-aside name was left")
 }
 
+private final class Once: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    /// True the first time only.
+    func first() -> Bool { lock.withLock { defer { done = true }; return !done } }
+}
+
+@Test("A leftover rewritten after the delete step's last identity check, at the moment of its unlink, is kept (F1005 round 2)")
+@MainActor
+func shrinkKeepsALeftoverRewrittenAtTheUnlink() async throws {
+    // Review 1 of Wave 8 lane A, finding 4: with the removal replaced by a plain removal by path, and the identity check
+    // before it kept, every F1005 test still passed — the rewrite came before that check. This one comes after it, where
+    // only the removal's own set-aside-and-compare (F894's `removeIfUnchanged`) can see it.
+    let f = try IdentityFixture()
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    let leftover = f.url("recording.mp3")
+    let once = Once()
+    f.model.willUnlinkForShrink = { url in
+        guard url.lastPathComponent == "recording.mp3", once.first() else { return }
+        try? rewriteInPlace(url, byte: 0x66)
+    }
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect((try? Data(contentsOf: leftover)) == Data(repeating: 0x66, count: 1_000_000), "\(alert)")
+    #expect(alert.contains("1 file(s) could not be removed"), "\(alert)")
+    let setAside = try FileManager.default.contentsOfDirectory(atPath: f.folder.path).filter { $0.contains(".removing-") }
+    #expect(setAside.isEmpty, "the set-aside name was left: \(setAside)")
+}
+
 @Test("A leftover left as it was measured is still removed, Locked flag and all (F1005 control)")
 @MainActor
 func shrinkStillRemovesAnUnchangedLeftoverByIdentity() async throws {

@@ -248,15 +248,19 @@ public enum MeetingStoragePlan {
         }
     }
 
-    /// The other `recording.<ext>` files whose tracks could not be read — a link import's WebM/Opus download,
-    /// which AVFoundation cannot open — so neither `twoChannelRecordingsToVerify` nor `otherRecordingsToVerify`
-    /// sees their channels (F1004). Shrink decodes each with the installed ffmpeg and checks it against the copy
-    /// as it checks a two-channel file, before it removes anything; one it cannot decode, or that holds more
-    /// than two channels, is kept. Their length alone, which F911 compares, cannot show a voice in opposite
-    /// polarity on the two channels, which the mono copy does not hold. An empty file holds nothing.
+    /// The other `recording.<ext>` files whose channels AVFoundation does not show — tracks it could not read (a
+    /// link import's WebM/Opus download), or read as none (an MP3 in MP4 opens and lists no audio track: review 1 of
+    /// Wave 8 lane A, finding 1), or a track of no channels — so neither `twoChannelRecordingsToVerify` nor
+    /// `otherRecordingsToVerify` sees them (F1004). Shrink decodes each with the installed ffmpeg and checks it against
+    /// the copy as it checks a two-channel file, before it removes anything; one it cannot decode, whose decode is
+    /// shorter than its measured length, or that holds more than two channels, is kept. Their length alone, which F911
+    /// compares, cannot show a voice in opposite polarity on the two channels, which the mono copy does not hold. An
+    /// empty file holds nothing.
     public static func unreadRecordingsToVerify(_ disk: DiskFacts) -> [FolderEntry] {
         otherRecordings(in: disk.entries, recordingName: disk.recordingName).filter { other in
-            !other.isEmpty && disk.otherRecordingTracks[other.name] == nil
+            guard !other.isEmpty else { return false }
+            guard let tracks = disk.otherRecordingTracks[other.name] else { return true }
+            return tracks.isEmpty || tracks.contains { $0.channels <= 0 }
         }
     }
 
@@ -323,7 +327,8 @@ public enum MeetingStoragePlan {
     /// audio than the recording never saw it, so it is kept, in `changed`, for the next Shrink to
     /// measure. Removing every name in the fresh listing, as before, let the deletion and the safety
     /// check read different facts; and a same-size rewrite in place kept the name and the sizes, so the
-    /// identity is compared too. A measured identity the current listing could not read is a change.
+    /// identity is compared too. An identity either listing could not read is a change: without one, nothing shows the
+    /// file is the one measured (review 1 of Wave 8 lane A, finding 6).
     public static func removableNow(current: [FolderEntry], measured: [FolderEntry], keeping outputName: String)
         -> (remove: [FolderEntry], changed: [FolderEntry]) {
         var seen: [String: FolderEntry] = [:]
@@ -331,7 +336,7 @@ public enum MeetingStoragePlan {
         var remove: [FolderEntry] = [], changed: [FolderEntry] = []
         for entry in removableFiles(in: current, keeping: outputName) {
             if let before = seen[entry.name.lowercased()], before.bytes == entry.bytes,
-               before.logicalBytes == entry.logicalBytes, before.identity == nil || before.identity == entry.identity {
+               before.logicalBytes == entry.logicalBytes, let identity = before.identity, identity == entry.identity {
                 remove.append(entry)
             } else {
                 changed.append(entry)

@@ -378,21 +378,25 @@ func shrinkResumeRefusesALongerLeftover() {
 
 @Test("Only what the checks measured, unchanged, is removed; anything new or changed is kept (F949)")
 func removableNowOnlyRemovesWhatWasMeasured() {
-    let measured = [Entry(name: "recording.wav", bytes: 5_760_000, logicalBytes: 5_760_044),
-                    Entry(name: "recording.mp3", bytes: 1_000_000, logicalBytes: 1_000_000),
-                    Entry(name: ".shrink-OLD.m4a", bytes: 9_000), Entry(name: "notes.md", bytes: 40)]
-    let current = [Entry(name: "recording.wav", bytes: 5_760_000, logicalBytes: 5_760_044),
-                   Entry(name: "recording.mp3", bytes: 5_000_000, logicalBytes: 5_000_000),
-                   Entry(name: "recording.webm", bytes: 3_000_000, logicalBytes: 3_000_000),
-                   Entry(name: ".shrink-OLD.m4a", bytes: 9_000), Entry(name: "notes.md", bytes: 40),
-                   Entry(name: "recording.m4a", bytes: 240_000, logicalBytes: 240_000)]
+    // Every file carries the identity the meter reads (F1005); a measured file without one is never removed.
+    func id(_ inode: UInt64) -> InterruptedLinkImportExtraction.FileIdentity {
+        .init(device: 1, inode: inode, size: 1, modifiedSeconds: 1, modifiedNanoseconds: 0)
+    }
+    let measured = [Entry(name: "recording.wav", bytes: 5_760_000, logicalBytes: 5_760_044, identity: id(1)),
+                    Entry(name: "recording.mp3", bytes: 1_000_000, logicalBytes: 1_000_000, identity: id(2)),
+                    Entry(name: ".shrink-OLD.m4a", bytes: 9_000, identity: id(3)), Entry(name: "notes.md", bytes: 40, identity: id(4))]
+    let current = [Entry(name: "recording.wav", bytes: 5_760_000, logicalBytes: 5_760_044, identity: id(1)),
+                   Entry(name: "recording.mp3", bytes: 5_000_000, logicalBytes: 5_000_000, identity: id(2)),
+                   Entry(name: "recording.webm", bytes: 3_000_000, logicalBytes: 3_000_000, identity: id(5)),
+                   Entry(name: ".shrink-OLD.m4a", bytes: 9_000, identity: id(3)), Entry(name: "notes.md", bytes: 40, identity: id(4)),
+                   Entry(name: "recording.m4a", bytes: 240_000, logicalBytes: 240_000, identity: id(6))]
     let now = MeetingStoragePlan.removableNow(current: current, measured: measured, keeping: "recording.m4a")
     #expect(now.remove.map(\.name) == [".shrink-OLD.m4a", "recording.wav"])
     #expect(Set(now.changed.map(\.name)) == ["recording.mp3", "recording.webm"], "grew; appeared")
     // A logical length that changed with the same allocation is a change too; a name in another case is the same file.
-    let rewritten = [Entry(name: "Recording.WAV", bytes: 5_760_000, logicalBytes: 5_000_000)]
+    let rewritten = [Entry(name: "Recording.WAV", bytes: 5_760_000, logicalBytes: 5_000_000, identity: id(1))]
     #expect(MeetingStoragePlan.removableNow(current: rewritten, measured: measured, keeping: "recording.m4a").changed.count == 1)
-    let renamed = [Entry(name: "Recording.WAV", bytes: 5_760_000, logicalBytes: 5_760_044)]
+    let renamed = [Entry(name: "Recording.WAV", bytes: 5_760_000, logicalBytes: 5_760_044, identity: id(1))]
     #expect(MeetingStoragePlan.removableNow(current: renamed, measured: measured, keeping: "recording.m4a").remove.count == 1)
 }
 
@@ -412,11 +416,25 @@ func removableNowComparesTheMeasuredIdentity() {
     #expect(now(Identity(device: 1, inode: 8, size: 1_000_000, modifiedSeconds: 100, modifiedNanoseconds: 5)).changed.count == 1,
             "replaced by another file")
     #expect(now(nil).changed.count == 1, "a measured identity that cannot be read now is a change")
-    // A listing that read no identity is judged by its sizes, as before.
+    // A measured listing that could not read a file's identity cannot show the file is the one measured: kept, not
+    // judged by its sizes (review 1 of Wave 8 lane A, finding 6).
     let unidentified = [Entry(name: "recording.mp3", bytes: 1_000_000, logicalBytes: 1_000_000)]
     #expect(MeetingStoragePlan.removableNow(current: [Entry(name: "recording.mp3", bytes: 1_000_000, logicalBytes: 1_000_000,
                                                             identity: measuredID)],
-                                            measured: unidentified, keeping: "recording.m4a").remove.count == 1)
+                                            measured: unidentified, keeping: "recording.m4a").changed.count == 1)
+}
+
+@Test("A file whose tracks were not read, read as none, or read with no channels goes to the ffmpeg decode (F1004)")
+func unreadRecordingsAreThoseWhoseChannelsAreNotShown() {
+    var disk = MeetingStoragePlan.DiskFacts(
+        recordingName: "recording.wav", recordingExists: true, inOwnFolder: true, hasIntegrityProblem: false,
+        rebuildOffered: false, durationSeconds: 6,
+        entries: ["recording.wav", "recording.webm", "recording.mp4", "recording.mka", "recording.m4a", "recording.caf"]
+            .map { Entry(name: $0, bytes: 1_000) } + [Entry(name: "recording.ogg", bytes: 0)])
+    disk.otherRecordingTracks = ["recording.mp4": [], "recording.mka": [.init(channels: 2), .init(channels: 0)],
+                                 "recording.m4a": [.init(channels: 2)], "recording.caf": [.init(channels: 1)]]
+    #expect(MeetingStoragePlan.unreadRecordingsToVerify(disk).map(\.name).sorted() == ["recording.mka", "recording.mp4", "recording.webm"],
+            "nil, none listed (review 1 of Wave 8 lane A, finding 1) and a track of no channels; never an empty file")
 }
 
 @Test("The copy replaces a file named as the output only while it is the file the checks measured (F1005)")

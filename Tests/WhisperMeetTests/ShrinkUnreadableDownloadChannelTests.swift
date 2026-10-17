@@ -187,6 +187,64 @@ func shrinkKeepsAnUnreadableDownloadOfMoreChannels() async throws {
     #expect(alert.contains("could not be checked"), "\(alert)")
 }
 
+@Test("A download AVFoundation opens but lists no audio track for, or a track of no channels, is decoded and checked too (F1004 round 2)")
+@MainActor
+func shrinkChecksADownloadWhoseTracksShowNoChannels() async throws {
+    // Review 1 of Wave 8 lane A, finding 1: an MP3 in MP4 opens, and AVFoundation lists no audio track in it (`[]`,
+    // not nil), so it went to none of the channel checks and was removed on its length alone.
+    for (label, tracks) in [("no audio track", [RecordingMixPlan.Track]()), ("a track of no channels", [RecordingMixPlan.Track(channels: 0)])] {
+        let f = try UnreadableDownloadFixture(download: midSide, decoded: midSide)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let real = f.model.audioTracksForShrink
+        f.model.audioTracksForShrink = { url in url.pathExtension == "webm" ? tracks : await real(url) }
+
+        await f.shrink()
+
+        let alert = f.model.alertMessage ?? "nil"
+        #expect((try? Data(contentsOf: f.download)) == webm, "\(label): the download holds the only copy of voice B: \(alert)")
+        if tracks.isEmpty {
+            #expect(alert.contains("also holds “recording.webm”, which shrinking would delete"), "\(label): \(alert)")
+            #expect(f.decodes.value == 1, "\(label)")
+        }
+        // A track of no channels is refused before any encode already (F955's plan cannot mix it); kept either way.
+    }
+}
+
+@Test("A download whose decode comes out shorter than its measured length is kept, not judged on what was decoded (F1004 round 2)")
+@MainActor
+func shrinkKeepsADownloadWhoseDecodeIsShort() async throws {
+    // Review 2 of Wave 8 lane A, finding 4b: ffmpeg can exit 0 on a decode that stopped early, and a mono or short
+    // decode then said nothing about the rest. The download measures six seconds; its decode holds one.
+    let short: [[Float]] = [Array(monoOf(ordinary).prefix(48_000))]
+    for resume in [false, true] {
+        let f = try UnreadableDownloadFixture(download: ordinary, decoded: short, resume: resume)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+
+        await f.shrink()
+
+        let alert = f.model.alertMessage ?? "nil"
+        #expect((try? Data(contentsOf: f.download)) == webm, "resume \(resume): \(alert)")
+        #expect(alert.contains("could not be checked"), "resume \(resume): \(alert)")
+    }
+}
+
+@Test("A resume checks the free space a download's decode needs before decoding it (F1004 round 2)")
+@MainActor
+func shrinkResumeChecksFreeSpaceBeforeDecoding() async throws {
+    // Review 2 of Wave 8 lane A, finding 4a: the encode counted the decode's 64 kB a second; a resume decoded with no
+    // look at the free space, and could fill the volume before ffmpeg failed.
+    let f = try UnreadableDownloadFixture(download: ordinary, decoded: ordinary, resume: true)
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    f.model.availableBytesForShrink = { _ in 1_000 }
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect((try? Data(contentsOf: f.download)) == webm, "\(alert)")
+    #expect(f.decodes.value == 0, "decoded with no room for it")
+    #expect(alert.contains("Shrinking needs about"), "\(alert)")
+}
+
 @Test("A resume keeps a WebM leftover whose channels cancel, and still removes an ordinary one (F1004)")
 @MainActor
 func shrinkResumeChecksAnUnreadableLeftover() async throws {
