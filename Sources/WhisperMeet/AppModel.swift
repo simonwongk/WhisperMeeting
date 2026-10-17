@@ -6912,8 +6912,12 @@ final class AppModel: ObservableObject {
             // F455: from the transcript as the user left it. A hand edit never touches the stored
             // segments, so resolving against them quoted a line the user had deleted, or the
             // mis-hearing they had corrected, under a summary written from the edited text.
+            //
+            // F919: Ask's passages, which are those same lines whenever there are segments, and a
+            // segment-less transcript's sentences (untimed) when there are none (F839) — where
+            // `effectiveSegments` read nothing, so no item had a quote.
             let segments = store.meeting(id: id).map {
-                EditedTranscript.effectiveSegments(transcriptText: $0.transcriptText, segments: $0.segments)
+                EditedTranscript.searchablePassages(transcriptText: $0.transcriptText, segments: $0.segments)
             } ?? []
             var resolved = summary
             resolved.actionItems = ActionItemEvidence.resolved(summary.actionItems, segments: segments)

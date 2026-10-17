@@ -1,10 +1,12 @@
 import Foundation
 
 /// Links each action item back to the transcript moment that best supports it — entirely locally, with
-/// no model call (F177). For each item it picks the timestamped segment that shares the most *content
-/// words* with the item text, and attaches that segment's text as the `quote` and its start as the
-/// `timestamp`. Items with no confident match keep `quote`/`timestamp` nil, so "Play source" is only
-/// offered where there is real evidence. User-entered fields (done/owner/due) are always preserved.
+/// no model call (F177). For each item it picks the segment that shares the most *content words* with
+/// the item text, and attaches that segment's text as the `quote` and its start as the `timestamp`.
+/// Items with no confident match keep `quote`/`timestamp` nil. An untimed segment (a line typed into
+/// the editor, or a sentence of a transcript with no segments at all — F839's passages) can supply a
+/// quote but never a timestamp (F919), so "Play source" is only offered where there is a time to play
+/// from. User-entered fields (done/owner/due) are always preserved.
 public enum ActionItemEvidence {
     /// Minimum shared content words for a segment to count as supporting evidence — two, so a single
     /// incidental word ("meeting", "team") can't create a spurious link.
@@ -14,20 +16,20 @@ public enum ActionItemEvidence {
         _ items: [ActionItem],
         segments: [TranscriptSegment]
     ) -> [ActionItem] {
-        // Precompute each timestamped segment's content-word set once.
-        let candidates: [(index: Int, start: Double, words: Set<String>, text: String)] = segments
+        // Precompute each segment's content-word set once. Untimed segments are candidates too
+        // (F919): until then only timed ones were, so a meeting whose transcript has no segments —
+        // a Qwen result whose alignment failed, searched sentence by sentence since F839 — had
+        // nothing to quote.
+        let candidates: [(index: Int, start: Double?, words: Set<String>, text: String)] = segments
             .enumerated()
-            .compactMap { index, segment in
-                guard let start = segment.start else { return nil }
-                return (index, start, contentWords(segment.text), segment.text)
-            }
+            .map { index, segment in (index, segment.start, contentWords(segment.text), segment.text) }
         guard !candidates.isEmpty else { return items }
 
         return items.map { item in
             let itemWords = contentWords(item.text)
             guard !itemWords.isEmpty else { return cleared(item) }
 
-            var best: (score: Int, start: Double, text: String, order: Int)?
+            var best: (score: Int, start: Double?, text: String, order: Int)?
             for candidate in candidates {
                 let score = itemWords.intersection(candidate.words).count
                 guard score >= minimumSharedWords else { continue }

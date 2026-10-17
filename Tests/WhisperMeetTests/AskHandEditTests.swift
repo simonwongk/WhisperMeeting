@@ -151,6 +151,27 @@ func actionItemQuotesReadTheEditedTranscript() async throws {
 }
 
 @MainActor
+@Test("A summary of a meeting with no segments quotes its sentence for an action item, untimed (F919)")
+func actionItemQuotesReadAMeetingWithNoSegments() async throws {
+    let model = try makeModel()
+    let id = UUID()
+    let text = "We agreed to move the launch to Friday. Dana will email the vendor about pricing."
+    // What a Qwen meeting whose alignment failed stores: the complete text, one line, no segments.
+    model.store.upsert(MeetingRecord(id: id, title: "Launch", status: .completed, transcriptText: text, segments: []))
+    try FileManager.default.createDirectory(at: model.store.recordingDirectoryURL(for: id), withIntermediateDirectories: true)
+    model.makeSummarizer = { _, _ in
+        StubSummarizer(MeetingSummary(summary: "s", keyPoints: [], actionItems: ["Dana to email the vendor about pricing"]))
+    }
+
+    await model.performSummarization(id: id, engine: .local, apiKey: "", transcript: text, language: nil, style: .balanced)
+
+    let items = try #require(model.store.meeting(id: id)?.summary?.actionItems)
+    try #require(items.count == 1)
+    #expect(items[0].quote == "Dana will email the vendor about pricing.")
+    #expect(items[0].timestamp == nil, "no timed segment: no Play source")
+}
+
+@MainActor
 @Test("Ask finds a meeting whose transcript has no segments, sentence by sentence and untimed, by keyword and by meaning (F839)")
 func askSearchesAMeetingWithNoSegments() async throws {
     let model = try makeModel()
