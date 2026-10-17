@@ -123,7 +123,7 @@ public enum TranscriptComparison {
         // Each line's and each segment's words, for F868's edge check; made once, read per offered row.
         let lineWords = texts.map(words)
         let segmentWords = secondary.map { words(normalize($0.text)) }
-        return primary.indices.map { line in
+        let rows: [TranscriptComparisonSpan] = primary.indices.map { line in
             let row = span(for: primary[line], normalized: texts[line], found[line], in: secondary)
             guard row.kind == .diverge, case let .covering(pieces)? = found[line] else { return row }
             let offers = offersReplacement(
@@ -139,6 +139,68 @@ public enum TranscriptComparison {
                 offersReplacement: offers
             )
         }
+        return agreeingMatchingGroups(rows, primary, found, secondary)
+    }
+
+    /// Rows whose lines the two engines split differently but whose words match, marked agreeing (F869).
+    ///
+    /// A **group** is a connected set of this transcript's lines and the other engine's segments: a
+    /// line and a segment are connected when the segment is among the pieces the line was matched with
+    /// (`Counterpart.covering`). Two lines the other engine heard as one share that segment; halves of
+    /// two lines share the segment the break falls in. Each line of such a group is shown the reading it
+    /// shares with its neighbours, so it read as a difference — without Replace, because a shared piece
+    /// is never written into one line (F658) — even where the engines said exactly the same words. The
+    /// user's decision (2026-10-16): when the group's lines, joined in time order, and its segments,
+    /// joined in time order, say the same words (`normalize`), every line of the group agrees and
+    /// leaves the differences. Nothing is offered to replace; a group whose words differ is unchanged.
+    ///
+    /// Only groups of two or more lines: one line with several pieces already agrees by itself when
+    /// they say its words (`span`). Lines matched by agreement or with nothing are never in a group.
+    static func agreeingMatchingGroups(
+        _ rows: [TranscriptComparisonSpan], _ primary: [TranscriptSegment], _ found: [Counterpart?],
+        _ secondary: [TranscriptSegment]
+    ) -> [TranscriptComparisonSpan] {
+        // Union-find over lines, joined through the segments they share.
+        var parent = Array(primary.indices)
+        func root(_ line: Int) -> Int {
+            var line = line
+            while parent[line] != line { parent[line] = parent[parent[line]]; line = parent[line] }
+            return line
+        }
+        var firstLineOfSegment: [Int: Int] = [:]
+        for (line, counterpart) in found.enumerated() {
+            guard case let .covering(pieces)? = counterpart else { continue }
+            for piece in pieces {
+                if let other = firstLineOfSegment[piece] {
+                    parent[root(line)] = root(other)
+                } else {
+                    firstLineOfSegment[piece] = line
+                }
+            }
+        }
+        var groups: [Int: [Int]] = [:]
+        for (line, counterpart) in found.enumerated() {
+            if case .covering? = counterpart { groups[root(line), default: []].append(line) }
+        }
+        var result = rows
+        for lines in groups.values where lines.count > 1 && lines.contains(where: { rows[$0].kind == .diverge }) {
+            let ordered = lines.sorted { lhs, rhs in
+                let (l, r) = (primary[lhs].start ?? 0, primary[rhs].start ?? 0)
+                return l == r ? lhs < rhs : l < r
+            }
+            let pieces = Set(lines.flatMap { found[$0]?.segments ?? [] }).sorted()
+            let said = normalize(ordered.map { primary[$0].text }.joined(separator: " "))
+            let heard = normalize(joinedInTimeOrder(pieces.map { ($0, secondary[$0]) }))
+            guard !said.isEmpty, said == heard else { continue }
+            for line in lines {
+                let row = rows[line]
+                result[line] = TranscriptComparisonSpan(
+                    kind: .agree, start: row.start, primaryText: row.primaryText, secondaryText: row.secondaryText,
+                    offersReplacement: false
+                )
+            }
+        }
+        return result
     }
 
     /// The words of a `normalize`d text. A run of Chinese has no spaces, so it is one word here.
