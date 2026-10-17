@@ -3272,7 +3272,9 @@ private struct TranscriptDetailView: View {
                 GlossarySuggestionSheet(
                     review: review, protectedTerms: store.vocabulary,
                     contexts: { await model.proposalContexts($0, in: meetingID) },
-                    alternatives: { await model.proposalAlternatives($0, in: meetingID) }
+                    alternatives: { await model.proposalAlternatives($0, in: meetingID) },
+                    longerWords: { await model.proposalLongerWords($0, in: meetingID) },
+                    keepTogether: { model.keepTogether($0) }
                 ) { accepted in
                     // F831: Edit ▸ Undo puts the lines back, as it does for a line removal (F423).
                     guard let applied = model.applyGlossaryCorrections(accepted, to: meetingID) else { return }
@@ -4803,6 +4805,10 @@ private struct GlossarySuggestionSheet: View {
     /// Which rows change one place (F966), worked out per page beside the sentences: such rows are
     /// alternatives, since `apply` changes a place once, with the first ticked row.
     let alternatives: ([GlossaryCorrection]) async -> [Int: Int]
+    /// The longer words a rule row's Chinese change would sit inside (F816), per page.
+    let longerWords: ([GlossaryCorrection]) async -> [[String]]
+    /// Keep Together (F816): adds the word to the vocabulary; true when it is there afterwards.
+    let keepTogether: (String) -> Bool
     let onApply: ([GlossaryCorrection]) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selected: Set<Int> = []
@@ -4822,6 +4828,12 @@ private struct GlossarySuggestionSheet: View {
     @State private var sentences: [Int: ProposalContext] = [:]
     /// Row → the first row of its place, for rows that share one (F966).
     @State private var groups: [Int: Int] = [:]
+    /// Row → the longer words its change would sit inside, for a rule row (F816).
+    @State private var offers: [Int: [String]] = [:]
+    /// Words kept together from this sheet (F816): a row inside one is unticked and not applied.
+    @State private var kept: Set<String> = []
+    /// Words whose Keep Together the store refused; it has said why.
+    @State private var keepRefused: Set<String> = []
 
     private var proposals: [GlossaryCorrection] { review.proposals }
 
@@ -4830,12 +4842,16 @@ private struct GlossarySuggestionSheet: View {
         protectedTerms: [String] = [],
         contexts: @escaping ([GlossaryCorrection]) async -> [ProposalContext?] = { $0.map { _ in nil } },
         alternatives: @escaping ([GlossaryCorrection]) async -> [Int: Int] = { _ in [:] },
+        longerWords: @escaping ([GlossaryCorrection]) async -> [[String]] = { $0.map { _ in [] } },
+        keepTogether: @escaping (String) -> Bool = { _ in false },
         onApply: @escaping ([GlossaryCorrection]) -> Void
     ) {
         self.review = review
         self.protectedTerms = protectedTerms
         self.contexts = contexts
         self.alternatives = alternatives
+        self.longerWords = longerWords
+        self.keepTogether = keepTogether
         self.onApply = onApply
     }
 
@@ -4859,6 +4875,7 @@ private struct GlossarySuggestionSheet: View {
             List {
                 ForEach(review.pages[page], id: \.self) { index in
                     let proposal = proposals[index]
+                    VStack(alignment: .leading, spacing: 4) {
                     Toggle(isOn: Binding(
                         get: { selected.contains(index) },
                         set: { isOn in
@@ -4896,6 +4913,24 @@ private struct GlossarySuggestionSheet: View {
                             }
                         }
                     }
+                    .disabled(keptWord(for: index) != nil)
+                    // F816: beside a rule row whose change sits inside a longer word, outside the
+                    // toggle so a click is the button's.
+                    if let word = keptWord(for: index) {
+                        Label("\(word) is in your vocabulary now, so this row is not applied", systemImage: "checkmark.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let words = offers[index], !words.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(words, id: \.self) { word in
+                                Button("Keep \(word) Together") { keep(word) }
+                                    .controlSize(.small)
+                                    .help("Add \(word) to your vocabulary, so no replacement rule rewrites inside it — here, in later passes and in dictation")
+                                    .disabled(keepRefused.contains(word))
+                            }
+                        }
+                    }
+                    }
                 }
             }
 
@@ -4925,6 +4960,7 @@ private struct GlossarySuggestionSheet: View {
                 // page; F966: one row per place.
                 Button(review.allTicked(selected, on: review.pages[page], groups: groups) ? "Deselect All" : "Select All") {
                     selected = review.toggledAll(selected, on: review.pages[page], groups: groups)
+                        .subtracting(keptRows)
                 }
                 .disabled(review.selectableAll.isEmpty && selected.isEmpty)
                 Spacer()
@@ -4949,6 +4985,28 @@ private struct GlossarySuggestionSheet: View {
         .task(id: page) { await load(page) }
     }
 
+    /// The word kept together from this sheet that row `index` sits inside, if any (F816).
+    private func keptWord(for index: Int) -> String? {
+        guard review.source == .replacementRules else { return nil }
+        return offers[index]?.first(where: kept.contains)
+    }
+
+    /// Every row inside a word kept together from this sheet (F816).
+    private var keptRows: Set<Int> {
+        Set(offers.filter { !$0.value.allSatisfy { !kept.contains($0) } }.map(\.key))
+    }
+
+    /// Keep Together (F816): the word goes into the vocabulary, and the rows inside it are unticked
+    /// — applied now, they would change the next genuine occurrence instead of the one reviewed.
+    private func keep(_ word: String) {
+        guard keepTogether(word) else {
+            keepRefused.insert(word)
+            return
+        }
+        kept.insert(word)
+        selected.subtract(keptRows)
+    }
+
     /// Works out one page's warnings, alternatives and sentences, off the main actor, the first time
     /// it is shown, and ticks its preselected rows (F818).
     private func load(_ page: Int) async {
@@ -4966,7 +5024,13 @@ private struct GlossarySuggestionSheet: View {
         for (row, first) in local { pageGroups[row + rows.lowerBound] = first + rows.lowerBound }
         touching.formUnion(pageTouching)
         groups.merge(pageGroups) { _, new in new }
+        if review.source == .replacementRules {
+            for (offset, words) in await longerWords(slice).enumerated() where !words.isEmpty {
+                offers[rows.lowerBound + offset] = words
+            }
+        }
         selected.formUnion(review.preselected(touching: pageTouching, on: rows, groups: pageGroups))
+        selected.subtract(keptRows)
         // F952: the page's sentences once, off the main actor, after the ticks are known.
         let pageSentences = await contexts(slice)
         for (offset, context) in pageSentences.enumerated() {

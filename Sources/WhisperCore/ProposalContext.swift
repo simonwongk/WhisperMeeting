@@ -117,6 +117,46 @@ extension GlossaryCorrector {
         return groups
     }
 
+    /// For each row, the longer words its Chinese change would sit inside (F816): its place joined to
+    /// the word the segmenter finds right after it, then to the word right before it, each of two or
+    /// more Chinese characters — 会议纪要 and 整理会议 for 会议 in 整理会议纪要. Empty for a row with no
+    /// Chinese, no place, or no such neighbour.
+    ///
+    /// The segmenter splits a phrasal compound (NLTokenizer reads 会议纪要 as 会议 | 纪要, and every
+    /// one of 47 business compounds probed for F816), so a rule 会议 → 会议室 rewrote inside it and
+    /// only the vocabulary could say it was one word (F594). The text cannot tell a compound from two
+    /// words side by side, so these are offered, not decided: the review sheet shows a Keep Together
+    /// button for each, and one click adds the word to the vocabulary, which protects later passes
+    /// and dictation through the same known-term evidence. The user chose that on 2026-10-17.
+    public static func longerWords(
+        of corrections: [GlossaryCorrection], in segments: [TranscriptSegment], evidence: CJKWordEvidence = .none
+    ) -> [[String]] {
+        var lines: [String: SegmentedText] = [:]
+        return corrections.map { correction in
+            guard ReplacementBoundary.hasCJK(correction.from), segments.indices.contains(correction.segmentIndex) else { return [] }
+            let text = correction.proposedLine ?? segments[correction.segmentIndex].text
+            let line = lines[text] ?? SegmentedText(text, segmenter: evidence.segmenter)
+            lines[text] = line
+            let rowEvidence = CJKWordEvidence(
+                segmenter: evidence.segmenter,
+                knownTerms: ReplacementBoundary.termsThatCouldEnclose(correction.from, among: evidence.knownTerms)
+            )
+            guard let range = place(of: correction, in: line, evidence: rowEvidence) else { return [] }
+            func chineseWord(_ word: Range<String.Index>) -> Bool {
+                text[word].count >= 2 && text[word].allSatisfy { ReplacementBoundary.hasCJK(String($0)) }
+            }
+            let words = line.wordRanges()
+            var found: [String] = []
+            if let after = words.first(where: { $0.lowerBound == range.upperBound }), chineseWord(after) {
+                found.append(String(text[range.lowerBound..<after.upperBound]))
+            }
+            if let before = words.first(where: { $0.upperBound == range.lowerBound }), chineseWord(before) {
+                found.append(String(text[before.lowerBound..<range.upperBound]))
+            }
+            return found
+        }
+    }
+
     /// `correction` in its sentence (F817): the place `apply` would change in `text` — `place(of:in:
     /// evidence:)`, the one `apply` uses, so pass the evidence the proposals are applied with — with
     /// up to `radius` characters either side, cut back to a space

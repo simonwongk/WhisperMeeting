@@ -487,13 +487,18 @@ final class SegmentedText {
         self.startsASentence = startsASentence
     }
 
+    /// The segmenter's words, found once; none with no segmenter.
+    func wordRanges() -> [Range<String.Index>] {
+        guard let segmenter else { return [] }
+        let found = words ?? segmenter(text)
+        words = found
+        return found
+    }
+
     /// Whether a word the segmenter found starts or ends strictly inside `range` while reaching
     /// beyond it — `range` cuts that word. With no segmenter nothing is cut.
     func cutsAWord(_ range: Range<String.Index>) -> Bool {
-        guard let segmenter else { return false }
-        let found = words ?? segmenter(text)
-        words = found
-        return found.contains { word in
+        wordRanges().contains { word in
             (word.lowerBound < range.lowerBound && range.lowerBound < word.upperBound)
                 || (word.lowerBound < range.upperBound && range.upperBound < word.upperBound)
         }

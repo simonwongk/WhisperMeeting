@@ -151,3 +151,49 @@ func defaultSegmenterIsNaturalLanguage() throws {
     #expect(NaturalLanguageWordSegmenter.wordRanges(in: text).map { String(text[$0]) } == expected)
     #expect(model.cjkWordEvidence.knownTerms == model.store.vocabulary)
 }
+
+// F816 — NLTokenizer splits a phrasal compound (会议纪要 → 会议 | 纪要, and every one of 47 business
+// compounds probed for F816), so a rule 会议 → 会议室 rewrote inside it unless the user had added
+// the compound to the vocabulary. The user chose a "keep together" button beside such a row
+// (2026-10-17): one click adds the longer word to the vocabulary, which protects later passes and
+// dictation through the same known-term evidence (F594).
+
+@MainActor
+@Test("A rule row that rewrites inside a longer word offers to keep that word together, and one click protects later passes and dictation (F816)")
+func keepTogetherProtectsTheLongerWord() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("F816-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let model = try makeModel(root: root)
+    model.cjkWordSegmenter = pinnedSegmenter
+    let rule = ReplacementRule(heard: "会议", preferred: "会议室")
+    model.store.addReplacementRule(heard: rule.heard, preferred: rule.preferred)
+    let id = addMeeting(model, lines: ["整理会议纪要", "明天开会议"])
+
+    let rows = try #require(await model.replacementRuleCorrections(for: id))
+    #expect(rows.map(\.from) == ["会议", "会议"])
+    // The first 会议 is followed by 纪要 and preceded by 整理, both words of two characters, so
+    // both readings are offered; the second is preceded by the one-character 开 and ends the line.
+    let offers = await model.proposalLongerWords(rows, in: id)
+    #expect(offers == [["会议纪要", "整理会议"], []])
+    // Dictation applies the rule inside the compound before the click.
+    #expect(ReplacementRuleMatcher.applied([rule], to: "整理会议纪要", evidence: model.cjkWordEvidence) == "整理会议室纪要")
+
+    #expect(model.keepTogether("会议纪要"))
+    #expect(model.store.vocabulary.contains("会议纪要"))
+    // The next pass offers only the standalone 会议, and dictation leaves the compound alone.
+    let after = try #require(await model.replacementRuleCorrections(for: id))
+    #expect(after == [GlossaryCorrection(segmentIndex: 1, from: "会议", to: "会议室", proposedLine: "明天开会议")])
+    #expect(ReplacementRuleMatcher.applied([rule], to: "整理会议纪要", evidence: model.cjkWordEvidence) == "整理会议纪要")
+    // Kept already: still a success, nothing added twice.
+    #expect(model.keepTogether("会议纪要"))
+    #expect(model.store.vocabulary.filter { $0 == "会议纪要" }.count == 1)
+}
+
+@Test("The review sheet offers Keep Together beside a rule row, through the model (F816)")
+func reviewSheetOffersKeepTogether() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    #expect(source.contains("longerWords: { await model.proposalLongerWords($0, in: meetingID) }"))
+    #expect(source.contains("keepTogether: { model.keepTogether($0) }"))
+    #expect(source.contains("Button(\"Keep \\(word) Together\")"))
+    #expect(source.contains("guard review.source == .replacementRules"))
+}

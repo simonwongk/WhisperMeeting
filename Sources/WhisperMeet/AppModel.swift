@@ -7088,6 +7088,26 @@ final class AppModel: ObservableObject {
         }.value
     }
 
+    /// The longer words each review row's Chinese change would sit inside (F816), for the sheet's
+    /// Keep Together buttons: `GlossaryCorrector.longerWords` with the app's evidence, off the main actor.
+    func proposalLongerWords(_ proposals: [GlossaryCorrection], in id: UUID) async -> [[String]] {
+        guard let segments = store.meeting(id: id)?.segments else { return proposals.map { _ in [] } }
+        let evidence = cjkWordEvidence
+        return await Task.detached(priority: .userInitiated) {
+            GlossaryCorrector.longerWords(of: proposals, in: segments, evidence: evidence)
+        }.value
+    }
+
+    /// Keep Together (F816): adds `word` to the vocabulary, so no rule rewrites inside it again — in
+    /// later passes and in dictation, which both take the vocabulary as known terms (F594, F821).
+    /// True when the word is in the vocabulary afterwards; false when the store refused (it has said
+    /// why, `storageErrorMessage`) or the list is full.
+    @discardableResult
+    func keepTogether(_ word: String) -> Bool {
+        let result = store.addVocabulary([word])
+        return !result.wasRefused && (result.added > 0 || result.alreadySaved > 0)
+    }
+
     /// Where a Chinese word begins and ends, for every matcher that must not rewrite part of one
     /// (F594). Injectable in the F47 shape so a test can pin the segmentation; defaults to
     /// `NLTokenizer`'s, which `WhisperCore` cannot import.
