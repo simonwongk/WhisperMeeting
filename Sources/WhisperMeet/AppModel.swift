@@ -6527,8 +6527,16 @@ final class AppModel: ObservableObject {
     func transcribeAgainBlockedReason(for id: UUID) -> String? {
         if let readOnly = libraryReadOnlyFootnote { return readOnly }
         guard let meeting = store.meeting(id: id) else { return "This meeting no longer exists." }
-        if meeting.status == .processing { return "This meeting is already being transcribed." }
+        // The active id too (F987): a run whose `.processing` write is held for the banner (F935)
+        // leaves the list's status as it was.
+        if meeting.status == .processing || transcription.activeID == id {
+            return "This meeting is already being transcribed."
+        }
         if isQueuedForTranscription(id) { return Self.transcribeAgainAlreadyQueued }
+        // F987: a result held for the conflict banner's answer (F885) has not reached the list, so
+        // the meeting reads as settled; running again would start a second transcription of a
+        // meeting whose last one is not even saved.
+        if isResultHeld(id) { return Self.heldResultNotSavedYet }
         return nil
     }
 
@@ -6537,13 +6545,34 @@ final class AppModel: ObservableObject {
     static let transcribeAgainAlreadyQueued =
         "This meeting is already queued to be transcribed again. Use Remove on its page to take it out of the queue."
 
+    /// Whether something WhisperMeet finished for this meeting is waiting for the conflict banner's
+    /// answer before it is saved (F885, F987). The list's copy has not changed while it waits.
+    func isResultHeld(_ id: UUID) -> Bool {
+        store.heldResultCount(for: id) > 0
+    }
+
+    /// Why Transcribe Again is unavailable while a result for the meeting is held (F987).
+    static let heldResultNotSavedYet =
+        "This meeting's latest result is not saved yet. Choose Keep My Edit or Use the Other Copy at the top of the window first."
+
+    /// The status card's line for a meeting whose result is held (F987). Names the banner's own two
+    /// buttons, either of which saves it (`MeetingStore.ConflictOffer`'s held-results sentence).
+    static let heldResultCardDetail =
+        "What WhisperMeet finished for this meeting is waiting to be saved. Choose Keep My Edit or Use the Other Copy at the top of the window; either saves it."
+
     /// Whether a meeting's page draws its status card (F602). Every meeting that is not settled has
     /// one — and a `.completed` meeting too while a Transcribe Again waits in the queue, because
     /// queuing does not change its status and the card is the only place that says "Queued", says
     /// what the job is waiting for, and holds Remove (the sole UI caller of `cancelTranscription`).
     /// Gating the card on status alone is what hid that job.
+    ///
+    /// And while a result for it is held for the conflict banner's answer (F987), which leaves the
+    /// list's copy as it was: the card is where the page says the work is done but not yet saved. For
+    /// the same reason, while its run is active: when the held write is the run's own `.processing`
+    /// (F935), the list still reads as before the run started.
     func showsTranscriptionStatusCard(for meeting: MeetingRecord) -> Bool {
         meeting.status != .completed || isQueuedForTranscription(meeting.id)
+            || transcription.activeID == meeting.id || isResultHeld(meeting.id)
     }
 
     /// The card's second line for a queued meeting (F602): what it is waiting for and, when the

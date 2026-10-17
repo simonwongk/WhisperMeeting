@@ -3666,21 +3666,30 @@ private struct TranscriptDetailView: View {
         // says "Queued" and holds Remove — a status-only gate hid the job and its only way out.
         if model.showsTranscriptionStatusCard(for: meeting) {
             let isQueued = model.isQueuedForTranscription(meeting.id)
+            // F987: a result held for the conflict banner's answer. The list's copy is what it was
+            // before the run finished — `.processing`, `.recorded` or `.completed` — so neither its
+            // spinner and Cancel nor its Transcribe describes the meeting now.
+            // A run still going whose `.processing` write is the one held (F935) is running, not held.
+            let isActive = model.transcription.activeID == meeting.id
+            let isHeld = !isQueued && !isActive && model.isResultHeld(meeting.id)
+            let isRunning = isActive || (meeting.status == .processing && !isHeld)
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 14) {
-                    if meeting.status == .processing {
+                    if isRunning {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Image(systemName: statusIcon(meeting, isQueued: isQueued))
-                            .foregroundStyle(!isQueued && meeting.status == .failed ? .red : .orange)
+                        Image(systemName: isHeld ? "arrow.triangle.2.circlepath" : statusIcon(meeting, isQueued: isQueued))
+                            .foregroundStyle(!isQueued && !isHeld && meeting.status == .failed ? .red : .orange)
                     }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(isQueued ? "Queued" : meeting.status.title).fontWeight(.semibold)
-                        if meeting.status == .processing {
+                        Text(isQueued ? "Queued" : isHeld ? "Not saved yet" : meeting.status.title).fontWeight(.semibold)
+                        if isRunning {
                             Text(transcriptionPhaseLabel(meeting)).foregroundStyle(.secondary)
                         } else if isQueued {
                             Text(model.queuedStatusDetail(for: meeting)).foregroundStyle(.secondary)
+                        } else if isHeld {
+                            Text(AppModel.heldResultCardDetail).foregroundStyle(.secondary)
                         } else if let error = meeting.errorMessage {
                             Text(error).foregroundStyle(.secondary)
                             // F624: the engine's log, when its failed run left one — said here, beside
@@ -3697,18 +3706,18 @@ private struct TranscriptDetailView: View {
                         }
                     }
                     Spacer()
-                    if meeting.status == .processing || isQueued {
+                    if isRunning || isQueued {
                         Button(isQueued ? "Remove" : "Cancel", role: .destructive) {
                             model.cancelTranscription(id: meeting.id)
                         }
-                    } else if meeting.status == .recorded || meeting.status == .failed {
+                    } else if !isHeld, meeting.status == .recorded || meeting.status == .failed {
                         Button("Transcribe") {
                             model.beginTranscription(id: meeting.id)
                         }
                         .buttonStyle(.borderedProminent)
                     }
                 }
-                if meeting.status == .processing {
+                if isRunning {
                     transcriptionProgressBar(meeting)
                 }
             }
