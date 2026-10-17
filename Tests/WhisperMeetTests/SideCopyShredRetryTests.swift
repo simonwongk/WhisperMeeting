@@ -42,7 +42,9 @@ func unparseableSideCopyIsReportedAndStaysQueued() throws {
     let quarantine = root.appendingPathComponent("meetings.unreadable-20260901T100000Z.json")
     try index.prefix(index.count - 40).write(to: quarantine)
     store.delete(id: secret)
-    store.clearStorageError()   // the entry-only delete's own message, unrelated to the shred
+    // A meeting with no recording path is not an entry-only delete since F576 (its folder is found by
+    // id, and here there is none), so the delete says nothing, and whatever is said below is the shred's.
+    #expect(store.storageErrorMessage == nil, "\(store.storageErrorMessage ?? "")")
     let now = Int(Date().timeIntervalSince1970) + week + 1
 
     #expect(store.processPendingShreds(now: now) == [secret])
