@@ -3730,7 +3730,7 @@ private struct TranscriptDetailView: View {
                         } else if isQueued {
                             Text(model.queuedStatusDetail(for: meeting)).foregroundStyle(.secondary)
                         } else if isHeld {
-                            Text(AppModel.heldResultCardDetail).foregroundStyle(.secondary)
+                            Text(model.heldResultCardDetail).foregroundStyle(.secondary)
                         } else if let error = meeting.errorMessage {
                             Text(error).foregroundStyle(.secondary)
                             // F624: the engine's log, when its failed run left one — said here, beside

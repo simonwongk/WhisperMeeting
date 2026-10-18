@@ -6477,9 +6477,11 @@ final class AppModel: ObservableObject {
         return seconds.isFinite && seconds > 0 ? seconds : 0
     }
 
-    /// Meetings that have audio on disk but no transcript yet — the queue candidates (F185).
+    /// Meetings that have audio on disk but no transcript yet — the queue candidates (F185). Not one
+    /// whose finished result is held for the conflict banner (F987, round 2): the list's copy of it
+    /// still reads `.recorded`, and its transcript is done, only not saved.
     var readyToTranscribeMeetings: [MeetingRecord] {
-        store.meetings.filter { $0.status == .recorded && !$0.recordingPath.isEmpty }
+        store.meetings.filter { $0.status == .recorded && !$0.recordingPath.isEmpty && !isResultHeld($0.id) }
     }
 
     /// Queues every ready meeting for transcription in one action (F185). Each goes through the normal
@@ -6519,6 +6521,13 @@ final class AppModel: ObservableObject {
         // the transcript is refused while the library is read-only, so the whole run would be thrown
         // away in silence (F187).
         guard libraryAcceptsChanges("Transcription") else { return }
+        // F987, round 2: refused here, not only by the two buttons, so no caller — Transcribe N Ready
+        // Meetings, a status card, an import — starts a second run of a meeting whose finished result
+        // is held for the conflict banner and not yet saved.
+        guard !isResultHeld(id) else {
+            alertMessage = Self.heldResultNotSavedYet
+            return
+        }
         refreshRuntime()
         let settings = MeetingTranscriptionSelection(
             engine: selectedEngine,
@@ -6595,8 +6604,21 @@ final class AppModel: ObservableObject {
 
     /// The status card's line for a meeting whose result is held (F987). Names the banner's own two
     /// buttons, either of which saves it (`MeetingStore.ConflictOffer`'s held-results sentence).
-    static let heldResultCardDetail =
+    static let heldResultCardDetailWritable =
         "What WhisperMeet finished for this meeting is waiting to be saved. Choose Keep My Edit or Use the Other Copy at the top of the window; either saves it."
+
+    /// The same line in a library that cannot be written, where the banner says the held work
+    /// "cannot be saved while the library cannot be written" (F987, round 2).
+    static let heldResultCardDetailReadOnly =
+        "What WhisperMeet finished for this meeting cannot be saved while the library cannot be written."
+
+    /// The status card's line now, decided as the banner decides its own held-results sentence
+    /// (`MeetingStore`'s `libraryWritable: !isDegraded && !isRestoringLibrary`).
+    var heldResultCardDetail: String {
+        !store.isDegraded && !store.isRestoringLibrary
+            ? Self.heldResultCardDetailWritable
+            : Self.heldResultCardDetailReadOnly
+    }
 
     /// Whether a meeting's page draws its status card (F602). Every meeting that is not settled has
     /// one — and a `.completed` meeting too while a Transcribe Again waits in the queue, because
