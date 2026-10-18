@@ -13,11 +13,11 @@ import Foundation
 ///
 /// Where its output goes today: `MediaDownloadClient` parses a link import's caption track, and
 /// `AppModel.importFromURL` → `adoptImportedRecording` stores the result as
-/// `MeetingRecord.referenceSegments`. **Nothing displays, compares or adopts those segments yet** —
-/// Second Opinion compares one engine's transcript against another's and never reads them, and no
-/// action copies a caption into `meeting.segments` (F491). They are kept so a future caption
-/// comparison has them. It must still uphold two non-negotiable product invariants before a segment is
-/// ever constructed, because a stored segment is one wiring change away from the transcript:
+/// `MeetingRecord.referenceSegments`. They are shown only by the read-only captions comparison
+/// (`CaptionComparison`, `AppModel.compareWithCaptions`, F740), and **nothing adopts them**: no
+/// action copies a caption into `meeting.segments` (F491; the user chose read-only on 2026-10-17).
+/// It must still uphold two non-negotiable product invariants before a segment is ever constructed,
+/// because a stored segment is one wiring change away from the transcript:
 ///
 /// - **No diarization.** Broadcast/YouTube captions embed speaker labels (`>> `, `JOHN:`, `[Speaker 1]`,
 ///   the `<v Name>` voice tag, a leading dialogue dash). Those are stripped — including a `>>` that

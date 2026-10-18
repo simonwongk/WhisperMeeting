@@ -3016,6 +3016,9 @@ private struct TranscriptDetailView: View {
     @State private var vocabularySuggestions: [String]?
     @State private var proposalReviews = ProposalReviewQueue()
     @State private var showSecondOpinion = false
+    // F740: the read-only captions comparison; nil while it is being lined up.
+    @State private var showCaptionComparison = false
+    @State private var captionComparison: AppModel.CaptionComparisonOutcome?
     @State private var showsReferenceImporter = false
     @State private var isSuggestingVocab = false
     // F177: an action item's "Play source" writes its timestamp here; the transcript player below
@@ -3325,6 +3328,9 @@ private struct TranscriptDetailView: View {
                     guard let removal = model.removeTranscriptLines(at: IndexSet(indices), from: meetingID) else { return }
                     registerLineRemovalUndo(removal, model: model, undoManager: undoManager, actionName: "Remove Lines")
                 }
+            }
+            .sheet(isPresented: $showCaptionComparison) {
+                CaptionComparisonSheet(outcome: captionComparison)
             }
             .sheet(isPresented: $showSecondOpinion) {
                 SecondOpinionSheet(
@@ -4103,6 +4109,17 @@ private struct TranscriptDetailView: View {
                           || model.libraryReadOnlyFootnote != nil)
             }
             Divider()
+            // F740: beside Second Opinion, only for a link import whose page published captions.
+            // Read-only, so it is offered on an edited transcript and in a read-only library too.
+            if AppModel.hasCaptions(meeting) {
+                Button {
+                    captionComparison = nil
+                    showCaptionComparison = true
+                    Task { captionComparison = await model.compareWithCaptions(id: meetingID) }
+                } label: {
+                    Label("Compare with the Video's Captions…", systemImage: "captions.bubble")
+                }
+            }
             Button {
                 // F512: only a run that started has a sheet to show; a refusal is its alert alone.
                 // `requestSecondOpinion` clears the previous comparison itself, after its guards,
@@ -5129,6 +5146,84 @@ private struct GlossarySuggestionSheet: View {
 /// Presents a cross-engine "second opinion" comparison: where the other local engine agrees with or
 /// diverges from the stored transcript. Replacing a diverging span is explicit — nothing changes the
 /// transcript until the user taps Replace (F88/F73).
+/// The video page's captions beside the transcript, line by line (F740). Read-only by the user's
+/// choice: it is handed rows and nothing else — no model, no store, no Replace — so nothing here can
+/// write caption text into the transcript.
+private struct CaptionComparisonSheet: View {
+    let outcome: AppModel.CaptionComparisonOutcome?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("The Video's Captions").font(.headline)
+                Text("The captions the video's page published, beside this transcript. Nothing here changes the transcript; to correct a line, edit it yourself.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding()
+
+            switch outcome {
+            case nil:
+                Spacer()
+                ProgressView().controlSize(.small).frame(maxWidth: .infinity)
+                Spacer()
+            case let .unavailable(reason)?:
+                Spacer()
+                Label(reason, systemImage: "captions.bubble")
+                    .foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.horizontal)
+                Spacer()
+            case let .rows(rows)?:
+                if rows.contains(where: { $0.kind != .same }) {
+                    List {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                            captionRow(row)
+                        }
+                    }
+                } else {
+                    Spacer()
+                    Text("The captions say the same as the transcript — no differences to show.")
+                        .foregroundStyle(.secondary).frame(maxWidth: .infinity)
+                    Spacer()
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+            .padding()
+        }
+        .frame(width: 520, height: 560)
+    }
+
+    @ViewBuilder
+    private func captionRow(_ row: CaptionComparison.Row) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label(row.kind)).font(.caption).foregroundStyle(row.kind == .differs ? .orange : .secondary)
+                Spacer()
+                if let start = row.start {
+                    Text(TranscriptFormatter.timestamp(start)).font(.caption).monospacedDigit().foregroundStyle(.tertiary)
+                }
+            }
+            Text(row.transcriptText)
+            if row.kind == .differs, let caption = row.captionText {
+                Text(caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func label(_ kind: CaptionComparison.Row.Kind) -> String {
+        switch kind {
+        case .same: return "Same as the captions"
+        case .differs: return "The captions differ"
+        case .notInCaptions: return "Not in the captions"
+        }
+    }
+}
+
 private struct SecondOpinionSheet: View {
     let spans: [TranscriptComparisonSpan]?
     let isRunning: Bool
