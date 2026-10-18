@@ -106,3 +106,49 @@ func nearMissesStayAsHeard() {
     #expect(c("Wang老师", ["王 老师"]) == "Wang老师")
     #expect(c("Wang老师", ["王老师2"]) == "Wang老师")
 }
+
+// The Wave 8 round-2 review's findings C6 and C7 (`.claude/wave8/reviews/round2-CDG-review.md`).
+
+@Test("An all-capitals acronym that spells a pinyin syllable is not a vocabulary name (F768 review, C6)")
+func anAcronymIsNotPinyin() {
+    // The review's probe rows: "AI" is the commonest Latin token in this user's code-switched speech.
+    #expect(c("我们的AI芯片很快", ["爱芯"]) == "我们的AI芯片很快")
+    #expect(c("我们做了一个小AI助手", ["小爱"]) == "我们做了一个小AI助手")
+    #expect(c("这个AI模型", ["爱模"]) == "这个AI模型")
+    #expect(c("看一下BI报表", ["比报"]) == "看一下BI报表")
+    #expect(c("DA分析", ["大分"]) == "DA分析")
+    // Recognizers write names "Wang", never "WANG"; a capitalised name is still corrected.
+    #expect(c("WANG老师", ["王老师"]) == "WANG老师")
+    #expect(c("Ai老师好", ["艾老师"]) == "艾老师好")
+}
+
+@Test("A capitalised surname that is also an English word is corrected right before Chinese; lowercase English is not (F768, the user's decision of 2026-10-17)")
+func aCapitalisedSurnameBeforeChineseIsCorrected() {
+    // The round-2 review's 13-surname probe: 12 of these stayed as heard before this decision.
+    let rows: [(String, [String], String)] = [
+        ("请Yang老师看一下", ["杨老师"], "请杨老师看一下"),
+        ("Sun总说可以", ["孙总"], "孙总说可以"),
+        ("He经理来了", ["何经理"], "何经理来了"),
+        ("Song老师好", ["宋老师"], "宋老师好"),
+        ("Tang总在吗", ["唐总"], "唐总在吗"),
+        ("Fan老师好", ["范老师"], "范老师好"),
+        ("Fang经理好", ["方经理"], "方经理好"),
+        ("Long总好", ["龙总"], "龙总好"),
+        ("Yuan老师好", ["袁老师"], "袁老师好"),
+        ("Pan总好", ["潘总"], "潘总好"),
+        ("Ding老师好", ["丁老师"], "丁老师好"),
+        ("小Yang呢", ["小杨"], "小杨呢"),
+        ("Wang老师好", ["王老师"], "王老师好"),
+    ]
+    for (text, terms, wanted) in rows {
+        #expect(c(text, terms) == wanted, "\(text)")
+    }
+    // Lowercase English words stay untouched, as round 2's finding 1 fixed them.
+    #expect(c("you先说吧", ["优先"]) == "you先说吧")
+    #expect(c("我ping台湾同事", ["平台"]) == "我ping台湾同事")
+    #expect(c("yang老师", ["杨老师"]) == "yang老师")
+    #expect(c("YANG老师", ["杨老师"]) == "YANG老师")
+    // Directly before Chinese characters: a space between them is still English beside Han.
+    #expect(c("Yang 老师", ["杨老师"]) == "Yang 老师")
+    #expect(c("小Yang.", ["小杨"]) == "小Yang.")
+}

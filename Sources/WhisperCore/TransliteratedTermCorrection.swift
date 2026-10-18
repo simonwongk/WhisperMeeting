@@ -54,7 +54,7 @@ public enum TransliteratedTermCorrection {
                 guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
                     continue
                 }
-                for match in expression.matches(in: text, range: whole) {
+                for match in expression.matches(in: text, range: whole) where !isAcronym(match.range, in: text) {
                     matches.append((match.range, term))
                 }
             }
@@ -91,16 +91,35 @@ public enum TransliteratedTermCorrection {
         return chosen
     }
 
-    /// One pattern per way of writing a leading or trailing run of the term in pinyin, minus a run
-    /// of one syllable that is also a common English word.
+    /// Whether the match's Latin letters are two or more capitals and nothing else: an acronym
+    /// ("AI芯片", "BI报表"), never a name — recognizers write names "Wang", not "WANG" (the round-2
+    /// review's C6). "ai" is not in the English list, so only this rule keeps 小AI助手 as heard.
+    private static func isAcronym(_ range: NSRange, in text: String) -> Bool {
+        guard let span = Range(range, in: text) else { return false }
+        let letters = text[span].unicodeScalars.filter { $0.properties.isAlphabetic && $0.isASCII }
+        return letters.count >= 2 && letters.allSatisfy { $0.properties.isUppercase }
+    }
+
+    /// One pattern per way of writing a leading or trailing run of the term in pinyin.
+    ///
+    /// A run of one syllable that is also a common English word ("you", "ping", "yang") is matched
+    /// only when it is written as a name — capitalised, "Yang", case-sensitively — and directly
+    /// before Chinese characters: the user's decision of 2026-10-17 (recorded on F768). Round 2
+    /// refused such a run everywhere, which left 12 of the round-2 review's 13 common surnames as
+    /// heard (C7); the collisions round 2 fixed were all lowercase English ("you先说吧", "ping").
     private static func patterns(characters: [Character], syllables: [String]) -> [String] {
         let joiner = "[ \\-]?"
         // Not inside a longer word of a Latin script, and no digit beside it (finding 5).
         let notLatinBefore = "(?<![\\p{Latin}\\p{N}])"
         let notLatinAfter = "(?![\\p{Latin}\\p{N}])"
-        func pinyin(_ range: Range<Int>) -> String? {
-            if range.count == 1, PinyinEnglishWords.words.contains(syllables[range.lowerBound]) { return nil }
-            return syllables[range].map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: joiner)
+        /// The pattern for a run, and whether it is an English word that must be followed by Han.
+        func pinyin(_ range: Range<Int>) -> (pattern: String, needsHanAfter: Bool) {
+            if range.count == 1, PinyinEnglishWords.words.contains(syllables[range.lowerBound]) {
+                let syllable = syllables[range.lowerBound]
+                let name = syllable.prefix(1).uppercased() + syllable.dropFirst()
+                return ("(?-i:" + NSRegularExpression.escapedPattern(for: name) + ")", true)
+            }
+            return (syllables[range].map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: joiner), false)
         }
         func literal(_ range: Range<Int>) -> String {
             NSRegularExpression.escapedPattern(for: String(characters[range]))
@@ -108,14 +127,12 @@ public enum TransliteratedTermCorrection {
         let count = characters.count
         var patterns: [String] = []
         for split in 1..<count {
-            // Pinyin first: "Wang老师".
-            if let run = pinyin(0..<split) {
-                patterns.append(notLatinBefore + run + literal(split..<count))
-            }
-            // Pinyin last: "小Wang".
-            if let run = pinyin(split..<count) {
-                patterns.append(literal(0..<split) + run + notLatinAfter)
-            }
+            // Pinyin first: "Wang老师" — the characters follow it directly either way.
+            let first = pinyin(0..<split)
+            patterns.append(notLatinBefore + first.pattern + literal(split..<count))
+            // Pinyin last: "小Wang"; an English-word run only when Chinese follows it ("小Yang呢").
+            let last = pinyin(split..<count)
+            patterns.append(literal(0..<split) + last.pattern + (last.needsHanAfter ? "(?=\\p{Han})" : notLatinAfter))
         }
         return patterns
     }
