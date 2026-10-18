@@ -120,7 +120,7 @@ func launchAtLoginSwitchIsGatedOnTheMovedLibrary() throws {
     #expect(around.contains(".disabled(model.libraryIsMoved)"), "\(around)")
 }
 
-@Test("Every @AppStorage in the app names its store, so a moved library keeps its own settings (F746)")
+@Test("Every @AppStorage in the app uses the library's own store, so a moved library keeps its own settings (F746)")
 func everyAppStorageNamesItsStore() throws {
     var offenders: [String] = []
     var found = 0
@@ -131,12 +131,17 @@ func everyAppStorageNamesItsStore() throws {
             found += 1
             // The wrapper's argument list, to its closing parenthesis.
             let arguments = code[match.upperBound...].prefix { $0 != ")" }
-            if !arguments.contains("store:") {
+            // Round 2 (the review's finding 6): naming a store is not enough — `store: .standard` names
+            // one and is the shared domain this guard exists to keep out. The library's own is required.
+            let store = arguments.range(of: "store:").map {
+                arguments[$0.upperBound...].trimmingCharacters(in: .whitespaces)
+            }
+            if store != "libraryDefaults" {
                 offenders.append("\(url.lastPathComponent): @AppStorage(\(arguments))")
             }
             searchFrom = match.upperBound
         }
     }
     #expect(found >= 2, "the scan must find the summary style and template (\(found))")
-    #expect(offenders.isEmpty, "these read UserDefaults.standard under WHISPERMEET_LIBRARY:\n\(offenders.joined(separator: "\n"))")
+    #expect(offenders.isEmpty, "these do not use libraryDefaults, so they read a shared domain under WHISPERMEET_LIBRARY:\n\(offenders.joined(separator: "\n"))")
 }
