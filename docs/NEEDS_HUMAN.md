@@ -41,92 +41,21 @@ The letters below still stand for what needs your hands (F294, F201, F230, F428,
 
 ## Where to start
 
-**Rebuilt 2026-10-17 (whisper-27), from your answers in chat.** Twelve letters had piled up, about 4½ hours of checks. You
-chose a short list, so there is now **one** letter, about 30 minutes. The other sittings, and the tests you skipped or have no
-equipment for, are closed in `TICKET_LOG.md` as "checked by code only"; one line each is under Settled. The old letters' full
-text is in this file's git history. (2026-10-18, whisper-dfd4: Wave 8 added one optional second entry, two recordings.)
-
-| | Entry | Time |
-|---|---|---|
-| 1 | **The short list** (F392 · F805 · F353 · F294 · F201) | ~30 min |
-| 2 | **Two recordings, optional** (F737 · F1042 · F727) | a few minutes, plus one long meeting |
-
----
-
-## F392 · F805 · F353 · F294 · F201 — The short list: five checks, about 30 minutes
-
-**Status:** `blocked` (F392, F841, F805, F353, F294, F201, F731, F845, F428, F682). Agents can't see your screen, speak into
-your microphone or click your buttons, so these are the checks only you can do. Do them in any order, whenever it suits you,
-and tell me what looked wrong, or just "fine". Say "skip" for any step you'd rather not do.
-
-**What I need from you:** about 30 minutes for the five checks below.
-
-**Set up 2026-10-17 (whisper-27).** Everything is in the Desktop folder **WhisperMeet short list**: start with
-`Checklist.txt`, which is these five steps in plain words. The folder also holds the test clip for step 2, a double-click
-launcher for step 3's test copy, and a double-click cleanup for when you're done.
-
-1. **Turn on search by meaning (F392) — 5 min.** In the sidebar, open **Ask Meetings** and press **Add Search by Meaning
-   (490 MB)**. Tell me when it has finished. It downloads once; after that, searching stays on this Mac. An agent then measures
-   how well it works using test questions only, never your meetings.
-
-2. **Shrink a throwaway meeting (F805) — 5 min. Never use a real meeting.**
-   - Drag **Test clip - safe to delete.wav** (in the Desktop folder; synthetic speech) into WhisperMeet and let it
-     transcribe. Delete that test meeting when you're done.
-   - On its page, the header shows a size such as "1.2 MB". Press **Shrink…** and read the dialog: it should show the size
-     before and after. Press **Shrink**.
-   - Afterwards it should say "Shrunk … from … to …". The meeting should still **play**, and **Transcribe Again…** should
-     still work.
-   - Settings → Meeting library → **Show Storage…**: meetings are listed largest first, with a total.
-   - Once a build with F1040 is installed, the original goes to the Trash instead of being deleted: check that it is there.
-
-3. **Restore a backup once (F353) — 5 min, in a test copy of the app, so your real library is never restored over.**
-   - Double-click **Step 3 - open the test copy.command** in the Desktop folder. A second WhisperMeet window opens on a small
-     test library with two sample meetings (one has no audio on purpose).
-   - In that test window: Settings → Meeting library → **Back up library…**, into the folder's **Test backups**.
-   - Then press **Restore…** and choose *the backup you just made*.
-   - Read what the screen says it will do, then press **Restore**. Don't cancel: pressing it is the part nobody has tried.
-   - Tell me whether what it said matches what happened. The test library should look the same afterwards. Then quit the test
-     copy.
-
-4. **A recording with no window open (F294) — 2 min.** Close the main window completely. Start a recording from the
-   **menu-bar icon**, wait a few seconds, then stop it from the menu bar. Did a notification appear on screen? The first one
-   matters most.
-
-5. **A dictation session (F201, F731, F845, F428, F682) — 15 min.** In Settings, turn on **Refine with local AI (grammar
-   cleanup)**. Then:
-   - Dictate one short English sentence, and one in Mandarin.
-   - Dictate something over 60 words. It should paste without being polished.
-   - Dictate twice quickly, back to back.
-   - Set **Trigger mode** to **Hold to talk** and dictate once; then to **Toggle on/off** and dictate once. Both should work.
-     Put it back the way you like it afterwards.
-   - In a quiet room, press the key and say nothing. Nothing should be pasted.
-   - Copy some text on your iPhone, dictate one sentence on the Mac, wait two seconds, then paste somewhere else. Did you get
-     the iPhone's text back?
-   - Dictate once into the terminal app you use.
-
-   Tell me anything that looked wrong. I read the app's own log for the rest (never your transcript text).
-
----
-
-## F737 · F1042 · F727 — Two recordings, optional (added 2026-10-18 by whisper-dfd4, Wave 8)
-
-**Status:** `blocked` (F737, F1042, F727). Wave 8 changed how a recording keeps its two tracks in time, and logs how long Stop
-takes. No test can make a real recording, so two recordings on the next installed build would show whether that holds. Both
-are optional; say "skip" and they close as checked by code only, like the other skipped sittings.
-
-**What I need from you:** after the Wave 8 install, make the two recordings below when convenient and tell me they're done.
-I read only the app's own log lines and the recordings' timing counts, never what was said.
-
-1. **A short recording with one sleep (F737).** Record for a minute, close the lid or choose Apple menu ▸ Sleep, wake the Mac,
-   record another minute, then press Stop. Tell me whether WhisperMeet showed any error, and whether a crash report appeared.
-2. **One long meeting with the Mac kept awake (F1042).** Any real meeting of 2–3 hours, ideally with a USB or Bluetooth
-   microphone, and no sleep during it. Nothing else to do; I read the drift counts Stop writes to the log.
-3. **F727 — skip unless curious.** A throwaway probe in `.claude/wave8/F727-probe/` would show whether building a capture
-   stream raises a Screen Recording prompt. It is low priority.
+**Nothing needs you right now (2026-10-18).** The short list is finished: you installed search by meaning, and you chose to
+close the other four checks as "checked by code only". Wave 8's optional recordings are answered too. Each closing note is in
+`TICKET_LOG.md`, and one line is under Settled. New letters go here only after a session has asked you first, in chat.
 
 ---
 
 ## Settled — nothing needed from you
+
+**The short list — finished 2026-10-18.** You installed search by meaning (step 1), so measuring it is now agent work (F392,
+F841). Steps 2–5 left no trace on this Mac, and when asked you chose to close them as checked by code only: Shrink's screens
+(F805), pressing Restore (F353), a recording with no window (F294), and the dictation session (F201, F731, F845, F428, F682).
+Wave 8's optional recordings, answered the same day: no long USB or Bluetooth recording (F1042, closed), skip the prompt
+test (F727, closed), and for the sleep check you'll just use the app; an agent checks your crash reports about a week after
+the Wave 8 update is installed (F737). Nothing to do for any of them.
+
 
 **Closed 2026-10-17, from your answers in chat — checked by code only.** You chose the short list above, so these were closed
 in `TICKET_LOG.md`: the Wave 3 to Wave 7 sittings (F807, F889, F904, F981, F1010), the speaker screens' VoiceOver check (F230),
