@@ -46,29 +46,39 @@ extension AppModel {
     /// **A Shrink's reading wins (F802).** Every reading is taken across a suspension, and a Shrink can
     /// run in between: the meeting page re-measures when `recordingPath` changes mid-shrink, and a
     /// reading of the originals taken then landed after `shrinkOne`'s final one, so a just-shrunk
-    /// meeting showed its deleted files and an enabled Shrink… right after "Shrunk". So a meeting is
-    /// not measured while it is being shrunk, and a reading is dropped when the meeting's facts were
-    /// changed while it was taken by anything but an older refresh: a Shrink writes its own readings
-    /// (`shrinkOne`), each at least as new as this one. A newer refresh's reading is kept over an
-    /// older one's whichever finishes last.
+    /// meeting showed its deleted files and an enabled Shrink… right after "Shrunk". So a reading is
+    /// dropped when the meeting's facts were changed while it was taken by anything but an older
+    /// reading: a Shrink writes its own (`shrinkOne`), the last taken after its changes. Readings are
+    /// numbered per meeting as each is taken, so of two refreshes' readings of one meeting the later
+    /// one is kept, whichever call started first or finishes last.
+    ///
+    /// And a meeting is not measured while it is being shrunk (pinned by
+    /// `aMeetingBeingShrunkIsNotMeasured`). Defence in depth: the rule above already drops a reading
+    /// that the Shrink's own writes overtook; the skip also keeps a reading of a folder mid-Shrink,
+    /// its new file half-written and its originals not yet removed, from being taken at all.
     func refreshStorage(ids: [UUID]) async {
-        storageRefreshCount += 1
-        let sequence = storageRefreshCount
-        var readings: [UUID: (before: MeetingStoragePlan.DiskFacts?, after: MeetingStoragePlan.DiskFacts?)] = [:]
+        typealias Reading = (stamp: Int, before: MeetingStoragePlan.DiskFacts?, after: MeetingStoragePlan.DiskFacts?)
+        var readings: [UUID: Reading] = [:]
         for id in ids where shrinkRunningID != id {
+            // Numbered when this meeting is measured, not when the call began (round 2, the review's
+            // finding 1): a call over the whole library reaches its later meetings long after a
+            // single-meeting call that started after it, and start order then says nothing about
+            // which reading is newer.
+            storageRefreshCount += 1
+            let stamp = storageRefreshCount
             let before = storageFacts[id]
-            guard let meeting = store.meeting(id: id) else { readings[id] = (before, nil); continue }
-            readings[id] = (before, await diskFacts(for: meeting))
+            guard let meeting = store.meeting(id: id) else { readings[id] = (stamp, before, nil); continue }
+            readings[id] = (stamp, before, await diskFacts(for: meeting))
         }
         var facts = storageFacts
         for (id, reading) in readings where shrinkRunningID != id {
             let current = facts[id]
-            let changedOnlyByAnOlderRefresh = storageFactsByRefresh[id].map {
-                $0.sequence < sequence && $0.facts == current
+            let changedOnlyByAnOlderReading = storageFactsByRefresh[id].map {
+                $0.sequence < reading.stamp && $0.facts == current
             } ?? false
-            guard current == reading.before || changedOnlyByAnOlderRefresh else { continue }
+            guard current == reading.before || changedOnlyByAnOlderReading else { continue }
             facts[id] = reading.after
-            storageFactsByRefresh[id] = (sequence, reading.after)
+            storageFactsByRefresh[id] = (reading.stamp, reading.after)
         }
         let indexed = Set(store.meetings.map(\.id))
         for stale in facts.keys where !indexed.contains(stale) { facts[stale] = nil }

@@ -154,3 +154,107 @@ func refreshPublishesOncePerCall() async throws {
     #expect(Set(model.storageFacts.keys) == Set(ids))
     #expect(publishes == 1)
 }
+
+// MARK: - Round 2 (the review of lane U, findings 1 and 5)
+
+/// A `storageEntries` seam that holds chosen calls per folder, after listing it.
+private final class FolderGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calls: [String: Int] = [:]
+    private var holds: [String: DispatchSemaphore] = [:]
+    private var entered: Set<String> = []
+
+    func hold(_ folder: String, call: Int) {
+        lock.withLock { holds["\(folder)#\(call)"] = DispatchSemaphore(value: 0) }
+    }
+    func hasEntered(_ folder: String, call: Int) -> Bool { lock.withLock { entered.contains("\(folder)#\(call)") } }
+    func release(_ folder: String, call: Int) { lock.withLock { holds["\(folder)#\(call)"] }?.signal() }
+    func callCount(_ folder: String) -> Int { lock.withLock { calls[folder, default: 0] } }
+
+    func list(_ url: URL) -> [MeetingStoragePlan.FolderEntry] {
+        let entries = MeetingStorageMeter.entries(in: url)
+        let name = url.lastPathComponent
+        let (key, gate) = lock.withLock { () -> (String, DispatchSemaphore?) in
+            calls[name, default: 0] += 1
+            let key = "\(name)#\(calls[name]!)"
+            return (key, holds[key])
+        }
+        guard let gate else { return entries }
+        lock.withLock { _ = entered.insert(key) }
+        // A bound, not a budget: each test releases its holds. It only keeps a regression from hanging.
+        _ = gate.wait(timeout: .now() + 60)
+        return entries
+    }
+}
+
+@MainActor
+private func addMeeting(_ model: AppModel, root: URL, title: String) throws -> (UUID, URL) {
+    let id = UUID()
+    let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 16_000), sampleRate: 16_000)
+        .write(to: folder.appendingPathComponent("meeting.wav"))
+    model.store.upsert(MeetingRecord(id: id, title: title, duration: 1,
+                                     recordingPath: "Recordings/\(id.uuidString)/meeting.wav", status: .completed))
+    return (id, folder)
+}
+
+// The review's probe R1: a refresh numbered when it STARTED let a page re-measure that started later,
+// but measured B earlier, replace the library refresh's newer reading of B. Each meeting's reading is
+// now numbered when it is taken.
+@Test("A re-measure that started later but measured earlier does not replace a newer reading (F802, round 2)")
+@MainActor
+func aLaterStartedRefreshHoldingAnOlderReadingLoses() async throws {
+    let (root, model, _, _) = try makeCapture(seconds: 1)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (a, folderA) = try addMeeting(model, root: root, title: "A")
+    let (b, folderB) = try addMeeting(model, root: root, title: "B")
+    let gate = FolderGate()
+    model.storageEntries = { gate.list($0) }
+    await model.refreshStorage(ids: [b])                              // B call 1
+
+    gate.hold(folderA.lastPathComponent, call: 1)
+    gate.hold(folderB.lastPathComponent, call: 2)
+    // The Settings row / Storage sheet measuring the library, held on A before it reaches B.
+    let library = Task { await model.refreshStorage(ids: [a, b]) }
+    try #require(try await waitUntil { gate.hasEntered(folderA.lastPathComponent, call: 1) })
+    // The meeting page's re-measure of B, which lists B now and is held after listing.
+    let page = Task { await model.refreshStorage(ids: [b]) }
+    try #require(try await waitUntil { gate.hasEntered(folderB.lastPathComponent, call: 2) })
+    // B changes; the library refresh then measures B (call 3) and sees it.
+    try Data(count: 1_000).write(to: folderB.appendingPathComponent("notes.md"))
+    gate.release(folderA.lastPathComponent, call: 1)
+    await library.value
+    try #require(model.storageFacts[b]?.entries.contains { $0.name == "notes.md" } == true,
+                 "precondition: the library refresh's newer reading was published")
+    gate.release(folderB.lastPathComponent, call: 2)
+    await page.value
+
+    #expect(model.storageFacts[b]?.entries.contains { $0.name == "notes.md" } == true,
+            "the page refresh's reading, taken before notes.md existed, replaced the newer one")
+}
+
+// The review's finding 5: nothing pinned the skip. It is defence in depth — the change rule already
+// drops a reading that a Shrink's own writes overtook — and keeps a reading of a folder mid-Shrink
+// (the new file half-written, the originals not yet removed) from being taken or published at all.
+@Test("A meeting being shrunk is not measured, and its facts are left to the Shrink (F802, round 2)")
+@MainActor
+func aMeetingBeingShrunkIsNotMeasured() async throws {
+    let (root, model, _, _) = try makeCapture(seconds: 1)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let (a, folderA) = try addMeeting(model, root: root, title: "A")
+    let (b, folderB) = try addMeeting(model, root: root, title: "B")
+    let gate = FolderGate()
+    model.storageEntries = { gate.list($0) }
+    await model.refreshStorage(ids: [a, b])
+    let factsBefore = try #require(model.storageFacts[a])
+    try Data(count: 1_000).write(to: folderA.appendingPathComponent("notes.md"))
+
+    model.shrinkRunningID = a
+    await model.refreshStorage(ids: [a, b])
+    model.shrinkRunningID = nil
+
+    #expect(gate.callCount(folderA.lastPathComponent) == 1, "the meeting being shrunk was measured")
+    #expect(gate.callCount(folderB.lastPathComponent) == 2, "the other meeting is measured as usual")
+    #expect(model.storageFacts[a] == factsBefore, "a reading of a folder mid-Shrink was published")
+}
