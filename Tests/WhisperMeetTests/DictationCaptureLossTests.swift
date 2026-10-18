@@ -433,7 +433,15 @@ func startChecksTheEngineIsRunningAfterStartingIt() throws {
     #expect(afterStart.contains("engineRunning = engine.isRunning"),
             "nothing reads engine.isRunning after engine.start() returns")
     let exitCall = try #require(afterStart.range(of: "startExit("), "start() no longer leaves `starting` through startExit")
-    let arguments = afterStart[exitCall.upperBound...].prefix { $0 != ")" }
+    // The whole argument list, to its own closing parenthesis: F383 put a call with its own
+    // parentheses inside it (`ErrorPresentation.readable($0)`), and a cut at the first ")" lost the
+    // last two arguments.
+    var depth = 1
+    let arguments = afterStart[exitCall.upperBound...].prefix { character in
+        if character == "(" { depth += 1 }
+        if character == ")" { depth -= 1 }
+        return depth > 0
+    }
     #expect(arguments.contains("engineRunning: engineRunning"), "startExit is not told what isRunning read")
     #expect(arguments.contains("interruption: interruption"), "startExit is not told what the handler recorded")
     // A live start whose engine read not running is reported, not dropped in silence. The slice
