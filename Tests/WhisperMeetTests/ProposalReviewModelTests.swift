@@ -117,15 +117,29 @@ func handTickedAlternativeCountsForItsPlace() {
     #expect(mixed.toggledAll([], groups: groups) == [0])
 }
 
-@Test("The sheet ticks the whole review when it opens, as before pages, and allows nothing until it has (F818, F966, round 2)")
-func sheetPreselectsTheWholeReviewBeforeAnythingCanBeApplied() throws {
+@Test("The sheet checks each page when it is shown, ticks its rows then, allows nothing on it until then, and Apply says which pages it covers (F818, F966, round 3)")
+func sheetChecksPageByPage() throws {
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
-    // Finding 6: a page never opened contributed nothing to Apply. Finding 7: Select All and Apply
-    // ran before a page's alternatives were known.
-    #expect(source.contains("selected = review.preselected(touching: found, groups: foundGroups).subtracting(keptRows)"))
-    #expect(source.contains(".task { await loadReview() }"))
-    #expect(source.contains(".disabled(!loaded || selected.isEmpty)"))
-    #expect(source.contains(".disabled(!loaded || (review.selectableAll.isEmpty && selected.isEmpty))"))
+    // Round 2 checked the whole review before anything could be ticked: 8 s at 3,000 rows and 41 s
+    // at 15,000 with 5,000 terms (the second review of lane E). The user chose "check page by page"
+    // on 2026-10-18: each page when shown, and Apply covers the pages checked.
+    #expect(source.contains(".task(id: page) { await check(page) }"))
+    #expect(!source.contains("loadReview()"))
+    #expect(source.contains("selected.formUnion(review.preselected(touching: pageTouching, on: rows, groups: pageGroups))"))
+    // Blocked until the page shown has been checked (round 2's finding 7 holds per page).
+    #expect(source.contains(".disabled(!pageChecked || selected.isEmpty)"))
+    #expect(source.contains(".disabled(!pageChecked || (review.selectableAll.isEmpty && selected.isEmpty))"))
+    #expect(source.contains(".disabled(!pageChecked || keptWord(for: index) != nil)"))
+    #expect(source.contains("ProposalReview.applyLabel(count: selected.count, checkedPages: checkedPages.count, pageCount: review.pages.count)"))
+}
+
+@Test("Apply names the pages it covers once a review has more than one (F818, round 3)")
+func applyLabelNamesTheCheckedPages() {
+    #expect(ProposalReview.applyLabel(count: 37, checkedPages: 2, pageCount: 15) == "Apply 37 changes on 2 checked pages")
+    #expect(ProposalReview.applyLabel(count: 1, checkedPages: 1, pageCount: 15) == "Apply 1 change on 1 checked page")
+    // One page is the whole review, and the button reads as it always did.
+    #expect(ProposalReview.applyLabel(count: 3, checkedPages: 1, pageCount: 1) == "Apply 3 Corrections")
+    #expect(ProposalReview.applyLabel(count: 1, checkedPages: 1, pageCount: 1) == "Apply 1 Correction")
 }
 
 @Test("A Correct Toward Vocabulary row in a line that already spells its term right arrives unticked; elsewhere a mishearing is ticked as before (F994, round 3)")

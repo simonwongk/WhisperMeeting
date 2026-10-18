@@ -22,7 +22,8 @@ struct ProposalReview: Identifiable, Equatable {
     let proposals: [GlossaryCorrection]
     let source: Source
     /// The review's pages (F818): `pageSize` rows each, run on to the end of the line the last one
-    /// is on, so the rows for one place — which share a line — are never split across two pages.
+    /// is on, so the rows for one place — which share a line — are never split across two pages,
+    /// and a page's own check finds every alternative its rows have (F966).
     let pages: [Range<Int>]
 
     /// Rows per page of the review sheet (F818). The synthetic 5,000-term corpus gave one sheet
@@ -54,6 +55,14 @@ struct ProposalReview: Identifiable, Equatable {
         selectableAll = Set(proposals.indices).subtracting(unchecked)
     }
 
+    /// The Apply button's title (F818, round 3). A review of one page reads as it always did; past
+    /// that, rows are checked — and ticked — page by page as they are shown, so the button says which
+    /// pages it covers: "Apply 37 changes on 2 checked pages". `count` is one row per place (F966).
+    static func applyLabel(count: Int, checkedPages: Int, pageCount: Int) -> String {
+        guard pageCount > 1 else { return "Apply \(count) Correction\(count == 1 ? "" : "s")" }
+        return "Apply \(count) change\(count == 1 ? "" : "s") on \(checkedPages) checked page\(checkedPages == 1 ? "" : "s")"
+    }
+
     /// "Rows 202–402 of 3,000", under the rows of a review with more than one page (F818).
     static func pageLabel(_ page: Range<Int>, of total: Int) -> String {
         let english = Locale(identifier: "en_US")
@@ -80,9 +89,11 @@ struct ProposalReview: Identifiable, Equatable {
     /// unticked and out of Select All, each with its sentence. The user chose that on 2026-10-18.
     let besideTheirTerm: Set<Int>
 
-    /// What the sheet ticks when a page first opens, once it knows which of its proposals touch a
-    /// vocabulary term (F245): everything else, less `uncheckedByDefault`, and one row per place
-    /// (F966, `groups` from `GlossaryCorrector.alternatives`) — the first, the one `apply` would take.
+    /// What the sheet ticks on a page when that page is first checked (F818, round 3), once it knows
+    /// which of its proposals touch a vocabulary term (F245): everything else, less
+    /// `uncheckedByDefault`, and one row per place (F966, `groups` from
+    /// `GlossaryCorrector.alternatives`) — the first, the one `apply` would take. With no page, the
+    /// whole review.
     func preselected(touching: Set<Int>, on page: Range<Int>? = nil, groups: [Int: Int] = [:]) -> Set<Int> {
         Self.onePerPlace(
             Set(page ?? proposals.indices).subtracting(touching).subtracting(uncheckedByDefault), groups: groups

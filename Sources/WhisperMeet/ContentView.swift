@@ -4902,10 +4902,12 @@ private struct GlossarySuggestionSheet: View {
     /// Every row's sentence: the words around the place applying it would change (F817), so a row
     /// can be checked where it is — a Chinese match by sound can be another word or another person.
     let contexts: ([GlossaryCorrection]) async -> [ProposalContext?]
-    /// Which rows change one place (F966), worked out per page beside the sentences: such rows are
-    /// alternatives, since `apply` changes a place once, with the first ticked row.
+    /// Which rows change one place (F966), asked for a page's rows when that page is checked: such
+    /// rows are alternatives, since `apply` changes a place once, with the first ticked row. A
+    /// place's rows share a line, and a line's rows share a page (`ProposalReview.pages`).
     let alternatives: ([GlossaryCorrection]) async -> [Int: Int]
-    /// The longer words a rule row's Chinese change would sit inside (F816), per page.
+    /// The longer words a rule row's Chinese change would sit inside (F816), asked for a page's rows
+    /// when that page is checked.
     let longerWords: ([GlossaryCorrection]) async -> [[String]]
     /// Keep Together (F816): adds the word to the vocabulary; true when it is there afterwards.
     let keepTogether: (String) -> AppModel.KeepTogetherOutcome
@@ -4913,21 +4915,22 @@ private struct GlossarySuggestionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selected: Set<Int> = []
     /// The page shown (F818): a review of thousands of rows is shown `ProposalReview.pageSize` at a
-    /// time. Ticks are kept across pages, and Apply applies every tick.
+    /// time. Ticks are kept across pages, and Apply applies every tick — on the pages checked so far.
     @State private var page = 0
-    /// Pages whose sentences are known.
-    @State private var loadedPages: Set<Int> = []
-    /// Whether the whole review's warnings, alternatives and Keep Together offers are known and its
-    /// rows preselected (F818, F966, round 2). Nothing can be ticked or applied until then.
-    @State private var loaded = false
-    /// The proposals that touch a vocabulary term, worked out per page off the main actor (F536,
-    /// F818). This was asked per row on every render and in `init`, which SwiftUI re-runs whenever
-    /// the parent redraws: 2–12 s per pass over 50 proposals against 5,000 terms.
+    /// Pages checked (F818, round 3): their warnings, alternatives and Keep Together offers known and
+    /// their rows preselected, when each was first shown — about 0.6 s for 200 rows against 5,000
+    /// terms. Round 2 checked the whole review before anything could be ticked: 8 s at 3,000 rows
+    /// and 41 s at 15,000 (the second review of lane E). The user chose page by page on 2026-10-18.
+    @State private var checkedPages: Set<Int> = []
+    /// The proposals that touch a vocabulary term, worked out for each page when it is checked, off
+    /// the main actor (F536, F818). This was asked per row on every render and in `init`, which
+    /// SwiftUI re-runs whenever the parent redraws: 2–12 s per pass over 50 proposals against 5,000
+    /// terms.
     @State private var touching: Set<Int> = []
-    /// The rows' sentences, worked out per page beside `touching` (F952, F818). Each row's body
-    /// asked for its own on every redraw — every tick — and a Chinese row's costs an NLTokenizer pass
-    /// and a scan of the whole vocabulary: 0.249 s per pass over 50 rows at the 5,000-term cap. A
-    /// row draws without its sentence until it arrives.
+    /// The rows' sentences, worked out for each page when it is checked, after its ticks (F952,
+    /// F818). Each row's body asked for its own on every redraw — every tick — and a Chinese row's
+    /// costs an NLTokenizer pass and a scan of the whole vocabulary: 0.249 s per pass over 50 rows at
+    /// the 5,000-term cap. A row draws without its sentence until it arrives.
     @State private var sentences: [Int: ProposalContext] = [:]
     /// Row → the first row of its place, for rows that share one (F966).
     @State private var groups: [Int: Int] = [:]
@@ -4939,6 +4942,10 @@ private struct GlossarySuggestionSheet: View {
     @State private var keepRefused: [String: String] = [:]
 
     private var proposals: [GlossaryCorrection] { review.proposals }
+
+    /// Whether the page shown has been checked: nothing on it can be ticked, and nothing applied,
+    /// until it has (F966, round 2; per page since F818's round 3).
+    private var pageChecked: Bool { checkedPages.contains(page) }
 
     init(
         review: ProposalReview,
@@ -5022,7 +5029,7 @@ private struct GlossarySuggestionSheet: View {
                             }
                         }
                     }
-                    .disabled(!loaded || keptWord(for: index) != nil)
+                    .disabled(!pageChecked || keptWord(for: index) != nil)
                     // F816: beside a rule row whose change sits inside a longer word, outside the
                     // toggle so a click is the button's.
                     if let word = keptWord(for: index) {
@@ -5066,6 +5073,11 @@ private struct GlossarySuggestionSheet: View {
                         .help("Next rows")
                         .accessibilityLabel("Next rows")
                     Spacer()
+                    if !pageChecked {
+                        // F818, round 3: the page is being checked; nothing on it can be ticked yet.
+                        ProgressView().controlSize(.small)
+                        Text("Checking these rows…").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
                 .padding(.horizontal)
                 .padding(.top, 8)
@@ -5079,29 +5091,28 @@ private struct GlossarySuggestionSheet: View {
                 Button(review.allTicked(selected, on: review.pages[page], groups: groups, excluding: keptRows) ? "Deselect All" : "Select All") {
                     selected = review.toggledAll(selected, on: review.pages[page], groups: groups, excluding: keptRows)
                 }
-                .disabled(!loaded || (review.selectableAll.isEmpty && selected.isEmpty))
+                .disabled(!pageChecked || (review.selectableAll.isEmpty && selected.isEmpty))
                 Spacer()
                 // F537: Escape and Return.
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                // F966: one tick per place, so this counts the places Apply changes.
-                Button("Apply \(selected.count) Correction\(selected.count == 1 ? "" : "s")") {
+                // F966: one tick per place, so this counts the places Apply changes; F818, round 3:
+                // and on a review of several pages, which of them it covers.
+                Button(ProposalReview.applyLabel(count: selected.count, checkedPages: checkedPages.count, pageCount: review.pages.count)) {
                     onApply(selected.sorted().map { proposals[$0] })
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(!loaded || selected.isEmpty)
+                .disabled(!pageChecked || selected.isEmpty)
             }
             .padding()
         }
         .frame(width: 440, height: 540)
         // F245's pre-selection — everything except a proposal that touches a term, and (F536) a
-        // Chinese near-miss from Correct Toward Vocabulary, one row per place (F966) — over the whole
-        // review once it is known, as before pages (F818, round 2: a page never opened used to add
-        // nothing to Apply). Each page's sentences when it is first shown.
-        .task { await loadReview() }
-        .task(id: page) { await loadSentences(page) }
+        // Chinese near-miss from Correct Toward Vocabulary, one row per place (F966) — for each page
+        // when it is first shown (F818, round 3), then its sentences.
+        .task(id: page) { await check(page) }
     }
 
     /// The word kept together from this sheet that row `index` sits inside, if any (F816).
@@ -5126,32 +5137,31 @@ private struct GlossarySuggestionSheet: View {
         selected.subtract(keptRows)
     }
 
-    /// Works out the whole review's warnings, alternatives and Keep Together offers, off the main
-    /// actor, and ticks its preselected rows (F245, F966, F816; F818 round 2).
-    private func loadReview() async {
-        let all = proposals
-        let terms = protectedTerms
-        let found = await Task.detached(priority: .userInitiated) {
-            GlossaryReviewDefaults.touching(all, protectedTerms: terms)
-        }.value
-        let foundGroups = await alternatives(all)
-        if review.source == .replacementRules {
-            for (index, words) in await longerWords(all).enumerated() where !words.isEmpty {
-                offers[index] = words
-            }
-        }
-        touching = found
-        groups = foundGroups
-        selected = review.preselected(touching: found, groups: foundGroups).subtracting(keptRows)
-        loaded = true
-    }
-
-    /// Works out one page's sentences, off the main actor, the first time it is shown (F952, F818).
-    private func loadSentences(_ page: Int) async {
-        guard !loadedPages.contains(page) else { return }
-        loadedPages.insert(page)
+    /// Checks one page the first time it is shown (F818, round 3): its warnings, alternatives and
+    /// Keep Together offers, off the main actor; then ticks its preselected rows (F245, F966, F816)
+    /// and works out its sentences (F952).
+    private func check(_ page: Int) async {
+        guard !checkedPages.contains(page) else { return }
         let rows = review.pages[page]
         let slice = Array(proposals[rows])
+        let terms = protectedTerms
+        let found = await Task.detached(priority: .userInitiated) {
+            GlossaryReviewDefaults.touching(slice, protectedTerms: terms)
+        }.value
+        let pageTouching = Set(found.map { $0 + rows.lowerBound })
+        var pageGroups: [Int: Int] = [:]
+        for (row, first) in await alternatives(slice) { pageGroups[row + rows.lowerBound] = first + rows.lowerBound }
+        if review.source == .replacementRules {
+            for (offset, words) in await longerWords(slice).enumerated() where !words.isEmpty {
+                offers[rows.lowerBound + offset] = words
+            }
+        }
+        guard !checkedPages.contains(page) else { return }
+        touching.formUnion(pageTouching)
+        groups.merge(pageGroups) { _, new in new }
+        selected.formUnion(review.preselected(touching: pageTouching, on: rows, groups: pageGroups))
+        selected.subtract(keptRows)
+        checkedPages.insert(page)
         let pageSentences = await contexts(slice)
         for (offset, context) in pageSentences.enumerated() {
             if let context { sentences[rows.lowerBound + offset] = context }

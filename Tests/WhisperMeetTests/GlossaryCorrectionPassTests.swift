@@ -336,8 +336,8 @@ func reviewSheetUsesTheSelectAllRuleAndShowsSentences() throws {
     let ticksEveryRow = source.contains("Set(proposals.indices)")
     #expect(!ticksEveryRow, "the sheet ticks every row itself again")
     // With only sound-alike rows Select All has nothing to tick, so it is disabled.
-    // And, since F818's round 2, until the review's ticks are known.
-    let disabledWithNothingToTick = source.contains(".disabled(!loaded || (review.selectableAll.isEmpty && selected.isEmpty))")
+    // And, since F818's round 3, until the page shown has been checked.
+    let disabledWithNothingToTick = source.contains(".disabled(!pageChecked || (review.selectableAll.isEmpty && selected.isEmpty))")
     #expect(disabledWithNothingToTick)
     let passesTheSentences = source.contains("contexts: { await model.proposalContexts($0, in: meetingID) }")
     #expect(passesTheSentences)
