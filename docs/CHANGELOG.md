@@ -9,7 +9,7 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
-## Maintenance cycle — Wave 8: 126 tickets closed, 2026-10-16 to 2026-10-18
+## Maintenance cycle — Wave 8: 123 tickets closed, 2026-10-16 to 2026-10-18
 
 Ten lanes, each worked test-first in its own worktree and reviewed by a second agent; Shrink (which deletes audio) had two reviews
 in its first round and one in each later round. Most lanes went through two or three rounds. The full trail is in the ticket log
@@ -44,7 +44,7 @@ almost every lane; the deletion and privacy findings were all fixed before the p
 
 **What is not claimed.**
 - Nothing was clicked through on screen; the optional recordings are in `NEEDS_HUMAN.md`.
-- F1013's macOS 15 behaviour is confirmed only by the push's CI log (F1044).
+- F1013's macOS 15 behaviour was confirmed by the push's CI log (F1044, run 39107384409). CI's test time is now 679 s of its 900 s watchdog (F1063).
 - Not yet installed.
 
 ## Maintenance cycle — Wave 7: 58 tickets closed, 2026-10-13 to 2026-10-16
