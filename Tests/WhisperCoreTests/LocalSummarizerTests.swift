@@ -265,7 +265,10 @@ func answerTooLongRefusalSpeaksToAsk() {
     #expect(!message.contains("selection"), "got \(message)")
     #expect(!message.contains("Claude"), "got \(message)")
     #expect(message.contains("question"), "got \(message)")
-    #expect(message.contains("passages are what was said"), "got \(message)")
+    // What Ask can change: what is asked about, or which meetings are searched (the passages are most
+    // of the length, so a shorter question alone rarely helps).
+    #expect(message.contains("narrow the meetings searched"), "got \(message)")
+    #expect(message.contains("passages below are shown word for word"), "got \(message)")
     // The summarize and correct paths keep the helper's measured detail verbatim.
     #expect(LocalSummarizer.localOutputRefusal(warning: detail, finishReason: "too_long")?.errorDescription == detail)
 }

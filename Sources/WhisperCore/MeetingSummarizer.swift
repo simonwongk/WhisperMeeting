@@ -131,7 +131,9 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
     /// guessed character count. `detail` names the measured token counts.
     case localInputTooLong(String)
     /// An Ask question and the passages found for it need more tokens than the on-device model has
-    /// room for (F918). The same pre-flight refusal as `.localInputTooLong`, from the same helper,
+    /// room for (F918). The grounding is the top `AppModel.answerPassageLimit` passages, so the
+    /// passages, not the question, are most of that length: the advice is to ask about less or narrow
+    /// the meetings searched, not to shorten the question. The same pre-flight refusal as `.localInputTooLong`, from the same helper,
     /// but its own copy: the helper's detail is worded for a summary ("This transcript…", "a shorter
     /// selection", "use Claude"), and Ask has no transcript to shorten, no selection, and no Claude.
     case answerInputTooLong
@@ -182,8 +184,9 @@ public enum SummarizerError: LocalizedError, Sendable, Equatable {
         case let .localInputTooLong(detail):
             return detail
         case .answerInputTooLong:
-            return "Your question and the passages found for it are more than the on-device model can "
-                + "read at once. Try a shorter question. The passages are what was said."
+            return "The passages found for this question are more than the on-device model can read at "
+                + "once, so no answer was written. Try asking about less at once, or narrow the meetings "
+                + "searched. The passages below are shown word for word."
         case let .localModelUnreadable(detail):
             return detail
         case .unreadableResponse:
