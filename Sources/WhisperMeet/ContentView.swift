@@ -1899,10 +1899,12 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("Paste into the focused field (else copy to clipboard)", isOn: $dictation.autoPaste)
+                // F1029, the user's decision of 2026-10-17: the switch works for every engine. With
+                // Qwen it no longer feeds a hint to the recognizer, but it still governs F768's
+                // correction of names written half in pinyin, which runs whatever the engine.
                 Toggle("Use business vocabulary for dictation", isOn: $dictation.useVocabulary)
-                    .disabled(!dictation.selectedEngine.supportsVocabularyPrompt)
                 if !dictation.selectedEngine.supportsVocabularyPrompt {
-                    Text("Qwen does not currently accept Business Vocabulary prompts.")
+                    Text("Qwen doesn’t take a vocabulary hint, but your vocabulary still corrects names it writes half in pinyin.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

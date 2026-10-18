@@ -173,11 +173,13 @@ struct FixedTextDictationEngine: DictationEngine {
     let text: String
     /// What the helper says about the reply (F762, F1016): cut short by its deadline or token cap.
     var truncated = false
+    /// The language the helper reports (F847: a Japanese reply is not converted).
+    var languageCode: String? = "en"
     func warmUp() async throws {}
     func transcribe(
         wavAt url: URL, language: WhisperLanguage, initialPrompt: String?
     ) async throws -> DictationResult {
-        DictationResult(text: text, languageCode: "en", truncated: truncated)
+        DictationResult(text: text, languageCode: languageCode, truncated: truncated)
     }
     func shutdown() {}
 }

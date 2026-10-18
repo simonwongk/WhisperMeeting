@@ -514,6 +514,27 @@ final class DictationController: ObservableObject {
 
     func setEnabled(_ on: Bool) { enabled = on }
 
+    /// The delivery `finish` started, while it may still be waiting for the clipboard (F692).
+    private var waitingDelivery: Task<Void, Never>?
+    #if DEBUG
+    var waitingDeliveryForTesting: Task<Void, Never>? { waitingDelivery }
+    #endif
+
+    /// What the unified log says about the text between the recognizer and refinement: a script
+    /// conversion (F847) and a pinyin-name correction (F768) each say so, and only what happened —
+    /// round 2 logged every script conversion as a pinyin correction (the round-2 review's C10).
+    nonisolated static func textChangeNotes(recognized: String, converted: String, corrected: String) -> [String] {
+        var notes: [String] = []
+        if converted != recognized { notes.append("the dictation was written in the chosen Chinese script") }
+        if corrected != converted { notes.append("a vocabulary name written partly in pinyin was put back into characters") }
+        return notes
+    }
+
+    /// Bumped each time dictation is switched off (F692, the round-2 review's C5): a delivery that
+    /// was waiting for the clipboard then belongs to a session that no longer exists, and must not
+    /// paste into the next one when dictation is switched back on before the clipboard answers.
+    private var deliveryEpoch = 0
+
     func setSelectedEngine(_ selection: DictationTranscriptionEngine) {
         guard selection.isSupportedOnCurrentMac,
               selection != selectedEngine,
@@ -1033,6 +1054,7 @@ final class DictationController: ObservableObject {
             busyHideWorkItem?.cancel()
             idleEvictWorkItem?.cancel()
             session = DictationSession()  // reset so a stale .listening can't transcribe leaked audio on re-enable
+            deliveryEpoch &+= 1           // a delivery waiting for the clipboard is dropped for good (F692)
             hideOverlay()
             invalidateEngineWarmth()
             engine.shutdown()             // release the resident model/subprocess when disabled
@@ -1537,19 +1559,23 @@ final class DictationController: ObservableObject {
                 // so the refiner sees, and must keep, the user's own term. The history keeps what
                 // the recognizer heard in `rawText`.
                 let recognized = cleaned
-                // F847 first, so a vocabulary term is matched in the script the user writes. Off the
-                // main actor, like the replacement rules below: the whole vocabulary can be thousands
-                // of terms (the review measured 21 ms for 1,000).
+                // F847 first, so a vocabulary term is matched in the script the user writes; it keeps
+                // the characters of a vocabulary term and of a replacement rule's spelling (ICU writes
+                // the surname 范 as 範, the round-2 review's C2), and leaves Japanese alone (C3). Off
+                // the main actor, like the replacement rules below: the whole vocabulary can be
+                // thousands of terms (the review measured 21 ms for 1,000).
+                let languageCode = result.languageCode
+                let keptTerms = transliterationTerms + rules.map(\.preferred)
+                var converted = recognized
                 if chineseScript != .asHeard || !transliterationTerms.isEmpty {
-                    cleaned = await Task.detached {
-                        TransliteratedTermCorrection.corrected(
-                            chineseScript.converted(recognized), terms: transliterationTerms
-                        )
+                    (converted, cleaned) = await Task.detached {
+                        let converted = chineseScript.converted(recognized, keeping: keptTerms, languageCode: languageCode)
+                        return (converted, TransliteratedTermCorrection.corrected(converted, terms: transliterationTerms))
                     }.value
                 }
                 var rawText: String? = cleaned == recognized ? nil : recognized
-                if rawText != nil {
-                    log.notice("a vocabulary name written partly in pinyin was put back into characters")
+                for note in Self.textChangeNotes(recognized: recognized, converted: converted, corrected: cleaned) {
+                    log.notice("\(note, privacy: .public)")
                 }
                 // The GPU share is on the line because it is the one thing that made this slow
                 // on 2026-10-08 (F890): a reader of the log can tell a busy GPU from a slow model.
@@ -1617,6 +1643,15 @@ final class DictationController: ObservableObject {
                         log.notice("replacement rules changed the dictation")
                     }
                 }
+                // F847, last as well as first: neither the refiner nor a rule can bring the other
+                // script back into the paste (the round-2 review's C2). The same terms are kept.
+                if chineseScript != .asHeard, !cleaned.isEmpty {
+                    let beforeScript = cleaned
+                    cleaned = await Task.detached {
+                        chineseScript.converted(beforeScript, keeping: keptTerms, languageCode: languageCode)
+                    }.value
+                    if cleaned != beforeScript, rawText == nil { rawText = recognized }
+                }
                 // F892: the figures the unified log keeps for about a day, kept with the dictation.
                 let timings = DictationTimings(
                     clipSeconds: clip.duration,
@@ -1671,9 +1706,11 @@ final class DictationController: ObservableObject {
             lastFailureReason = nil // the last dictation is this one, and it did not fail (F687)
             // F692: off the main thread's back. The clipboard may be held by another app that has not
             // answered; the delivery waits for it without freezing the app or the pill.
-            Task { @MainActor [weak self] in
+            let epoch = deliveryEpoch
+            waitingDelivery = Task { @MainActor [weak self] in
                 await self?.deliverWhenTheClipboardIsFree(
-                    payload, rawText: rawText, refinement: refinement, timings: timings, truncated: truncated
+                    payload, rawText: rawText, refinement: refinement, timings: timings, truncated: truncated,
+                    epoch: epoch
                 )
             }
         case .none where session.state == .failed(.emptyTranscript):
@@ -1698,7 +1735,8 @@ final class DictationController: ObservableObject {
     /// it (about 120 s). `deliver` then takes F656's second look, because it waited: an app or a
     /// password field that took focus meanwhile still refuses the paste. No new history outcome.
     private func deliverWhenTheClipboardIsFree(
-        _ payload: String, rawText: String?, refinement: String?, timings: DictationTimings, truncated: Bool
+        _ payload: String, rawText: String?, refinement: String?, timings: DictationTimings, truncated: Bool,
+        epoch: Int
     ) async {
         let pressedIn = pressTarget
         let autoPaste = self.autoPaste
@@ -1711,8 +1749,9 @@ final class DictationController: ObservableObject {
         }
         let waited = await textInjector.prepareDelivery(autoPaste: autoPaste)
         waitingPill.cancel()
-        // Disabled while it waited: dropped, as a dictation disabled mid-transcribe is.
-        guard enabled else { return }
+        // Disabled while it waited: dropped, as a dictation disabled mid-transcribe is — and for
+        // good, even if dictation was switched back on before the clipboard answered (C5).
+        guard enabled, epoch == deliveryEpoch else { return }
         let delivery = textInjector.deliver(
             payload, autoPaste: autoPaste, pressedIn: pressedIn, waitedForClipboard: waited
         )

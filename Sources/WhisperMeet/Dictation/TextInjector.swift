@@ -269,10 +269,15 @@ final class TextInjector {
         let handle = PasteboardHandle(pasteboard: pasteboard)
         let maximumBytes = maximumSnapshotBytes
         let read = readSnapshot
+        // Counted like the early read (F656), so `onSnapshotQueue` never mistakes the queue for idle
+        // while this read waits on a clipboard owner (the round-2 review's C4 note).
+        Self.readsOnQueue.withLock { $0 += 1 }
         let outcome = await withCheckedContinuation { continuation in
             Self.snapshotQueue.async {
                 let changeCount = handle.pasteboard.changeCount
-                continuation.resume(returning: (read(handle, maximumBytes), changeCount))
+                let result = read(handle, maximumBytes)
+                Self.readsOnQueue.withLock { $0 -= 1 }
+                continuation.resume(returning: (result, changeCount))
             }
         }
         if generation == prefetchGeneration { prefetched = outcome }
