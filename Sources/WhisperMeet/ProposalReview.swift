@@ -97,8 +97,13 @@ struct ProposalReview: Identifiable, Equatable {
     /// Whether the sheet's Select All button reads Deselect All: every place on the page (all of the
     /// review by default) with a row Select All may tick has a tick — any of its rows, a hand-ticked
     /// sound-alike one too — and something is ticked (F817, F966).
-    func allTicked(_ selected: Set<Int>, on page: Range<Int>? = nil, groups: [Int: Int] = [:]) -> Bool {
-        let rows = Set(page ?? proposals.indices)
+    ///
+    /// `kept` are rows inside a word kept together from the sheet (F816): unticked, disabled, never
+    /// applied. They are not on the page as far as this rule goes — a kept row's place can never be
+    /// ticked, so counting it kept the button on Select All for good (the review of lane U, finding 4).
+    func allTicked(_ selected: Set<Int>, on page: Range<Int>? = nil, groups: [Int: Int] = [:],
+                   excluding kept: Set<Int> = []) -> Bool {
+        let rows = Set(page ?? proposals.indices).subtracting(kept)
         guard !selected.isDisjoint(with: rows) else { return false }
         return selectablePlaces(of: rows, groups: groups).allSatisfy { !selected.isDisjoint(with: $0) }
     }
@@ -106,10 +111,11 @@ struct ProposalReview: Identifiable, Equatable {
     /// The ticks after the Select All / Deselect All button (F817), on one page (F818; all of the
     /// review by default): Deselect All clears the page's ticks, a hand-ticked sound-alike row's too;
     /// Select All ticks one row for every place on the page that has none — the first — and keeps the
-    /// hand ticks and other pages' ticks (F966).
-    func toggledAll(_ selected: Set<Int>, on page: Range<Int>? = nil, groups: [Int: Int] = [:]) -> Set<Int> {
-        let rows = Set(page ?? proposals.indices)
-        if allTicked(selected, on: page, groups: groups) { return selected.subtracting(rows) }
+    /// hand ticks and other pages' ticks (F966). It never ticks a `kept` row (F816).
+    func toggledAll(_ selected: Set<Int>, on page: Range<Int>? = nil, groups: [Int: Int] = [:],
+                    excluding kept: Set<Int> = []) -> Set<Int> {
+        let rows = Set(page ?? proposals.indices).subtracting(kept)
+        if allTicked(selected, on: page, groups: groups, excluding: kept) { return selected.subtracting(rows) }
         var result = selected
         for place in selectablePlaces(of: rows, groups: groups) where result.isDisjoint(with: place) {
             if let first = place.intersection(selectableAll).min() { result.insert(first) }

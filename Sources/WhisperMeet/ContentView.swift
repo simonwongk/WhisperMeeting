@@ -4906,7 +4906,7 @@ private struct GlossarySuggestionSheet: View {
     /// The longer words a rule row's Chinese change would sit inside (F816), per page.
     let longerWords: ([GlossaryCorrection]) async -> [[String]]
     /// Keep Together (F816): adds the word to the vocabulary; true when it is there afterwards.
-    let keepTogether: (String) -> Bool
+    let keepTogether: (String) -> AppModel.KeepTogetherOutcome
     let onApply: ([GlossaryCorrection]) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var selected: Set<Int> = []
@@ -4933,8 +4933,8 @@ private struct GlossarySuggestionSheet: View {
     @State private var offers: [Int: [String]] = [:]
     /// Words kept together from this sheet (F816): a row inside one is unticked and not applied.
     @State private var kept: Set<String> = []
-    /// Words whose Keep Together the store refused; it has said why.
-    @State private var keepRefused: Set<String> = []
+    /// Words whose Keep Together was refused, with why (round 2: the list at its limit said nothing).
+    @State private var keepRefused: [String: String] = [:]
 
     private var proposals: [GlossaryCorrection] { review.proposals }
 
@@ -4944,7 +4944,7 @@ private struct GlossarySuggestionSheet: View {
         contexts: @escaping ([GlossaryCorrection]) async -> [ProposalContext?] = { $0.map { _ in nil } },
         alternatives: @escaping ([GlossaryCorrection]) async -> [Int: Int] = { _ in [:] },
         longerWords: @escaping ([GlossaryCorrection]) async -> [[String]] = { $0.map { _ in [] } },
-        keepTogether: @escaping (String) -> Bool = { _ in false },
+        keepTogether: @escaping (String) -> AppModel.KeepTogetherOutcome = { _ in .refused("") },
         onApply: @escaping ([GlossaryCorrection]) -> Void
     ) {
         self.review = review
@@ -5027,8 +5027,15 @@ private struct GlossarySuggestionSheet: View {
                                 Button("Keep \(word) Together") { keep(word) }
                                     .controlSize(.small)
                                     .help("Add \(word) to your vocabulary, so no replacement rule rewrites inside it — here, in later passes and in dictation")
-                                    .disabled(keepRefused.contains(word))
+                                    .disabled(keepRefused[word] != nil)
                             }
+                        }
+                        // Under the row, because the window's own message is behind this sheet.
+                        ForEach(words.compactMap { keepRefused[$0] }, id: \.self) { reason in
+                            Text(reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     }
@@ -5059,9 +5066,10 @@ private struct GlossarySuggestionSheet: View {
             HStack {
                 // F817: Select All leaves a sound-alike Chinese row for its own tick; F818: on this
                 // page; F966: one row per place.
-                Button(review.allTicked(selected, on: review.pages[page], groups: groups) ? "Deselect All" : "Select All") {
-                    selected = review.toggledAll(selected, on: review.pages[page], groups: groups)
-                        .subtracting(keptRows)
+                // F816, round 2: kept rows are not the page's for this button, or it never reads
+                // Deselect All again.
+                Button(review.allTicked(selected, on: review.pages[page], groups: groups, excluding: keptRows) ? "Deselect All" : "Select All") {
+                    selected = review.toggledAll(selected, on: review.pages[page], groups: groups, excluding: keptRows)
                 }
                 .disabled(!loaded || (review.selectableAll.isEmpty && selected.isEmpty))
                 Spacer()
@@ -5102,8 +5110,8 @@ private struct GlossarySuggestionSheet: View {
     /// Keep Together (F816): the word goes into the vocabulary, and the rows inside it are unticked
     /// — applied now, they would change the next genuine occurrence instead of the one reviewed.
     private func keep(_ word: String) {
-        guard keepTogether(word) else {
-            keepRefused.insert(word)
+        if case let .refused(reason) = keepTogether(word) {
+            keepRefused[word] = reason
             return
         }
         kept.insert(word)

@@ -7330,14 +7330,26 @@ final class AppModel: ObservableObject {
         }.value
     }
 
+    /// What Keep Together did (F816): the word is in the vocabulary, or the reason it is not, for the
+    /// sheet to show under the row.
+    enum KeepTogetherOutcome: Equatable {
+        case kept
+        case refused(String)
+    }
+
     /// Keep Together (F816): adds `word` to the vocabulary, so no rule rewrites inside it again — in
     /// later passes and in dictation, which both take the vocabulary as known terms (F594, F821).
-    /// True when the word is in the vocabulary afterwards; false when the store refused (it has said
-    /// why, `storageErrorMessage`) or the list is full.
+    ///
+    /// A refusal carries its sentence (round 2, the review's finding 3). The list at its 5,000-term
+    /// limit used to come back as a bare false, which the sheet showed as a greyed button with no
+    /// reason; and the store's own sentence for a refused save is drawn at the top of the library
+    /// window, which the sheet covers. So the sheet is handed the reason itself.
     @discardableResult
-    func keepTogether(_ word: String) -> Bool {
+    func keepTogether(_ word: String) -> KeepTogetherOutcome {
         let result = store.addVocabulary([word])
-        return !result.wasRefused && (result.added > 0 || result.alreadySaved > 0)
+        if !result.wasRefused, result.added > 0 || result.alreadySaved > 0 { return .kept }
+        if let limit = result.limitSentence { return .refused(limit) }
+        return .refused(store.storageErrorMessage ?? "\(word) could not be added to your vocabulary, so nothing was changed.")
     }
 
     /// Where a Chinese word begins and ends, for every matcher that must not rewrite part of one

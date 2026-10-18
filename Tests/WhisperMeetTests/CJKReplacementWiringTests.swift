@@ -178,14 +178,14 @@ func keepTogetherProtectsTheLongerWord() async throws {
     // Dictation applies the rule inside the compound before the click.
     #expect(ReplacementRuleMatcher.applied([rule], to: "整理会议纪要", evidence: model.cjkWordEvidence) == "整理会议室纪要")
 
-    #expect(model.keepTogether("会议纪要"))
+    #expect(model.keepTogether("会议纪要") == .kept)
     #expect(model.store.vocabulary.contains("会议纪要"))
     // The next pass offers only the standalone 会议, and dictation leaves the compound alone.
     let after = try #require(await model.replacementRuleCorrections(for: id))
     #expect(after == [GlossaryCorrection(segmentIndex: 1, from: "会议", to: "会议室", proposedLine: "明天开会议")])
     #expect(ReplacementRuleMatcher.applied([rule], to: "整理会议纪要", evidence: model.cjkWordEvidence) == "整理会议纪要")
     // Kept already: still a success, nothing added twice.
-    #expect(model.keepTogether("会议纪要"))
+    #expect(model.keepTogether("会议纪要") == .kept)
     #expect(model.store.vocabulary.filter { $0 == "会议纪要" }.count == 1)
 }
 

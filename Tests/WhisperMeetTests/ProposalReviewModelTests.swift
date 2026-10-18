@@ -66,7 +66,7 @@ func reviewSheetUsesAlternativesAndPages() throws {
     #expect(source.contains("alternatives: { await model.proposalAlternatives($0, in: meetingID) }"))
     #expect(source.contains("ForEach(review.pages[page], id: \\.self)"))
     #expect(source.contains("ProposalReview.pageLabel(review.pages[page], of: proposals.count)"))
-    #expect(source.contains("selected = review.toggledAll(selected, on: review.pages[page], groups: groups)"))
+    #expect(source.contains("selected = review.toggledAll(selected, on: review.pages[page], groups: groups, excluding: keptRows)"))
 }
 
 @MainActor

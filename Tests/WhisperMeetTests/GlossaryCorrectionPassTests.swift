@@ -329,9 +329,9 @@ func reviewSentencesAreWorkedOutTogether() async throws {
 func reviewSheetUsesTheSelectAllRuleAndShowsSentences() throws {
     let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
     // Per page and one row per place since F818 and F966.
-    let selectAllUsesTheRule = source.contains("selected = review.toggledAll(selected, on: review.pages[page], groups: groups)")
+    let selectAllUsesTheRule = source.contains("selected = review.toggledAll(selected, on: review.pages[page], groups: groups, excluding: keptRows)")
     #expect(selectAllUsesTheRule)
-    let titleUsesTheRule = source.contains("review.allTicked(selected, on: review.pages[page], groups: groups) ? \"Deselect All\" : \"Select All\"")
+    let titleUsesTheRule = source.contains("review.allTicked(selected, on: review.pages[page], groups: groups, excluding: keptRows) ? \"Deselect All\" : \"Select All\"")
     #expect(titleUsesTheRule)
     let ticksEveryRow = source.contains("Set(proposals.indices)")
     #expect(!ticksEveryRow, "the sheet ticks every row itself again")
