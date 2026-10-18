@@ -839,6 +839,72 @@ class MainCacheHandlingTests(MainHarnessCase):
         self.assertTrue(os.path.exists(self.partial))
 
 
+class RequestLoopDeadlineTests(MainHarnessCase):
+    """F1015, the round-2 review's C8: the reply line `main()` writes carries `truncated`. The
+    `DecodeDeadline` tests check `deadline.cut`; this drives one request through the real request
+    loop, with a fake model behind fake `mlx_whisper.transcribe` and `ModelHolder`, and reads the
+    line that goes to Swift. Mutant P2 (`response["truncated"] = False`) passed every other test."""
+
+    def setUp(self):
+        import io
+        import sys
+        from types import ModuleType, SimpleNamespace
+
+        super().setUp()
+        self.make_cached()
+        model = _SlowModel(_Clock(), seconds=0.0, runaway=set())
+        self.model = model
+
+        decoding = ModuleType("mlx_whisper.decoding")
+        decoding.DecodingResult = lambda **fields: SimpleNamespace(**fields)
+        transcribe_module = ModuleType("mlx_whisper.transcribe")
+        transcribe_module.ModelHolder = SimpleNamespace(get_model=lambda repo, dtype: model)
+
+        def transcribe(audio, **_kwargs):
+            # The pinned loop's shape (`_transcribe_like_mlx_whisper`), through the held model.
+            texts = _transcribe_like_mlx_whisper(model, ["w0", "w1"])
+            return {"text": " ".join(texts), "language": "en", "segments": []}
+
+        whisper = sys.modules["mlx_whisper"]
+        whisper.transcribe = transcribe
+        whisper.decoding = decoding
+        sys.modules["mlx.core"].float16 = "float16"
+        self._saved_submodules = {name: sys.modules.get(name) for name in ("mlx_whisper.decoding", "mlx_whisper.transcribe")}
+        sys.modules.update({"mlx_whisper.decoding": decoding, "mlx_whisper.transcribe": transcribe_module})
+        self._saved_budget = server.DICTATION_DECODE_BUDGET_SECONDS
+        clip = os.path.join(self.tmp, "clip.wav")
+        write_wav(clip, pcm16([0] * 1600))
+        sys.stdin = io.StringIO(json.dumps({"wavPath": clip, "language": None, "initialPrompt": None}) + "\n")
+
+    def tearDown(self):
+        import sys
+
+        server.DICTATION_DECODE_BUDGET_SECONDS = self._saved_budget
+        for name, module in self._saved_submodules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+        super().tearDown()
+
+    def reply(self):
+        status, lines = self.run_main()
+        self.assertEqual(status, 0)
+        self.assertEqual(lines[0], {"ready": True})
+        return lines[-1]
+
+    def test_a_reply_whose_decodes_outlast_the_budget_says_it_was_cut(self):
+        server.DICTATION_DECODE_BUDGET_SECONDS = -1.0  # spent before the first decode
+        reply = self.reply()
+        self.assertIs(reply.get("truncated"), True, reply)
+        self.assertEqual(reply.get("text"), "")
+
+    def test_a_reply_inside_the_budget_says_it_was_not_cut(self):
+        reply = self.reply()
+        self.assertIs(reply.get("truncated"), False, reply)
+        self.assertEqual(reply.get("text"), "w0 w1")
+
+
 class CachedStartSweepTests(MainHarnessCase):
     """F897 — F828 removes a `<etag>.part` beside its published blob at the end of a download pass,
     but a helper whose cache is already complete never runs one, so a `.part` F522's library
