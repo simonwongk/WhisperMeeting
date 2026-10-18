@@ -5153,9 +5153,6 @@ private struct GlossarySuggestionSheet: View {
     }
 }
 
-/// Presents a cross-engine "second opinion" comparison: where the other local engine agrees with or
-/// diverges from the stored transcript. Replacing a diverging span is explicit — nothing changes the
-/// transcript until the user taps Replace (F88/F73).
 /// The video page's captions beside the transcript, line by line (F740). Read-only by the user's
 /// choice: it is handed rows and nothing else — no model, no store, no Replace — so nothing here can
 /// write caption text into the transcript.
@@ -5234,6 +5231,9 @@ private struct CaptionComparisonSheet: View {
     }
 }
 
+/// Presents a cross-engine "second opinion" comparison: where the other local engine agrees with or
+/// diverges from the stored transcript. Replacing a diverging span is explicit — nothing changes the
+/// transcript until the user taps Replace (F88/F73).
 private struct SecondOpinionSheet: View {
     let spans: [TranscriptComparisonSpan]?
     let isRunning: Bool

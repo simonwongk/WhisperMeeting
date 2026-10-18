@@ -1943,14 +1943,14 @@ final class AppModel: ObservableObject {
     /// moves several times a second on a working connection, so three still minutes is a dead one.
     nonisolated static let meetingModelDownloadStallTimeout: TimeInterval = 180
 
-    /// Lines up the stored transcript with the other engine's (F542). Injectable so a test can see
-    /// where it runs; defaults to the real comparison.
     /// Lines a link import's captions up against its transcript (F740). Injectable so a test can see
     /// what it is given and where it runs; defaults to the real comparison.
     var compareCaptions: @Sendable ([TranscriptSegment], [TranscriptSegment]) -> [CaptionComparison.Row] = {
         CaptionComparison.compare(transcript: $0, captions: $1)
     }
 
+    /// Lines up the stored transcript with the other engine's (F542). Injectable so a test can see
+    /// where it runs; defaults to the real comparison.
     var compareTranscripts: @Sendable ([TranscriptSegment], [TranscriptSegment]) -> [TranscriptComparisonSpan] = {
         TranscriptComparison.compare($0, $1)
     }
