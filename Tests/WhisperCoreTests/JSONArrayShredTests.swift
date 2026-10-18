@@ -178,6 +178,19 @@ func hugeNumberElsewhereIsKeptAsWritten() throws {
     }
 }
 
+// Round 3 (F907, review M1): a record parsed only because it holds an escape, which then will not parse
+// on its own — here, over `1e400` — is kept as written, rather than sending the whole file to the
+// whole parse, which refuses it too and so left the doomed record in.
+@Test("A record parsed only for its escape that will not parse alone is kept, and the doomed record still goes (F907)")
+func escapedRecordThatWillNotParseIsKept() throws {
+    let other = #"{"id":"\#(b)","t":"\#(jsonUnicodeEscape("0041"))","duration":1e400}"#
+    let data = Data(#"[{"id":"\#(a)","t":"secret kestrel"},\#(other)]"#.utf8)
+    let shred = try #require(JSONArrayShred.removingElements(withIDs: [a], from: data), "the doomed record was left in")
+    #expect(shred.removed == [a.lowercased()])
+    #expect(shred.count == 1)
+    #expect(String(decoding: shred.data, as: UTF8.self) == "[\(other)]", "the other record was rewritten")
+}
+
 @Test("Removing every record still writes a JSON array (F907)")
 func removingEverythingLeavesAnEmptyArray() throws {
     let data = try storeBytes(library())

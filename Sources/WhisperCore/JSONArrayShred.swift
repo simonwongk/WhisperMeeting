@@ -32,12 +32,14 @@ public enum JSONArrayShred {
     /// for — not well-formed, not UTF-8, a byte order mark, a surrogate escape, a number with too many
     /// digits, deep nesting — takes the whole-parse path this replaced, whose answer it then is.
     ///
-    /// The validator is stricter than `JSONSerialization` in every case known but one: a number too
-    /// large for a `Double`, such as `1e400`. `JSONSerialization` refuses a file holding one, and the
-    /// validator accepts it, so such a file has its doomed record cut and every other byte kept as
-    /// written. That loses nothing, and routing it to the whole parse instead would meet F1041 for
-    /// `-1e400`, which that path parses and then raises on when writing it back
-    /// (`hugeNumberElsewhereIsKeptAsWritten`, F907 review, finding 2).
+    /// The validator is stricter than `JSONSerialization` in every case known but one: a number beyond
+    /// a `Double`'s range. `JSONSerialization` refuses a file holding a large positive one (`1e400`),
+    /// and parses a large negative one (`-1e400`) to minus infinity, which its writer then raises on
+    /// (F1041). The validator accepts both, so such a file has its doomed record cut and every other
+    /// byte kept as written; that loses nothing, and the whole parse would refuse or crash instead
+    /// (`hugeNumberElsewhereIsKeptAsWritten`, F907 review, finding 2). An element parsed only for its
+    /// escape that will not parse on its own, such a number again, is kept as written rather than
+    /// sending the file to the whole parse (`escapedRecordThatWillNotParseIsKept`, round 3).
     public static func removingElements(
         withIDs ids: Set<String>, from data: Data
     ) -> (data: Data, count: Int, removed: Set<String>)? {
@@ -66,7 +68,7 @@ public enum JSONArrayShred {
             // characters, so a store-written file has few such elements and the speed is unchanged.
             var lowered = [UInt8](bytes)
             for index in lowered.indices where lowered[index] &- 0x41 < 26 { lowered[index] |= 0x20 }
-            var candidates = scanner.escapedElements
+            var mentioning = Set<Int>()
             lowered.withUnsafeBytes { haystack in
                 guard let base = haystack.baseAddress else { return }
                 for id in doomed {
@@ -75,17 +77,23 @@ public enum JSONArrayShred {
                     while offset < haystack.count,
                           let found = memmem(base + offset, haystack.count - offset, needle, needle.count) {
                         let at = base.distance(to: UnsafeRawPointer(found))
-                        if let element = elementIndex(containing: at, in: elements) { candidates.insert(element) }
+                        if let element = elementIndex(containing: at, in: elements) { mentioning.insert(element) }
                         offset = at + 1
                     }
                 }
             }
             var removed: Set<String> = []
             var removedIndices = Set<Int>()
-            for index in candidates {
+            for index in mentioning.union(scanner.escapedElements) {
                 let range = elements[index]
                 let slice = Data(bytes: bytes.baseAddress! + range.lowerBound, count: range.count)
                 guard let value = try? JSONSerialization.jsonObject(with: slice, options: [.fragmentsAllowed]) else {
+                    // Parsed only for its escape, and its bytes mention no doomed id: kept as written
+                    // (F907 round 3). Giving up on the file sent it to the whole parse, which refuses the
+                    // same thing (a number beyond a `Double`) and so left the doomed record in. If its
+                    // own id is a doomed one spelled by escapes, the whole parse could not remove it
+                    // either.
+                    guard mentioning.contains(index) else { continue }
                     return .cannotVouch
                 }
                 guard let id = (value as? [String: Any])?["id"] as? String, doomed.contains(id.lowercased()) else {
