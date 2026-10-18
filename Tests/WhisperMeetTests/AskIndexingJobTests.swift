@@ -150,7 +150,7 @@ func indexingReportsDeterminateProgress() async throws {
 }
 
 @MainActor
-@Test("Leaving Ask stops the indexing job, which resumes from its saved groups next time (F840)")
+@Test("Leaving Ask stops the indexing job before its next group (F840)")
 func pausingStopsTheJob() async throws {
     let (model, root, ids) = try makeLibrary(meetings: 2, lines: 4)
     defer { try? FileManager.default.removeItem(at: root) }
