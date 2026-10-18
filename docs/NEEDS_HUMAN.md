@@ -44,11 +44,12 @@ The letters below still stand for what needs your hands (F294, F201, F230, F428,
 **Rebuilt 2026-10-17 (whisper-27), from your answers in chat.** Twelve letters had piled up, about 4½ hours of checks. You
 chose a short list, so there is now **one** letter, about 30 minutes. The other sittings, and the tests you skipped or have no
 equipment for, are closed in `TICKET_LOG.md` as "checked by code only"; one line each is under Settled. The old letters' full
-text is in this file's git history.
+text is in this file's git history. (2026-10-18, whisper-dfd4: Wave 8 added one optional second entry, two recordings.)
 
 | | Entry | Time |
 |---|---|---|
 | 1 | **The short list** (F392 · F805 · F353 · F294 · F201) | ~30 min |
+| 2 | **Two recordings, optional** (F737 · F1042 · F727) | a few minutes, plus one long meeting |
 
 ---
 
@@ -104,6 +105,24 @@ launcher for step 3's test copy, and a double-click cleanup for when you're done
    - Dictate once into the terminal app you use.
 
    Tell me anything that looked wrong. I read the app's own log for the rest (never your transcript text).
+
+---
+
+## F737 · F1042 · F727 — Two recordings, optional (added 2026-10-18 by whisper-dfd4, Wave 8)
+
+**Status:** `blocked` (F737, F1042, F727). Wave 8 changed how a recording keeps its two tracks in time, and logs how long Stop
+takes. No test can make a real recording, so two recordings on the next installed build would show whether that holds. Both
+are optional; say "skip" and they close as checked by code only, like the other skipped sittings.
+
+**What I need from you:** after the Wave 8 install, make the two recordings below when convenient and tell me they're done.
+I read only the app's own log lines and the recordings' timing counts, never what was said.
+
+1. **A short recording with one sleep (F737).** Record for a minute, close the lid or choose Apple menu ▸ Sleep, wake the Mac,
+   record another minute, then press Stop. Tell me whether WhisperMeet showed any error, and whether a crash report appeared.
+2. **One long meeting with the Mac kept awake (F1042).** Any real meeting of 2–3 hours, ideally with a USB or Bluetooth
+   microphone, and no sleep during it. Nothing else to do; I read the drift counts Stop writes to the log.
+3. **F727 — skip unless curious.** A throwaway probe in `.claude/wave8/F727-probe/` would show whether building a capture
+   stream raises a Screen Recording prompt. It is low priority.
 
 ---
 

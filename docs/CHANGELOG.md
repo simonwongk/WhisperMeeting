@@ -9,6 +9,44 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
+## Maintenance cycle — Wave 8: 126 tickets closed, 2026-10-16 to 2026-10-18
+
+Ten lanes, each worked test-first in its own worktree and reviewed by a second agent; Shrink (which deletes audio) had two reviews
+in its first round and one in each later round. Most lanes went through two or three rounds. The full trail is in the ticket log
+under each ID. The user answered over twenty questions in chat; each answer is recorded on its ticket. Four lanes did not run (test
+hygiene, scripts and installers, docs, the dictation trigger): the user asked to pause after the current batch.
+
+**What changed for the user**
+- **Shrink (F1004–F1009, F1013, F1028, F1037, F799, F803).** A download macOS cannot read is decoded with ffmpeg and checked before
+  anything is deleted; Shrink removes only the exact file it measured; an Opus MP4 no longer crashes it; a transcription asked for
+  during a Shrink waits for it; a "channels cancel" refusal is remembered for the session. Shrinking mixed recordings stays off
+  (F998), and 5.1 recordings stay refused (F999, the user's choice).
+- **Dictation (F768, F847, F692, F1016, F1015, F1029, F988, F853 and others).** "Wang老师" becomes 王老师 when the name is in the
+  vocabulary, capitalised surnames included; a Chinese script setting starts on Simplified on this Mac; a clipboard that does not
+  answer no longer freezes the app; a dictation cut short is pasted and the pill says the end may be missing; the vocabulary
+  switch works with Qwen.
+- **Library saves and recovery (F580, F578, F620, F670, F611, F699, F990, F704, F753 and others).** Forget History also clears the
+  backup copy at once; quitting asks only when its save was refused; conflict copies are never deleted automatically; the
+  restore message says correctly what comes back; a recording imported as a link can be copied into the library.
+- **Meetings (F609, F907, F713–F715).** A delete sets the folder aside atomically first; the weekly history clean-up at 1,000
+  meetings went from 18.7 s to 4.2 s at launch.
+- **Transcription (F624, F660, F869, F901, F903, F996).** A failed run keeps its full log; a stalled first model download stops
+  with a reason; Second Opinion shows lines the engines split differently but agree on as agreeing.
+- **Vocabulary and rules (F994, F995, F1002, F1003, F816, F818, F966, F1000).** Names and numbers are better protected; a row
+  beside the right spelling arrives unticked; long reviews are checked page by page; a Keep Together button protects compounds.
+- **Ask, exports and windows (F740, F786, F838, F840, F383, F802, F987 and others).** Captions of a link import can be compared
+  read-only; notes.md dates use the recorded zone; a summary says when its transcript changed; error alerts never show a bare
+  case number.
+- **Recording (F556, F930, F982, F984).** A drifting device clock is steered by single frames instead of 10 ms of silence.
+
+**How it was checked.** The suite went from 3367 to 3742 tests; the full gate passed on `5362bef`. Reviews sent work back in
+almost every lane; the deletion and privacy findings were all fixed before the push. 48 tickets, F1015–F1062, were filed during the wave.
+
+**What is not claimed.**
+- Nothing was clicked through on screen; the optional recordings are in `NEEDS_HUMAN.md`.
+- F1013's macOS 15 behaviour is confirmed only by the push's CI log (F1044).
+- Not yet installed.
+
 ## Maintenance cycle — Wave 7: 58 tickets closed, 2026-10-13 to 2026-10-16
 
 Eight lanes, each worked test-first in its own worktree and reviewed by a second agent. Shrink's audit of mixed copies was reviewed
