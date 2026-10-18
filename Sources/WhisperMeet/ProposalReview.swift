@@ -47,6 +47,11 @@ struct ProposalReview: Identifiable, Equatable {
             start = end
         }
         self.pages = pages.isEmpty ? [0..<0] : pages
+        let beside = source == .vocabulary ? GlossaryReviewDefaults.besideTheirTerm(proposals) : []
+        let unchecked = source == .vocabulary ? GlossaryReviewDefaults.chineseSpans(proposals).union(beside) : []
+        besideTheirTerm = beside
+        uncheckedByDefault = unchecked
+        selectableAll = Set(proposals.indices).subtracting(unchecked)
     }
 
     /// "Rows 202–402 of 3,000", under the rows of a review with more than one page (F818).
@@ -63,10 +68,17 @@ struct ProposalReview: Identifiable, Equatable {
     /// unticked, Select All leaves them (`selectableAll`), and each row shows its sentence (the
     /// sheet's `sentences`). Applying can be undone since F831, but a tick that renames a person in a
     /// long transcript may not be noticed to undo.
-    var uncheckedByDefault: Set<Int> {
-        guard source == .vocabulary else { return [] }
-        return GlossaryReviewDefaults.chineseSpans(proposals)
-    }
+    ///
+    /// And, since round 3 of F994, a row whose term already stands in its line (`besideTheirTerm`).
+    /// Worked out once, with `selectableAll`, when the review is made: the sheet reads both on every
+    /// render, and over 167,128 rows that cost 0.142 s each time (the review of lane E).
+    let uncheckedByDefault: Set<Int>
+
+    /// Correct Toward Vocabulary's rows in a line that already spells their term right (F994, round
+    /// 3): Carla beside Carl, GPT-4o beside GPT-4. No score tells a second person or product from a
+    /// mishearing there (Carla 0.8 and Kestrol 0.86 — the second review of lane E), so they arrive
+    /// unticked and out of Select All, each with its sentence. The user chose that on 2026-10-18.
+    let besideTheirTerm: Set<Int>
 
     /// What the sheet ticks when a page first opens, once it knows which of its proposals touch a
     /// vocabulary term (F245): everything else, less `uncheckedByDefault`, and one row per place
@@ -80,7 +92,7 @@ struct ProposalReview: Identifiable, Equatable {
     /// What Select All may tick (F817): every row but those that need a tick of their own. A row that
     /// rewrites a vocabulary term is still Select All's, as it always was — it arrives unticked and
     /// marked, and Select All is the deliberate act.
-    var selectableAll: Set<Int> { Set(proposals.indices).subtracting(uncheckedByDefault) }
+    let selectableAll: Set<Int>
 
     /// The ticks after the row at `index` is ticked or unticked (F966): ticking a row unticks the
     /// other rows for its place, since `apply` would change that place once, with the first.

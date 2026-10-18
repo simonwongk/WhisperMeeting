@@ -184,6 +184,22 @@ public enum GlossaryCorrector {
         return results
     }
 
+    /// Whether a Latin `term` stands in `line` as the pass reads presence (F994, round 3): equal to a
+    /// window of no more words than its own (F820, F968). False for a Chinese term — its rows are
+    /// unticked anyway — and for a term split across more words ("Kuber netes"), which is misheard.
+    public static func termStands(_ term: String, in line: String) -> Bool {
+        let prepared = PreparedVocabulary([term], knownTerms: [], segmenter: nil)
+        guard let prepared = prepared.terms.first.map({ ($0, prepared.table) }),
+              !prepared.0.isCJK, !prepared.0.ids.isEmpty,
+              normalize(line).contains(prepared.0.normalized) else { return false }
+        let tokens = latinTokens(of: line)
+        guard !tokens.isEmpty else { return false }
+        let windows = LatinWindows(tokens: tokens, in: line, table: prepared.1)
+        windows.extend(to: max(maxWindow, prepared.0.wordCount))
+        guard let smallest = windows.smallestWindowSpelling[prepared.0.normalized] else { return false }
+        return smallest <= prepared.0.wordCount
+    }
+
     /// A Latin proposal: its text as it stands in the segment, and where `apply` is to change it
     /// (F914) — nil where that is the first genuine occurrence of the text, as `apply` resolves a
     /// row without one (F950).
@@ -966,6 +982,23 @@ public enum GlossaryReviewDefaults {
     ) -> Set<Int> {
         let terms = ProtectedTerms.PreparedTerms(protectedTerms)
         return Set(proposals.indices.filter { terms.touch(proposals[$0].from) })
+    }
+
+    /// Indices of `proposals` whose term already stands in the line they were proposed on (F994,
+    /// round 3) — a second spelling beside the right one, which the text cannot tell from another
+    /// person or product (Carla beside Carl, GPT-4o beside GPT-4), so the sheet offers it unticked.
+    /// A row that names no line is never counted.
+    public static func besideTheirTerm(_ proposals: [GlossaryCorrection]) -> Set<Int> {
+        var known: [String: Bool] = [:]
+        return Set(proposals.indices.filter { index in
+            let row = proposals[index]
+            guard let line = row.proposedLine, !ReplacementBoundary.hasCJK(row.to) else { return false }
+            let key = row.to + "\u{0}" + line
+            if let answer = known[key] { return answer }
+            let answer = GlossaryCorrector.termStands(row.to, in: line)
+            known[key] = answer
+            return answer
+        })
     }
 
     /// Indices of `proposals` whose span contains a Chinese character (F536) — what the app leaves

@@ -384,3 +384,19 @@ func aWindowOnAnotherTermLeavesNoRowBehindIt() {
     // Without the other term listed, the split mishearing of the longer one is proposed as before.
     #expect(rows(["Russell"], "ask Rust sell about it") == ["Rust sell → Russell"])
 }
+
+@Test("A term stands in a line where the pass would take it as present: as a window of no more words than its own (F994, round 3)")
+func termStandsAsThePassReadsIt() {
+    #expect(GlossaryCorrector.termStands("Carl", in: "Carl and Carla will sync"))
+    #expect(!GlossaryCorrector.termStands("Carl", in: "Carla will sync"))
+    #expect(GlossaryCorrector.termStands("Priya Raman", in: "Priya\tRaman and Priya Ramani agreed"))
+    #expect(!GlossaryCorrector.termStands("Kubernetes", in: "we run Kuber netes daily"))   // split: misheard (F968)
+    #expect(GlossaryCorrector.termStands("GPT-4", in: "GPT-4 and GPT-4o differ"))
+    #expect(!GlossaryCorrector.termStands("张经理", in: "张经理来了"))                      // Chinese rows are unticked already
+    let rows = [
+        GlossaryCorrection(segmentIndex: 0, from: "Carla", to: "Carl", proposedLine: "Carl and Carla will sync"),
+        GlossaryCorrection(segmentIndex: 1, from: "Kestrol", to: "Kestrel", proposedLine: "the Kestrol launch"),
+        GlossaryCorrection(segmentIndex: 2, from: "Carla", to: "Carl"),                    // no line: nothing to read
+    ]
+    #expect(GlossaryReviewDefaults.besideTheirTerm(rows) == [0])
+}

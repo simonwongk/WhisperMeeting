@@ -5002,6 +5002,12 @@ private struct GlossarySuggestionSheet: View {
                                 Label("Rewrites a vocabulary term — not applied unless you tick it", systemImage: "exclamationmark.triangle")
                                     .font(.caption)
                                     .foregroundStyle(.orange)
+                            } else if review.besideTheirTerm.contains(index) {
+                                // F994 round 3: the term is spelled right in this line, so this may be
+                                // another person or product; never applied in one click.
+                                Label("\(proposal.to) is spelled right in this line too — this may be another name. Tick it to apply", systemImage: "person.2")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             } else if review.uncheckedByDefault.contains(index) {
                                 // F536: a Chinese match is by sound; it is never applied in one click.
                                 Label("Sounds like the term — check it, then tick it to apply", systemImage: "ear")

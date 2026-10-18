@@ -127,3 +127,42 @@ func sheetPreselectsTheWholeReviewBeforeAnythingCanBeApplied() throws {
     #expect(source.contains(".disabled(!loaded || selected.isEmpty)"))
     #expect(source.contains(".disabled(!loaded || (review.selectableAll.isEmpty && selected.isEmpty))"))
 }
+
+@Test("A Correct Toward Vocabulary row in a line that already spells its term right arrives unticked; elsewhere a mishearing is ticked as before (F994, round 3)")
+func rowsBesideTheirTermArriveUnticked() {
+    // The second-round review of lane E: beside the right spelling the 0.75 bar cannot tell a
+    // second person or product from a mishearing (Carla 0.8 is Carl's colleague, Kestrol 0.86 is
+    // misheard), and these rows arrived ticked — one Apply wrote "Carl and Carl will review…". The
+    // user chose, on 2026-10-18, to offer them unticked: nothing is renamed unless they tick it.
+    let vocabulary = ["Carl", "Sara", "Brian", "Priya Raman", "GPT-4", "Postgres", "Kestrel"]
+    let lines = [
+        "Carl and Carla will sync", "Sara and Sarah agreed", "Brian and Bryan agreed",
+        "Priya Raman and Priya Ramani agreed", "GPT-4 and GPT-4o differ", "Postgres or PostgreSQL",
+        "the Kestrol launch moved",
+    ]
+    let segments = lines.map { TranscriptSegment(speaker: nil, start: 0, end: 1, text: $0) }
+    let rows = GlossaryCorrector.proposing(GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments), on: segments)
+    let review = ProposalReview(proposals: rows, source: .vocabulary)
+    let shown = review.proposals.map { "\($0.from) → \($0.to)" }
+    let beside = [
+        "Carla → Carl", "Sarah → Sara", "Bryan → Brian", "Priya Ramani → Priya Raman", "GPT-4o → GPT-4",
+        "PostgreSQL → Postgres",
+    ]
+    let pre = Set(review.preselected(touching: [], groups: [:]).map { shown[$0] })
+    let afterSelectAll = Set(review.toggledAll([], groups: [:]).map { shown[$0] })
+    for row in beside {
+        // Still offered — one tick away — but neither preselected nor Select All's.
+        #expect(shown.contains(row), "\(row) is no longer offered")
+        #expect(!pre.contains(row), "\(row) arrived ticked")
+        #expect(!afterSelectAll.contains(row), "Select All ticked \(row)")
+    }
+    #expect(review.besideTheirTerm == Set(shown.indices.filter { beside.contains(shown[$0]) }))
+    // A mishearing in a line without its term is ticked as before. (So is "Carla → Sara" — Carla in a
+    // line without Sara — a near-identical name where the term is absent, which is F1039's.)
+    #expect(pre.contains("Kestrol → Kestrel"))
+    // From the other tools nothing changes: a rule is the user's own, a model's row is reviewed as before.
+    #expect(ProposalReview(proposals: rows, source: .replacementRules).preselected(touching: []).count == rows.count)
+    // The sheet says why such a row is unticked.
+    let source = (try? SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")) ?? ""
+    #expect(source.contains("} else if review.besideTheirTerm.contains(index) {"))
+}
