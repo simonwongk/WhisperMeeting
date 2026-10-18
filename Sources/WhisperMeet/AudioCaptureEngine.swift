@@ -825,7 +825,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         // with a backoff between attempts, so a display that is gone for good still ends in a save.
         restartCount += 1
         restartTimestamps.append(ProcessInfo.processInfo.systemUptime)
-        Self.logger.info(
+        // `notice`, not `info` (F556 review): a person reads this back with `log show` after the
+        // recording, and info lines are kept in memory only.
+        Self.logger.notice(
             "Recording capture restarted after \(paddingFrames) padded frames (restart \(self.restartCount))"
         )
     }
@@ -1084,8 +1086,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         guard systemStarted || microphoneStarted else { return }
         // Recorded before the padding goes in, so `startSeconds` is where the gap begins — on
         // whichever writer is actually being padded, since that is the track this span sits on.
-        // Both started writers stay frame-aligned by every earlier restart, so either answers the
-        // same question when both qualify.
+        // When both qualify the system writer answers. The two need not agree to the frame: F151
+        // pads each track's own dropped buffers and F556 steers each track's clock on its own, so
+        // their counts can differ by a padded gap or by up to about 10 ms of steering, and
+        // `startSeconds` is that close, not exact, for the other track.
         let framesBeforePadding = (systemStarted ? _systemWriter : _microphoneWriter)?.frameCount ?? 0
         if systemStarted { try _systemWriter?.appendSilence(frames: frames) }
         if microphoneStarted { try _microphoneWriter?.appendSilence(frames: frames) }
@@ -1171,7 +1175,6 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     func recordWriteFailureForTesting(_ error: Error) {
         streamError = error   // the syncing accessor: tests call this from off the queue
     }
-
 
     var testFrameCounts: (system: Int64, microphone: Int64) {
         (systemWriter?.frameCount ?? 0, microphoneWriter?.frameCount ?? 0)

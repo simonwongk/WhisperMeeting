@@ -157,8 +157,11 @@ public final class FloatTrackFile {
     ///
     /// Here rather than in `FloatTrackWriter.append` so the capture path and the replay tests run the
     /// same lines: `CaptureGapReplayTests` used to restate the writer's two calls by hand, and a
-    /// restatement cannot notice the writer changing. Each counter moves only once its write has
-    /// succeeded, so a write that throws partway leaves them describing what is on disk.
+    /// restatement cannot notice the writer changing. Each counter moves only after its write call
+    /// returns. A gap's silence goes to disk in 8,192-frame chunks, so a throw partway through it
+    /// leaves silence that `gapPaddedFrames` does not count, as `droppedFrames` did not before F556.
+    /// The drift counts are exact: a repeat is counted once its one-frame write returns, and a skip
+    /// once the shortened buffer's write returns.
     @discardableResult
     public func appendCaptured(
         _ samples: UnsafePointer<Float>,
