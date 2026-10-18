@@ -45,7 +45,8 @@ public enum EditedTranscript {
     /// — Chinese with only commas, speech the recognizer did not punctuate — was still one passage
     /// the length of the meeting (the Wave 5 review measured 2,959 characters in one). Nothing is
     /// parsed as a timestamp: with no timed segment, a leading clock is prose (F42). The action-item
-    /// quotes and the exporter keep their own readings.
+    /// quotes read these passages too (F919: `AppModel.performSummarization` resolves them here); only the
+    /// exporter keeps its own reading.
     public static func searchablePassages(
         transcriptText: String,
         segments: [TranscriptSegment]
