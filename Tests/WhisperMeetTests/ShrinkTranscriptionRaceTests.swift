@@ -65,9 +65,9 @@ func transcriptionWaitsForShrinkOfItsMeeting() async throws {
     try await pollUntil("Shrink to start") { model.shrinkRunningID == id }
 
     model.beginTranscription(id: id)
-    // Given every chance to start: the engine must not have been handed the recording Shrink is replacing.
-    for _ in 0..<20 { try await Task.sleep(nanoseconds: 10_000_000) }
-    let startedDuringShrink = calls.all
+    // `beginTranscription` pumps the queue synchronously: a job that started is active now, before any await, and one
+    // that waits is still pending (review of round 2, finding 5: no sleep).
+    let startedDuringShrink = model.hasActiveTranscription
     let waiting = model.queuedTranscriptionWaitMessage
     let queued = model.isQueuedForTranscription(id)
 
@@ -75,7 +75,8 @@ func transcriptionWaitsForShrinkOfItsMeeting() async throws {
     await shrink.value
     try await pollUntil("the transcription to run after Shrink") { !calls.all.isEmpty && !model.hasActiveTranscription }
 
-    #expect(startedDuringShrink.isEmpty, "the engine ran during Shrink on \(startedDuringShrink.map(\.lastPathComponent))")
+    #expect(!startedDuringShrink, "a transcription started during Shrink of its meeting")
+    #expect(calls.all.count == 1, "the engine ran \(calls.all.count) times")
     #expect(queued, "the request was dropped instead of queued")
     #expect(waiting == "Waiting for Shrink to finish with this meeting.", "\(waiting)")
     #expect(model.alertMessage?.contains("Shrunk") == true, "\(model.alertMessage ?? "nil")")
