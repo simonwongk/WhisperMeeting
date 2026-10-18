@@ -109,3 +109,65 @@ func shrinkKeepsAnOpusMP4BesideAShorterRecording() async throws {
     #expect((try? Data(contentsOf: f.folder.appendingPathComponent("recording.mp4"))) == before, "\(alert)")
     #expect(alert.contains("recording.mp4"), "\(alert)")
 }
+
+// MARK: - Round 3 (review of lane A round 2, findings 1 and 3)
+
+private let monoFixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    .appendingPathComponent("Fixtures/opus-in-mp4-mono-2s.mp4")
+
+/// A folder holding `copy` as `copyName` and a mono WAV of `wavSeconds` beside it as `recording.wav`, with the index
+/// naming `indexed` at `indexSeconds`.
+@MainActor
+private func folderWith(_ copy: URL, as copyName: String, wavSeconds: Double, indexed: String, indexSeconds: Double) throws
+    -> (root: URL, model: AppModel, id: UUID, folder: URL) {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("F1037-r3-\(UUID().uuidString)")
+    let id = UUID()
+    let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: copy, to: folder.appendingPathComponent(copyName))
+    let tone: [Float] = (0..<Int(wavSeconds * 48_000)).map { Float(0.2 * sin(2 * Double.pi * 440 * Double($0) / 48_000)) }
+    try WAVWriter.wavData(from: tone, sampleRate: 48_000).write(to: folder.appendingPathComponent("recording.wav"))
+    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.store.upsert(MeetingRecord(id: id, title: "Probe", duration: indexSeconds,
+                                     recordingPath: "Recordings/\(id.uuidString)/\(indexed)", status: .completed, transcriptText: "Hi."))
+    model.availableBytesForShrink = { _ in .max }
+    return (root, model, id, folder)
+}
+
+@Test("A resume whose recording.m4a AVAudioFile counts no frames in keeps a WAV beside it, whatever length the index gives (F1037 round 3)")
+@MainActor
+func shrinkResumeOverAnUncountedCopyKeepsTheLeftover() async throws {
+    // Review of round 2, finding 1: with `declaredDuration` nil for an uncounted file, `diskFacts` took the recording's
+    // length from the index (6 s), and F911 let a 6 s WAV beside a 2 s copy go. An uncounted recording measures 0.
+    let f = try folderWith(fixture, as: "recording.m4a", wavSeconds: 6, indexed: "recording.m4a", indexSeconds: 6)
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    let wav = f.folder.appendingPathComponent("recording.wav")
+    let before = try Data(contentsOf: wav)
+
+    await f.model.refreshStorage(ids: [f.id])
+    f.model.requestShrink(ids: [f.id])
+    await f.model.performShrink(confirmed: true)?.value
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect((try? Data(contentsOf: wav)) == before, "4 s of audio exist only in the WAV: \(alert)")
+}
+
+@Test("A mono MP4 holding Opus beside a shorter recording is kept, as a stereo one is (F1037 round 3)")
+@MainActor
+func shrinkKeepsAMonoOpusMP4BesideAShorterRecording() async throws {
+    // Review of round 2, finding 3: a mono one goes to no channel check, so before F1037 it was not a crash but a
+    // deletion — its 0 frames read as 0 s, which F911 took for a file holding nothing.
+    let f = try folderWith(monoFixture, as: "recording.mp4", wavSeconds: 1, indexed: "recording.wav", indexSeconds: 1)
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    let mp4 = f.folder.appendingPathComponent("recording.mp4")
+    let before = try Data(contentsOf: mp4)
+
+    await f.model.refreshStorage(ids: [f.id])
+    f.model.requestShrink(ids: [f.id])
+    await f.model.performShrink(confirmed: true)?.value
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect((try? Data(contentsOf: mp4)) == before, "\(alert)")
+    #expect(alert.contains("recording.mp4"), "\(alert)")
+}

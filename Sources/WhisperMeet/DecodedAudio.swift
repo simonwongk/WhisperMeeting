@@ -146,6 +146,13 @@ enum DecodedAudio {
         return Double(file.length) / file.processingFormat.sampleRate
     }
 
+    /// Whether AVAudioFile opens the file and counts no frames in it — the MP4 holding Opus `declaredDuration` declines
+    /// to give a length for (F1037). Such a file holds audio nobody has counted, so it is not a file of no length either.
+    static func opensButCountsNoFrames(_ url: URL) -> Bool {
+        guard let file = try? AVAudioFile(forReading: url), file.processingFormat.sampleRate > 0 else { return false }
+        return file.length <= 0
+    }
+
     /// The length obtained by decoding every packet. A file whose header promises more than its
     /// packets deliver fails here, which is why Shrink checks this and not the header (design, step 4).
     static func fullyDecodedDuration(of url: URL) throws -> TimeInterval {

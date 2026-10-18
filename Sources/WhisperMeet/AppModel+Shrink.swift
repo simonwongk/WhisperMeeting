@@ -823,7 +823,11 @@ extension AppModel {
             let audioTracks = exists && ((tracks ?? 1) > 1 || (channels ?? 0) > 2) ? await readTracks(recordingURL) : nil
             let problem = descriptor.map { MeetingIntegrityChecker.check($0).contains { $0.isProblem } } ?? false
             let directory = folder ?? recordingURL.deletingLastPathComponent()
-            let length = declared(recordingURL) ?? (indexDuration > 0 ? indexDuration : 0)
+            // F1037 round 3: a recording AVAudioFile opens and counts nothing in measures 0, never the index's length — an
+            // index naming a 2 s Opus `recording.m4a` as 6 s would let F911 delete the 6 s `recording.wav` beside it. 0 is
+            // what such a file measured before `declaredDuration` declined it, and what makes F911 keep every other file.
+            let length = declared(recordingURL)
+                ?? (DecodedAudio.opensButCountsNoFrames(recordingURL) ? 0 : (indexDuration > 0 ? indexDuration : 0))
             // Damage only when a rebuild would recover MORE audio than the recording holds, which is
             // F256's truncation. A recovered folder never has a complete meeting.wav, so an offer alone
             // always exists there; a second past the recording allows for track padding (final review).
