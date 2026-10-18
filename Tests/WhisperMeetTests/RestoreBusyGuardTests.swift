@@ -221,6 +221,7 @@ func runningRefusalWording() {
     #expect(two.contains("cancel them") && two.contains("Their results"), "\(two)")
 
     let three = AppModel.runningJobRestoreRefusal([(.passageRerun, "A"), (.secondOpinion, "B"), (.summary, "C")])
+    #expect(AppModel.runningJobRestoreRefusal([(.speakerAnalysis, "D")]).contains("the speaker analysis of “D”"))
     #expect(three.contains("the re-run of a passage of “A”, the second opinion on “B” and the summary of “C”"), "\(three)")
 
     #expect(AppModel.runningJobRestoreRefusal([]).contains("the running transcription or summary"))

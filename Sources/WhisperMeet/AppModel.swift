@@ -3418,6 +3418,8 @@ final class AppModel: ObservableObject {
             add(.transcription, transcription.activeID)
             add(.secondOpinion, secondOpinionRunningID)
             add(.passageRerun, segmentReTranscriptionRunningID)
+            // F983, round 2: speaker analysis holds `isRunningAuxiliaryEngine` too, with its own id.
+            add(.speakerAnalysis, diarizationRunningID)
             add(.summary, activeSummarizationID)
             return Self.runningJobRestoreRefusal(running)
         }
@@ -3455,13 +3457,14 @@ final class AppModel: ObservableObject {
 
     /// A job that writes into its meeting when it finishes, for `runningJobRestoreRefusal` (F983).
     enum RunningJob {
-        case transcription, secondOpinion, passageRerun, summary
+        case transcription, secondOpinion, passageRerun, speakerAnalysis, summary
 
         func named(_ quotedTitle: String) -> String {
             switch self {
             case .transcription: "the transcription of \(quotedTitle)"
             case .secondOpinion: "the second opinion on \(quotedTitle)"
             case .passageRerun: "the re-run of a passage of \(quotedTitle)"
+            case .speakerAnalysis: "the speaker analysis of \(quotedTitle)"
             case .summary: "the summary of \(quotedTitle)"
             }
         }
