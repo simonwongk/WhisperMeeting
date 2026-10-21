@@ -34,12 +34,18 @@ public enum JSONArrayShred {
     ///
     /// The validator is stricter than `JSONSerialization` in every case known but one: a number beyond
     /// a `Double`'s range. `JSONSerialization` refuses a file holding a large positive one (`1e400`),
-    /// and parses a large negative one (`-1e400`) to minus infinity, which its writer then raises on
-    /// (F1041). The validator accepts both, so such a file has its doomed record cut and every other
-    /// byte kept as written; that loses nothing, and the whole parse would refuse or crash instead
+    /// and parses a large negative one (`-1e400`) to minus infinity, which its writer then raises on.
+    /// The validator accepts both, so such a file has its doomed record cut and every other byte kept
+    /// as written; that loses nothing, and the whole parse would refuse or leave it instead
     /// (`hugeNumberElsewhereIsKeptAsWritten`, F907 review, finding 2). An element parsed only for its
     /// escape that will not parse on its own, such a number again, is kept as written rather than
     /// sending the file to the whole parse (`escapedRecordThatWillNotParseIsKept`, round 3).
+    ///
+    /// **A file the whole parse could not write back is left alone (F1041).** Writing minus infinity
+    /// raises an Objective-C exception, which no Swift `catch` sees, so it took the app down — at
+    /// every launch, since the launch shred retries a queued deletion. The answer is then nil, and
+    /// `isRewritableArray` says no for the same file, so a caller can tell it from one that holds
+    /// none of the ids (`wholeParseOfAnInfiniteNumberIsLeftAlone`).
     public static func removingElements(
         withIDs ids: Set<String>, from data: Data
     ) -> (data: Data, count: Int, removed: Set<String>)? {
@@ -151,7 +157,9 @@ public enum JSONArrayShred {
             removed.insert(id.lowercased())
             return false
         }
+        // Checked, not caught: the writer RAISES on an infinity, and `try?` does not see a raise (F1041).
         guard !removed.isEmpty,
+              JSONSerialization.isValidJSONObject(kept),
               let rewritten = try? JSONSerialization.data(
                   withJSONObject: kept, options: [.prettyPrinted, .sortedKeys]
               )
@@ -159,10 +167,13 @@ public enum JSONArrayShred {
         return (rewritten, kept.count, removed)
     }
 
-    /// Whether `data` parses as a JSON array at all. A file that does not is one the shred can never
-    /// clean, which is different from one that simply holds none of the ids (F668).
-    public static func isArray(_ data: Data) -> Bool {
-        (try? JSONSerialization.jsonObject(with: data)) is [Any]
+    /// Whether `data` parses as a JSON array the shred could write back. A file that does not is one
+    /// the shred can never clean, which is different from one that simply holds none of the ids
+    /// (F668): one that is not a JSON array at all, or one whose parse holds a number no JSON writer
+    /// can write, such as `-1e400` read as minus infinity (F1041).
+    public static func isRewritableArray(_ data: Data) -> Bool {
+        guard let array = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return false }
+        return JSONSerialization.isValidJSONObject(array)
     }
 
     /// The ids among `ids` whose text appears anywhere in `data`, compared case-insensitively and

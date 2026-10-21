@@ -3272,8 +3272,8 @@ final class MeetingStore: ObservableObject {
         enum Reason: Equatable {
             /// Its cleaned bytes could not be written back — worth retrying.
             case couldNotRewrite
-            /// Not a readable index, and its bytes name a deleted meeting. Retrying cannot clean it;
-            /// only the user can remove it.
+            /// Not a readable index, or one the shred can never write back (F1041), and its bytes
+            /// name a deleted meeting. Retrying cannot clean it; only the user can remove it.
             case notAnIndex
             /// Could not be read at all, so what it holds is unknown. Reported, but it holds no
             /// deletion in the queue: holding every pending id kept each later deletion queued for
@@ -3304,8 +3304,9 @@ final class MeetingStore: ObservableObject {
     /// recordings, since `sideCopiesOfTheIndex()` admits only real snapshot folders.
     ///
     /// Returns every copy that still holds, or may hold, one of the ids (F668): one whose cleaned bytes
-    /// could not be written back (with the ids it held), one that does not parse as an index but
-    /// whose bytes name one of them (with those ids), one that could not be read at all (with no
+    /// could not be written back (with the ids it held), one that does not parse as an index — or
+    /// parses to something no JSON writer can write, F1041 — but whose bytes name one of them (with
+    /// those ids), one that could not be read at all (with no
     /// ids — what it holds is unknown), and a snapshot's recording folder that could not be removed
     /// (with its id). A copy that does not parse and names none of them is clean for this purpose.
     /// Nothing else is deleted.
@@ -3331,8 +3332,9 @@ final class MeetingStore: ObservableObject {
                 continue
             }
             guard let shredded = JSONArrayShred.removingElements(withIDs: doomed, from: data) else {
-                // Holds none of them — unless it does not parse, when only its bytes can say.
-                if !JSONArrayShred.isArray(data) {
+                // Holds none of them — unless the shred can never rewrite it (it does not parse, or its
+                // parse holds a number no writer can write, F1041), when only its bytes can say.
+                if !JSONArrayShred.isRewritableArray(data) {
                     let named = uuids(JSONArrayShred.mentionedIDs(doomed, in: data))
                     if !named.isEmpty { stuck.append(StuckSideCopy(path: path, ids: named, reason: .notAnIndex)) }
                 }

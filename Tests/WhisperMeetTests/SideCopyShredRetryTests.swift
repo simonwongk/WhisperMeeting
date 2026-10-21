@@ -260,3 +260,37 @@ func retryLeavesAMeetingThatCameBack() throws {
             "a live meeting was stripped from a copy")
     #expect(relaunched.storageErrorMessage == nil)
 }
+
+/// F1041 — a quarantined copy that only the whole parse reads (here, for its byte order mark) and that
+/// holds `-1e400` took the app down: the whole parse reads it as minus infinity and writing it back
+/// RAISES, which no `catch` sees. The deletion stayed queued, so the launch shred did it again at every
+/// launch. The shred can never rewrite such a copy, so it is reported like one that cannot be read as
+/// an index — kept, named, and the id kept queued while its text is in it.
+@MainActor
+@Test("A side copy holding minus infinity is reported for the user to remove, not rewritten into a crash (F1041)")
+func infiniteNumberInASideCopyIsReportedNotRewritten() throws {
+    let (store, root, secret, index) = try makeLibraryWithADeletedMeeting("infinity")
+    defer { try? FileManager.default.removeItem(at: root) }
+    // A hand-edited copy: a byte order mark, and one more record whose duration is -1e400.
+    let text = String(decoding: index, as: UTF8.self)
+    let close = try #require(text.range(of: "]", options: .backwards))
+    let edited = "\u{FEFF}" + text[..<close.lowerBound]
+        + #",{"id":"\#(UUID().uuidString)","duration":-1e400}"# + text[close.lowerBound...]
+    let quarantine = root.appendingPathComponent("meetings.unreadable-20261001T100000Z.json")
+    try Data(edited.utf8).write(to: quarantine)
+    store.delete(id: secret)
+    store.clearStorageError()
+    let now = Int(Date().timeIntervalSince1970) + week + 1
+
+    #expect(store.processPendingShreds(now: now) == [secret])
+
+    let message = try #require(store.storageErrorMessage, "the deleted meeting's text was left in a copy without a word")
+    #expect(message.contains("meetings.unreadable-20261001T100000Z.json"), "\(message)")
+    #expect(message.contains("Delete the file yourself"), "retrying cannot clean it, so it is the user's: \(message)")
+    #expect(try Data(contentsOf: quarantine) == Data(edited.utf8), "a copy kept for recovery was changed")
+    // Still queued while the text is there: the next launch says so again, and does not crash.
+    let relaunched = MeetingStore(rootDirectory: root)
+    _ = relaunched.processPendingShreds(now: now + 60)
+    #expect(relaunched.storageErrorMessage?.contains("meetings.unreadable-20261001T100000Z.json") == true,
+            "the id left the queue with the text still in the copy")
+}

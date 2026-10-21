@@ -198,3 +198,22 @@ func removingEverythingLeavesAnEmptyArray() throws {
     #expect(shred.count == 0)
     #expect(parsed(shred.data) == NSArray())
 }
+
+// F1041 — the whole parse reads `-1e400` as minus infinity, and `JSONSerialization.data` then RAISES on
+// it (`Invalid number value (infinite) in JSON write`): an Objective-C exception no `catch` sees, so
+// the shred took the app down. The launch shred retries a queued deletion at every launch, so it was a
+// crash at every launch. A byte order mark is what sends this file to the whole parse; the byte path
+// already keeps such a number as written (`hugeNumberElsewhereIsKeptAsWritten`).
+@Test("A file only the whole parse reads, holding minus infinity, is left alone rather than raising (F1041)")
+func wholeParseOfAnInfiniteNumberIsLeftAlone() {
+    let data = Data("\u{FEFF}[{\"id\":\"\(a)\",\"t\":\"secret kestrel\"},{\"id\":\"\(b)\",\"duration\":-1e400}]".utf8)
+    #expect(JSONArrayShred.removingElements(withIDs: [a], from: data) == nil, "it would have to write an infinity")
+    // The caller's question for a copy it could not clean: can the shred ever rewrite this one? No —
+    // so a side copy holding a deleted meeting is reported for the user to remove, not passed as clean.
+    #expect(!JSONArrayShred.isRewritableArray(data))
+    #expect(JSONArrayShred.mentionedIDs([a], in: data) == [a.lowercased()])
+    // The same file without the infinity still has its record cut by the whole parse.
+    let finite = Data("\u{FEFF}[{\"id\":\"\(a)\",\"t\":\"secret kestrel\"},{\"id\":\"\(b)\",\"duration\":-1e300}]".utf8)
+    #expect(JSONArrayShred.removingElements(withIDs: [a], from: finite)?.removed == [a.lowercased()])
+    #expect(JSONArrayShred.isRewritableArray(finite))
+}
