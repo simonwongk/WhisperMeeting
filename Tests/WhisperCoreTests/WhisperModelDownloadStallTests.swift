@@ -125,3 +125,39 @@ func aMovingDownloadIsNotStopped() async throws {
 
     #expect(result.text == "Hello.")
 }
+
+/// A suspending clock the test moves by hand: time the Mac spends asleep does not move it.
+private final class HandClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var instant = SuspendingClock.now
+    var now: SuspendingClock.Instant { lock.withLock { instant } }
+    func advance(_ by: Duration) { lock.withLock { instant = instant.advanced(by: by) } }
+}
+
+/// F1067 — the window used to be timed on `ContinuousClock`, which counts sleep, so a download across a
+/// lid close longer than the window was stopped the first time the watch looked after waking. It is
+/// timed on `SuspendingClock` now (the type of the clock it takes says so): while the Mac sleeps no
+/// progress is expected and none is missed.
+@Test("The download stall window does not count time the Mac sleeps (F1067)")
+func theStallWindowStandsStillWhileTheMacSleeps() async throws {
+    final class Outcome: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stalled = false
+        var value: Bool { lock.withLock { stalled } }
+        func set() { lock.withLock { stalled = true } }
+    }
+    let clock = HandClock()
+    let watch = ModelDownloadStallWatch(stallTimeout: 0.1, now: { clock.now })
+    watch.observe(LocalTranscriptionProgress(phase: .downloadingModel, fractionCompleted: 0.03))
+    let outcome = Outcome()
+    let task = Task {
+        do { try await watch.waitForStall() } catch LocalWhisperError.modelDownloadStalled { outcome.set() } catch {}
+    }
+    defer { task.cancel() }
+    // Asleep: real time passes, five windows of it, and the suspending clock does not move.
+    try await Task.sleep(for: .milliseconds(500))
+    #expect(!outcome.value, "time the Mac slept was taken for a download that stopped moving")
+    // Awake again, with no progress for longer than the window: now it is a stall.
+    clock.advance(.milliseconds(200))
+    try await pollUntil("an awake window with no progress to stop the download") { outcome.value }
+}

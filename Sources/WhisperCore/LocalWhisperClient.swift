@@ -759,22 +759,29 @@ func armedExitStream(for process: Process) -> AsyncStream<Void> {
 /// the percent can stand still for longer than the window, and the moving estimate is what keeps the
 /// download alive (`aSlowDownloadWithAMovingEstimateIsNotStopped`). Not watched, failing open: a second
 /// download in the same run after a checksum mismatch, since the first one's 100 % ended the window.
+///
+/// Timed on `SuspendingClock` (F1067): time the Mac spends asleep is not time the download failed to move,
+/// so a download across a lid close is not stopped the moment the Mac wakes, as F929 decided for the quit
+/// wait. `now` is the clock, injectable so a test can sleep the Mac.
 final class ModelDownloadStallWatch: @unchecked Sendable {
     private let lock = NSLock()
     private let stallTimeout: TimeInterval
+    private let now: @Sendable () -> SuspendingClock.Instant
     private var downloading = false
     private var finished = false
-    private var lastMoved = ContinuousClock.now
+    private var lastMoved: SuspendingClock.Instant
 
-    init(stallTimeout: TimeInterval) {
+    init(stallTimeout: TimeInterval, now: @escaping @Sendable () -> SuspendingClock.Instant = { SuspendingClock.now }) {
         self.stallTimeout = stallTimeout
+        self.now = now
+        lastMoved = now()
     }
 
     func observe(_ progress: LocalTranscriptionProgress) {
         lock.withLock {
             if progress.phase == .downloadingModel {
                 guard !finished else { return }
-                lastMoved = ContinuousClock.now
+                lastMoved = now()
                 downloading = true
                 if let fraction = progress.fractionCompleted, fraction >= 1 {
                     finished = true
@@ -793,7 +800,7 @@ final class ModelDownloadStallWatch: @unchecked Sendable {
         while true {
             try await Task.sleep(for: check)
             let stalled = lock.withLock {
-                downloading && ContinuousClock.now - lastMoved >= .seconds(stallTimeout)
+                downloading && now() - lastMoved >= .seconds(stallTimeout)
             }
             if stalled {
                 throw LocalWhisperError.modelDownloadStalled(seconds: Int(saturating: stallTimeout.rounded()))
