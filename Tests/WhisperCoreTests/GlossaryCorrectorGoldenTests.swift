@@ -456,7 +456,8 @@ func englishSuggestionsMatchThePreF536Oracle() {
     // The premises below run over the fixed lines only (F1063): each amendment has a fixed line that
     // exercises it (measured: all fifteen do), and the oracle answers each segment on its own, so a
     // difference on the fixed lines is a difference on the whole corpus. Over all 84 lines they were
-    // sixteen of the nineteen runs and most of this test's 30 s on the CI runner.
+    // eighteen of the test's nineteen oracle runs (fifteen premises, three of them a pair), and most
+    // of its 30 s on the CI runner.
     let fixedSegments = Array(segments.suffix(fixedLines.count))
     func premise(_ amended: Amendments = Amendments()) -> [GlossaryCorrection] {
         PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: fixedSegments, amended: amended, scores: scores)
