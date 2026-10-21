@@ -4645,6 +4645,15 @@ final class AppModel: ObservableObject {
         // The menu-bar Stop and ⌘R pass "" — the windowless paths — which threw away a title typed
         // during the recording (found by the F292 review). An empty title means "the one typed".
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? recordingTitle : title
+        // F1049: the meeting is dated, and named when untitled, by when it began, read before `.stopping`
+        // replaces the phase that holds it. A stop the Mac's sleep or a lost capture began is already
+        // `.stopping`, and the session sidecar written at Start says when instead (whole seconds).
+        let startedAt: Date
+        if case let .recording(at) = recordingState {
+            startedAt = at
+        } else {
+            startedAt = RecordingSessionSidecar.read(in: store.recordingDirectoryURL(for: id))?.startedAt ?? Date()
+        }
         // F253: the capture is ending, so stop watching for sleep. Dropped here rather than in each
         // exit branch, because every path out of this function ends the recording.
         stopObservingSystemSleep()
@@ -4670,11 +4679,12 @@ final class AppModel: ObservableObject {
             if let alignment = artifact.capturedAlignment {
                 updateRecordingSession { $0.capturedAlignment = alignment }
             }
-            let fallbackTitle = "Meeting \(Date.now.formatted(date: .abbreviated, time: .shortened))"
+            let fallbackTitle = "Meeting \(startedAt.formatted(date: .abbreviated, time: .shortened))"
             let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
             let meeting = MeetingRecord(
                 id: id,
                 title: cleanTitle.isEmpty ? fallbackTitle : cleanTitle,
+                createdAt: startedAt,
                 duration: artifact.duration,
                 recordingPath: store.relativeRecordingPath(for: artifact.mixedRecordingURL),
                 markers: pendingMarkers.isEmpty ? nil : pendingMarkers,
@@ -4772,8 +4782,8 @@ final class AppModel: ObservableObject {
                     // meeting by it; only an untitled severe truncation gets the synthesized name.
                     let severe = recovered.isSeverelyTruncated
                     let fallbackTitle = severe
-                        ? "Partly Recovered Meeting \(Date.now.formatted(date: .abbreviated, time: .shortened))"
-                        : "Recovered Meeting \(Date.now.formatted(date: .abbreviated, time: .shortened))"
+                        ? "Partly Recovered Meeting \(startedAt.formatted(date: .abbreviated, time: .shortened))"
+                        : "Recovered Meeting \(startedAt.formatted(date: .abbreviated, time: .shortened))"
                     let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
                     let recoveredMarkers = pendingMarkers.isEmpty ? nil : pendingMarkers
                     pendingMarkers = []
@@ -4781,6 +4791,7 @@ final class AppModel: ObservableObject {
                     store.upsert(MeetingRecord(
                         id: id,
                         title: cleanTitle.isEmpty ? fallbackTitle : cleanTitle,
+                        createdAt: startedAt,
                         duration: recovered.duration,
                         recordingPath: store.relativeRecordingPath(for: recovered.recordingURL),
                         status: severe ? .failed : .recorded,
