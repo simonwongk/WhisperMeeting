@@ -8,10 +8,9 @@ import WhisperCore
 /// Polls `condition` every 5 ms under a 30 s cap and requires it, so a timeout fails as a timeout (F639).
 @MainActor
 private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
-    var ticks = 0
-    while !condition(), ticks < 6_000 {
+    let deadline = ContinuousClock.now + .seconds(30)
+    while !condition(), ContinuousClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
-        ticks += 1
     }
     try #require(condition(), "timed out waiting for \(what)")
 }

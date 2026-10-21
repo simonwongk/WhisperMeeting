@@ -43,8 +43,8 @@ private func completedMeeting(
 /// a claim that was never false.
 @MainActor
 private func waitForTheRunToEnd(_ model: AppModel) async throws {
-    var ticks = 0
-    while model.hasActiveTranscription, ticks < 6_000 { try await Task.sleep(nanoseconds: 5_000_000); ticks += 1 }
+    let deadline = ContinuousClock.now + .seconds(30)
+    while model.hasActiveTranscription, ContinuousClock.now < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
     try #require(!model.hasActiveTranscription, "the transcription never finished")
 }
 
@@ -157,8 +157,8 @@ private actor Latch {
 /// for becomes true, failing a claim that was never false.
 @MainActor
 private func waitUntil(_ condition: () -> Bool) async throws {
-    var ticks = 0
-    while !condition(), ticks < 6_000 { try await Task.sleep(nanoseconds: 5_000_000); ticks += 1 }
+    let deadline = ContinuousClock.now + .seconds(30)
+    while !condition(), ContinuousClock.now < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
     try #require(condition(), "timed out waiting for the condition")
 }
 

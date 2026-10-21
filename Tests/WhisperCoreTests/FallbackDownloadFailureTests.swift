@@ -47,10 +47,9 @@ private func finish<Value: Sendable>(
     Task {
         do { outcome.set(.success(try await operation())) } catch { outcome.set(.failure(error)) }
     }
-    var ticks = 0
-    while outcome.value == nil, ticks < 6_000 {
+    let deadline = ContinuousClock.now + .seconds(30)
+    while outcome.value == nil, ContinuousClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
-        ticks += 1
     }
     return try #require(outcome.value, "the operation never finished")
 }

@@ -83,10 +83,9 @@ private func turn(_ start: Double, _ end: Double, _ cluster: Int) -> SpeakerTurn
 /// wait, as the wait it is (AGENTS.md, "Asserting a consequence…").
 @MainActor
 private func spin(_ label: String, until condition: @MainActor () -> Bool) async throws {
-    var ticks = 0
-    while !condition(), ticks < 6_000 {
+    let deadline = ContinuousClock.now + .seconds(30)
+    while !condition(), ContinuousClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
-        ticks += 1
     }
     try #require(condition(), "timed out waiting for \(label)")
 }

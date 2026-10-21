@@ -54,10 +54,9 @@ private final class Hold: @unchecked Sendable {
 /// rather than as a claim about the ordering the test goes on to check (F503).
 @MainActor
 private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
-    var ticks = 0
-    while !condition(), ticks < 6_000 {
+    let deadline = ContinuousClock.now + .seconds(30)
+    while !condition(), ContinuousClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
-        ticks += 1
     }
     try #require(condition(), "timed out waiting for \(what)")
 }

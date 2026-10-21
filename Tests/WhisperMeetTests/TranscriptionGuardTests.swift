@@ -92,11 +92,10 @@ func beginTranscriptionNeverStartsDuringAuxiliaryRun() async throws {
     // never a yield count (F639): a fixed budget of `Task.yield()`s expires under a starved
     // scheduler before the condition it is waiting for becomes true, failing a claim that was
     // never false.
-    var ticks = 0
+    let deadline = ContinuousClock.now + .seconds(30)
     while model.isRunningAuxiliaryEngine || model.hasActiveTranscription || model.isQueuedForTranscription(id2),
-          ticks < 6_000 {
+          ContinuousClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
-        ticks += 1
     }
     try #require(!model.hasActiveTranscription && !model.isQueuedForTranscription(id2), "the queue never drained")
     #expect(model.store.meeting(id: id2)?.status == .completed)

@@ -148,10 +148,9 @@ func policySkipNeverCallsEngine() async {
 /// and re-attempt before the abandoned generation had started — a race with the runtime, not a
 /// behaviour (the trap F277 named for `FakeRefineEngine`).
 private func waitForEngineCalls(_ count: Int, _ engine: GatedRefineEngine) async throws {
-    var ticks = 0
-    while await engine.callCount < count, ticks < 6_000 {
+    let deadline = ContinuousClock.now + .seconds(30)
+    while await engine.callCount < count, ContinuousClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
-        ticks += 1
     }
     try #require(await engine.callCount >= count, "timed out waiting for the engine to be entered \(count) time(s)")
 }

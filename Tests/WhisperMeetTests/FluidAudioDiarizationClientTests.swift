@@ -49,10 +49,9 @@ private func temporaryDirectory(_ label: String) throws -> URL {
 /// wait, as the wait it is (AGENTS.md, "Asserting a consequence…").
 @MainActor
 private func waitUntil(_ what: String, _ condition: @MainActor () -> Bool) async throws {
-    var ticks = 0
-    while !condition(), ticks < 6_000 {
+    let deadline = ContinuousClock.now + .seconds(30)
+    while !condition(), ContinuousClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
-        ticks += 1
     }
     try #require(condition(), "timed out waiting for \(what)")
 }

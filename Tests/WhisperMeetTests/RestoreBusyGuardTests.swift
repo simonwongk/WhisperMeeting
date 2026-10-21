@@ -105,11 +105,10 @@ private func makeFixture(_ label: String, latch: Latch) throws -> (root: URL, mo
 @MainActor
 private func drain(_ model: AppModel, _ latch: Latch) async throws {
     await latch.open()
-    var ticks = 0
+    let deadline = ContinuousClock.now + .seconds(30)
     while model.hasActiveTranscription || model.isRunningAuxiliaryEngine || model.isSummarizing,
-          ticks < 6_000 {
+          ContinuousClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
-        ticks += 1
     }
     try #require(!model.hasActiveTranscription && !model.isRunningAuxiliaryEngine && !model.isSummarizing,
                  "a latched run never finished")

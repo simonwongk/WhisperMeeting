@@ -591,10 +591,9 @@ func cancellingAPieceStopsTheRun() async throws {
     let task = Task { try await client.transcribe(recordingAt: recording, options: .accuracyFirst()) }
 
     let hung = fixture.directory.appendingPathComponent("hung")
-    var waited = 0
-    while !FileManager.default.fileExists(atPath: hung.path), waited < 600 {
+    let deadline = ContinuousClock.now + .seconds(30)
+    while !FileManager.default.fileExists(atPath: hung.path), ContinuousClock.now < deadline {
         try await Task.sleep(for: .milliseconds(50))
-        waited += 1
     }
     try #require(FileManager.default.fileExists(atPath: hung.path), "piece 2 never started")
     task.cancel()
