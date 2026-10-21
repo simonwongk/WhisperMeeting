@@ -15,7 +15,13 @@
     "Pairs carry a \"language\": absent is an English question over an English passage (the F350",
     "24), \"zh\" a Mandarin question over a Mandarin passage, \"en-zh\" an English question over a",
     "Mandarin passage, which the product allows and where a shared floor is most likely to fail.",
-    "The Mandarin questions are paraphrases too: they avoid their passage's character bigrams."
+    "The Mandarin questions are paraphrases too: they avoid their passage's character bigrams.",
+    "",
+    "F1065. \"exactTermPairs\" are the other kind of question: each names a term its passage holds — a",
+    "time, a figure, a thing's name, a person — and little else, so keyword search is the retriever",
+    "that should find it. Kept apart from \"pairs\" because they echo their passages on purpose, and",
+    "some mark a passage a paraphrase already marks. \"en-term\" is English over English, \"zh-term\"",
+    "Mandarin over Mandarin; all are asked of the whole bilingual library."
   ],
   "meetings": [
     {
@@ -327,6 +333,104 @@
       "meeting": 7,
       "segment": 7,
       "language": "en-zh"
+    }
+  ],
+  "exactTermPairs": [
+    {
+      "question": "What happened at 03:12?",
+      "meeting": 2,
+      "segment": 0,
+      "language": "en-term"
+    },
+    {
+      "question": "Anything on the read replica?",
+      "meeting": 2,
+      "segment": 1,
+      "language": "en-term"
+    },
+    {
+      "question": "Where did the ninety thousand land?",
+      "meeting": 5,
+      "segment": 0,
+      "language": "en-term"
+    },
+    {
+      "question": "What did legal say about auto-renewal?",
+      "meeting": 5,
+      "segment": 2,
+      "language": "en-term"
+    },
+    {
+      "question": "Where are we on offline mode?",
+      "meeting": 3,
+      "segment": 0,
+      "language": "en-term"
+    },
+    {
+      "question": "Any news on the take-home?",
+      "meeting": 1,
+      "segment": 2,
+      "language": "en-term"
+    },
+    {
+      "question": "What about the illustration set?",
+      "meeting": 4,
+      "segment": 6,
+      "language": "en-term"
+    },
+    {
+      "question": "What's the plan for the renewal dashboard?",
+      "meeting": 0,
+      "segment": 7,
+      "language": "en-term"
+    },
+    {
+      "question": "Who handles the intern programme?",
+      "meeting": 1,
+      "segment": 7,
+      "language": "en-term"
+    },
+    {
+      "question": "Thoughts on the staging soak?",
+      "meeting": 2,
+      "segment": 4,
+      "language": "en-term"
+    },
+    {
+      "question": "小王要做什么？",
+      "meeting": 6,
+      "segment": 6,
+      "language": "zh-term"
+    },
+    {
+      "question": "老陈接手什么？",
+      "meeting": 7,
+      "segment": 4,
+      "language": "zh-term"
+    },
+    {
+      "question": "三楼会议室有什么安排？",
+      "meeting": 6,
+      "segment": 7,
+      "language": "zh-term"
+    },
+    {
+      "question": "十二月十五号是什么截止？",
+      "meeting": 7,
+      "segment": 7,
+      "language": "zh-term"
+    },
+    {
+      "question": "安卓版本怎么了？",
+      "meeting": 6,
+      "segment": 0,
+      "language": "zh-term"
+    },
+    {
+      "question": "爬山是怎么回事？",
+      "meeting": 7,
+      "segment": 6,
+      "language": "zh-term"
     }
   ]
 }

@@ -46,6 +46,8 @@ private struct RetrievalCorpus: Decodable {
 
     let meetings: [Meeting]
     let pairs: [Pair]
+    /// F1065: questions that name a term their passage holds, which keyword search should find.
+    let exactTermPairs: [Pair]
 }
 
 /// Deterministic per-meeting UUIDs, so a hit can be matched back to the corpus index.
@@ -122,6 +124,26 @@ func theCorpusIsWellFormed() throws {
     // questions.
     let marked = Set(corpus.pairs.map { "\($0.meeting)-\($0.segment)" })
     #expect(marked.count == corpus.pairs.count)
+}
+
+@Test("The exact-term questions name something their passage holds, and keyword search finds them (F1065)")
+func exactTermQuestionsAreWhatKeywordSearchIsFor() throws {
+    let (corpus, searchable) = try loadCorpus()
+    let groups = Dictionary(grouping: corpus.exactTermPairs, by: \.languageGroup).mapValues(\.count)
+    #expect(groups == ["en-term": 10, "zh-term": 6], "got \(groups)")
+    for pair in corpus.exactTermPairs {
+        let meeting = try #require(searchable.indices.contains(pair.meeting) ? searchable[pair.meeting] : nil)
+        let passage = try #require(meeting.segments.indices.contains(pair.segment) ? meeting.segments[pair.segment] : nil)
+        #expect((pair.languageGroup == "en-term") == (pair.meeting < englishMeetingCount), "\(pair.question)")
+        // The opposite of the paraphrase guard: a question sharing nothing with its passage names no term in it.
+        #expect(echoOverlap(question: pair.question, passage: passage.text) > 0, "\(pair.question) names nothing its passage holds")
+    }
+    #expect(Set(corpus.exactTermPairs.map { "\($0.meeting)-\($0.segment)" }).count == corpus.exactTermPairs.count)
+    let expected = corpus.exactTermPairs.map { (meetingID($0.meeting), $0.segment) }
+    let ranked = corpus.exactTermPairs.map { MeetingRetrieval.rank(query: $0.question, in: searchable, limit: 20) }
+    let at1 = recall(at: 1, ranked: ranked, expected: expected), at3 = recall(at: 3, ranked: ranked, expected: expected)
+    print("F1065 keyword recall on exact-term questions over all 8 meetings: recall@1 = \(at1), recall@3 = \(at3), n = \(expected.count)")
+    #expect(at3 >= 0.75, "keyword search misses these, so they are not the questions it is for: recall@3 \(at3)")
 }
 
 @Test("The questions are paraphrases, which is what makes the set worth having (F350, F396)")
@@ -280,7 +302,9 @@ func floorAndFusionSweepWithTheInstalledModel() async throws {
     let embedder = LocalEmbedder(helperScriptURL: script)
     let passageTexts = allMeetings.flatMap { $0.segments.map(\.text) }
     let passages = try await embedder.embed(passageTexts, kind: .passage)
-    let questions = try await embedder.embed(corpus.pairs.map(\.question), kind: .query)
+    // The paraphrases first, then F1065's exact-term questions, so a pair's row is its index in `asked`.
+    let asked = corpus.pairs + corpus.exactTermPairs
+    let questions = try await embedder.embed(asked.map(\.question), kind: .query)
     let dimension = passages.dimension
     try #require(dimension == 384 && questions.dimension == dimension)
     try #require(passages.vectors.count == passageTexts.count * dimension)
@@ -340,7 +364,7 @@ func floorAndFusionSweepWithTheInstalledModel() async throws {
                             recall(at: 5, ranked: lexical, expected: expected)))
         for floor: Float in [0.70, 0.76] {
             let semantic = members.map { SemanticRanker.rank(query: query($0), in: poolIndexes, limit: 20, floor: floor) }
-            for k in [1.0, 5, 10, 20, 60] {
+            for k in fusionConstants {
                 let fused = zip(lexical, semantic).map { RankFusion.fuse(lexical: $0, semantic: $1, limit: 20, k: k) }
                 var both = 0, keywordOnly = 0, meaningOnly = 0
                 for ((top, keyword), meaning) in zip(zip(fused, lexical), semantic) {
@@ -356,5 +380,25 @@ func floorAndFusionSweepWithTheInstalledModel() async throws {
             }
         }
     }
+    // F1065: the questions keyword search is for, over the whole library — what a smaller `k` may cost them.
+    for group in ["en-term", "zh-term"] {
+        let members = asked.indices.filter { $0 >= corpus.pairs.count && asked[$0].languageGroup == group }
+        let expected = members.map { (meetingID(asked[$0].meeting), asked[$0].segment) }
+        let lexical = members.map { MeetingRetrieval.rank(query: asked[$0].question, in: allMeetings, limit: 20) }
+        let semantic = members.map { SemanticRanker.rank(query: query($0), in: indexes, limit: 20, floor: 0.70) }
+        lines.append(String(format: "[%@] keyword only: recall@1 %.3f · recall@3 %.3f · recall@5 %.3f · meaning only: recall@1 %.3f · recall@3 %.3f · recall@5 %.3f",
+                            group, recall(at: 1, ranked: lexical, expected: expected), recall(at: 3, ranked: lexical, expected: expected),
+                            recall(at: 5, ranked: lexical, expected: expected), recall(at: 1, ranked: semantic, expected: expected),
+                            recall(at: 3, ranked: semantic, expected: expected), recall(at: 5, ranked: semantic, expected: expected)))
+        for k in fusionConstants {
+            let fused = zip(lexical, semantic).map { RankFusion.fuse(lexical: $0, semantic: $1, limit: 20, k: k) }
+            lines.append(String(format: "[%@] fused, floor 0.70, k %3.0f: recall@1 %.3f · recall@3 %.3f · recall@5 %.3f", group, k,
+                                recall(at: 1, ranked: fused, expected: expected), recall(at: 3, ranked: fused, expected: expected),
+                                recall(at: 5, ranked: fused, expected: expected)))
+        }
+    }
     print("F392 sweep (\(AskEmbeddingRuntime.modelID)):\n" + lines.joined(separator: "\n"))
 }
+
+/// The fusion constants the sweep tries: F392's five, and the small ones F1065 found mattered.
+private let fusionConstants: [Double] = [1, 2, 3, 5, 10, 20, 60]

@@ -157,32 +157,29 @@ public enum SemanticRanker {
 
 /// Reciprocal rank fusion of the keyword and meaning rankings (F316).
 ///
-/// RRF uses ranks, not scores, so it needs neither BM25 and cosine put on one scale nor any tuning —
-/// the standard way to combine a lexical and a dense retriever. `k = 60` is the constant from the
-/// original paper and what every implementation ships.
+/// RRF uses ranks, not scores, so it needs neither BM25 and cosine put on one scale — the standard way
+/// to combine a lexical and a dense retriever. A passage scores the sum of 1/(k + rank) over the lists
+/// that hold it.
 ///
-/// **"Tuning-free" is not true at this scale, and the constant decides the outcome (F330).** Both
-/// lists are capped at 20, so the best single-list score is 1/61 = 0.01639 and the worst is
-/// 1/80 = 0.01250, while *any* document present in both lists scores at least 2/80 = 0.02500. Every
-/// co-occurring passage therefore outranks every single-list passage regardless of rank: a mediocre
-/// passage at rank 20 in both beats a perfect paraphrase at semantic rank 1. And among single-list
-/// passages the scores at equal rank are bit-identical, so the insertion-order tie-break fires on
-/// all of them and `lexical` is enumerated first — the fused tail is a strict L1, S1, L2, S2, …
-/// alternation with keyword always taking the earlier slot.
+/// **`k = 1`, not the paper's 60 (F1065, from F392's measurement).** 60 is the constant for lists a
+/// thousand deep. Both lists here are capped at 20, and at 60 the best single-list score was 1/61 while
+/// any passage in both lists scored at least 2/80, so a passage both searches put last outranked a
+/// perfect paraphrase only one found (F330). F392 measured what that cost against the committed set
+/// (`floorAndFusionSweepWithTheInstalledModel`): English questions over Mandarin speech, which only
+/// meaning can answer, reached the top five 2 of 6 times fused against 6 of 6 by meaning, at every `k`
+/// from 5 to 60. At `k = 1` a first place in either list scores 1/2 and last in both 2/21, so rank
+/// matters again while agreement near the top still wins (second in both, 2/3, beats first in one).
+/// Measured at the shipped floor: cross-language recall@5 0.333 → 0.833 and recall@3 0.167 → 0.500;
+/// English recall@5 0.625 → 0.667 with recall@1 and @3 unchanged; Mandarin unchanged (recall@3 1.000);
+/// and the exact-term questions keyword search is for, added for F1065, at 1.000 for every `k`. The
+/// same protection holds for keyword: a first-place exact match meaning cannot see is no longer
+/// outranked by passages both lists returned.
 ///
-/// For F182 that means `answerPassageLimit = 5` shows the answer model at most two meaning-only
-/// passages whenever BM25 returns anything. `fusionRanksCoOccurrenceAboveEveryone` and
-/// `fusionBreaksExactTiesTowardKeyword` pin both effects, so the behaviour is observed rather than
-/// assumed.
-///
-/// **Measured against the committed set (F392, 2026-10-21).** It costs what F330 predicted. English
-/// questions over Mandarin speech, which only meaning can answer, found their passage in the top five
-/// 6 of 6 times by meaning alone and 2 of 6 fused at `k` 10, 20 or 60 — English passages in both lists
-/// outranked it — and 5 of 6 at `k = 1`. Whether a smaller `k` costs the questions keyword search
-/// answers best (names, codes) the committed set cannot say, since every question in it is a paraphrase:
-/// that is F1065, and until it is measured this stays 60.
+/// Among passages one list holds, scores at equal rank are bit-identical, so the insertion-order
+/// tie-break fires and `lexical` is enumerated first — the fused tail alternates L1, S1, L2, S2, … with
+/// keyword taking the earlier slot, at any `k` (`fusionBreaksExactTiesTowardKeyword`).
 public enum RankFusion {
-    static let k = 60.0
+    static let k = 1.0
 
     public static func fuse(lexical: [CitedResult], semantic: [CitedResult], limit: Int) -> [CitedResult] {
         fuse(lexical: lexical, semantic: semantic, limit: limit, k: k)

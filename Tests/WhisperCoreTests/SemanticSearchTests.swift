@@ -80,11 +80,13 @@ func semanticFloorSitsBelowTheCorrectRange() {
     #expect(SemanticRanker.minimumSimilarity == 0.70)
 }
 
-@Test("A passage in both lists outranks a perfect paraphrase in one (F330)")
-func fusionRanksCoOccurrenceAboveEveryone() {
-    // The scale effect, not a hypothetical: with both lists capped at 20 the best single-list score
-    // is 1/61 and the worst is 1/80, while any co-occurring document scores at least 2/80. So rank
-    // stops mattering the moment a document appears twice.
+@Test("A first-place answer from either search outranks a passage both searches put last; agreeing near the top still wins (F330, F1065)")
+func fusionRanksAFirstPlaceAnswerAboveALastPlaceAgreement() {
+    // F330 pinned what `k = 60` did with both lists capped at 20: the best single-list score was 1/61
+    // and any co-occurring passage scored at least 2/80, so rank stopped mattering the moment a
+    // passage appeared twice, and "in both lists, last in each" came first. F392 measured what that
+    // cost: English questions over Mandarin speech, which only meaning answers, reached the top five
+    // 2 times in 6. At `k = 1` (F1065) a first place in either list scores 1/2 and last in both 2/21.
     func hit(_ segment: Int, _ text: String) -> CitedResult {
         CitedResult(meetingID: UUID(uuidString: "00000000-0000-0000-0000-00000000000\(segment % 10)")!,
                     meetingTitle: "M", segmentIndex: segment, timestamp: nil, snippet: text, score: 1)
@@ -94,9 +96,15 @@ func fusionRanksCoOccurrenceAboveEveryone() {
     let lexical = (0..<19).map { hit($0 + 20, "filler \($0)") } + [mediocre]
     let semantic = [paraphrase] + (0..<18).map { hit($0 + 40, "other \($0)") } + [mediocre]
 
-    let fused = RankFusion.fuse(lexical: lexical, semantic: semantic, limit: 3)
-    #expect(fused.first?.snippet == "in both lists, last in each")
-    #expect(fused.map(\.snippet).contains("the perfect paraphrase"))
+    let fused = RankFusion.fuse(lexical: lexical, semantic: semantic, limit: 5)
+    // Keyword's first and meaning's first, tied at 1/2 and alternating keyword-first as before.
+    #expect(fused.prefix(2).map(\.snippet) == ["filler 0", "the perfect paraphrase"])
+    #expect(!fused.map(\.snippet).contains("in both lists, last in each"))
+    // Agreement still counts: second in both (2/3) outranks first in one (1/2).
+    let agreed = hit(8, "second in both")
+    let fusedAgreeing = RankFusion.fuse(lexical: [hit(30, "keyword first"), agreed], semantic: [paraphrase, agreed], limit: 3)
+    #expect(fusedAgreeing.map(\.snippet) == ["second in both", "keyword first", "the perfect paraphrase"])
+    #expect(RankFusion.k == 1)
 }
 
 @Test("Single-list passages tie exactly, and the tie breaks toward keyword (F330)")
