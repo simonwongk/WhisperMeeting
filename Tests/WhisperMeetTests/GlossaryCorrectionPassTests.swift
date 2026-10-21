@@ -32,8 +32,8 @@ private func addMeeting(_ model: AppModel, lines: [String]) -> UUID {
 /// Polls `condition` on the main actor against the wall clock, with a cap far above any real wait.
 @MainActor
 private func waitUntil(_ condition: () -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(30)
-    while Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while SuspendingClock.now < deadline {
         if condition() { return true }
         try? await Task.sleep(for: .milliseconds(10))
     }
@@ -116,8 +116,8 @@ func passRunsInTheBackgroundAndCancels() async throws {
         progress(0.5)
         // Stands in for a long pass: runs until the user cancels (capped, so a broken Cancel fails
         // the test instead of hanging it).
-        let deadline = Date().addingTimeInterval(30)
-        while !isCancelled(), Date() < deadline { usleep(1_000) }
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !isCancelled(), SuspendingClock.now < deadline { usleep(1_000) }
         return [GlossaryCorrection(segmentIndex: 0, from: "cooper netties", to: "Kubernetes")]
     }
 
@@ -157,8 +157,8 @@ func changedTranscriptDiscardsThePass() async throws {
     let real = model.glossaryCorrectionPass
     model.glossaryCorrectionPass = { input, isCancelled, progress in
         let result = real(input, isCancelled, progress)
-        let deadline = Date().addingTimeInterval(30)
-        while !gate.isOpen, Date() < deadline { usleep(1_000) }
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !gate.isOpen, SuspendingClock.now < deadline { usleep(1_000) }
         return result
     }
 

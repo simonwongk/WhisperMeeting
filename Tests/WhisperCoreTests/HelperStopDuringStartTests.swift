@@ -21,8 +21,8 @@ import Testing
 
 /// Polls `condition` under a 30 s cap and requires it, so a timeout fails as a timeout.
 private func waitFor(_ what: String, _ condition: () -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(30)
-    while !condition(), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !condition(), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(condition(), "timed out waiting for \(what)")
@@ -70,8 +70,8 @@ private func temporaryDirectory(_ name: String) throws -> URL {
 /// Blocks the calling thread (the engine's queue, inside the hook) until `count()` has moved past
 /// `before`, under a 30 s cap; says whether it did.
 private func holdUntilCounted(from before: Int, _ count: () -> Int) -> Bool {
-    let deadline = Date().addingTimeInterval(30)
-    while count() == before, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while count() == before, SuspendingClock.now < deadline {
         Thread.sleep(forTimeInterval: 0.001)
     }
     return count() != before

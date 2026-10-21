@@ -71,14 +71,14 @@ private struct Harness {
     /// dictation below takes the refinement path.
     func warmRefiner() async throws {
         controller.setEnabled(true)
-        let deadline = ContinuousClock.now + .seconds(30)
-        while refiner.warmUpCount == 0, ContinuousClock.now < deadline {
+        let deadline = SuspendingClock.now + .seconds(30)
+        while refiner.warmUpCount == 0, SuspendingClock.now < deadline {
             try await Task.sleep(for: .milliseconds(5))
         }
         try #require(refiner.warmUpCount >= 1, "the refiner never warmed")
         // `warmUp()` counts just before the controller records it as warm on the main actor.
-        let settled = ContinuousClock.now + .seconds(30)
-        while !controller.isRefinerReady, ContinuousClock.now < settled {
+        let settled = SuspendingClock.now + .seconds(30)
+        while !controller.isRefinerReady, SuspendingClock.now < settled {
             try await Task.sleep(for: .milliseconds(5))
         }
         try #require(controller.isRefinerReady, "the controller never recorded the refiner as warm")
@@ -89,8 +89,8 @@ private struct Harness {
         monitor.onPressStart?()
         try #require(controller.status == .listening)
         monitor.onPressEnd?()
-        let deadline = ContinuousClock.now + .seconds(30)
-        while controller.logStore.log.entries.isEmpty, ContinuousClock.now < deadline {
+        let deadline = SuspendingClock.now + .seconds(30)
+        while controller.logStore.log.entries.isEmpty, SuspendingClock.now < deadline {
             try await Task.sleep(for: .milliseconds(5))
         }
         return try #require(controller.logStore.log.entries.first, "the dictation never finished")

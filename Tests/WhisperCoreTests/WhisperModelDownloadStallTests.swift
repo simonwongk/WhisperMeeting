@@ -64,8 +64,8 @@ func aStalledModelDownloadStopsTheRun() async throws {
     #expect(ContinuousClock.now - started < .seconds(60), "the run waited for the stub's own two minutes")
     // The stalled process is stopped with the run, not left downloading.
     let pid = try #require(pid_t(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
-    let deadline = ContinuousClock.now + .seconds(30)
-    while kill(pid, 0) == 0, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while kill(pid, 0) == 0, SuspendingClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
     #expect(kill(pid, 0) != 0, "the stalled whisper is still running")
     #expect(LocalWhisperError.modelDownloadStalled(seconds: 180).errorDescription
             == "The Whisper model download made no progress for 180 seconds and was stopped. Check your connection, then transcribe again.")

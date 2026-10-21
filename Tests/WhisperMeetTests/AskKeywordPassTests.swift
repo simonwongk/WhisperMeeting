@@ -150,8 +150,8 @@ func cancelledIndexingKeepsFinishedChunks() async throws {
         await finished.set()
     }
     // Wait for the second run to start — or for the search to end, which is the failure.
-    let deadline = Date().addingTimeInterval(60)
-    while await calls.passageRuns < 2, !(await finished.isSet), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(60)
+    while await calls.passageRuns < 2, !(await finished.isSet), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 1_000_000)
     }
     try #require(await calls.passageRuns >= 2, "the meetings were embedded in one all-or-nothing run")

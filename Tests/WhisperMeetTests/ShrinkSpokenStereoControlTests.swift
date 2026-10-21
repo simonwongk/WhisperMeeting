@@ -34,8 +34,8 @@ private func spoken(_ text: String, rate words: Int, in folder: URL) async throw
     process.standardOutput = handle
     process.standardError = handle
     try process.run()
-    let deadline = ContinuousClock.now + sayDeadline
-    while process.isRunning, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
+    let deadline = SuspendingClock.now + sayDeadline
+    while process.isRunning, SuspendingClock.now < deadline { try await Task.sleep(for: .milliseconds(20)) }
     if process.isRunning {
         process.terminate()
         Issue.record("say did not finish within \(sayDeadline); terminated")

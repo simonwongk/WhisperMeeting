@@ -55,6 +55,32 @@ func noCounterBoundedWhilePolls() throws {
     #expect(offenders.isEmpty, "counter-bounded polls:\n\(offenders.joined(separator: "\n"))")
 }
 
+// F1066 — a deadline must stand still while the Mac sleeps, as the app's own timers do. A full gate on
+// 2026-10-21 failed `aFailedReTapSurvivesTheNoAudioDismiss` after 1.109 s of test time with "the pill was
+// never dismissed": the lid was closed mid-run (pmset: "Entering Sleep state due to 'Clamshell Sleep'" at
+// 12:45:29), its `ContinuousClock` deadline of 30 s ran out during the sleep, and the 1.2 s dismiss, a
+// `DispatchQueue.main.asyncAfter` on uptime, had not fired yet. `ContinuousClock` and `Date()` count sleep;
+// `SuspendingClock` does not. Every test deadline is a `SuspendingClock` instant, so no comparison against
+// the other two is left in a test.
+@Test("No test compares against a clock that runs while the Mac sleeps; deadlines are SuspendingClock (F1066)")
+func noDeadlineOnAClockThatCountsSleep() throws {
+    let clock = try NSRegularExpression(
+        pattern: #"(ContinuousClock(\(\))?\.now|Date\(\))\s*[<>]=?\s*[A-Za-z(]|[A-Za-z0-9_)\]]\s*[<>]=?\s*(ContinuousClock(\(\))?\.now|Date\(\))"#)
+    var offenders: [String] = []
+    var scanned = 0
+    for url in try SourceAssertion.swiftFileURLs(under: "Tests") {
+        let relative = String(url.path.dropFirst(SourceAssertion.repositoryRoot.path.count + 1))
+        guard url.lastPathComponent != URL(fileURLWithPath: #filePath).lastPathComponent else { continue }
+        scanned += 1
+        for line in try SourceAssertion.uncommentedLines(relative)
+        where clock.firstMatch(in: line.text, range: NSRange(line.text.startIndex..., in: line.text)) != nil {
+            offenders.append("\(relative):\(line.number): \(line.text.trimmingCharacters(in: .whitespaces))")
+        }
+    }
+    #expect(scanned > 100, "scanned only \(scanned) files")
+    #expect(offenders.isEmpty, "deadlines on a clock that counts sleep:\n\(offenders.joined(separator: "\n"))")
+}
+
 @MainActor
 @Test("A wait that never holds fails by name as a timeout, not through whatever assertion came next (F957)")
 func aTimedOutPollFailsByName() async {

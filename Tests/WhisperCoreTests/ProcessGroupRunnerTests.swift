@@ -31,8 +31,8 @@ private final class Completion: @unchecked Sendable {
 
 /// Polls `condition` every 5 ms under a 30 s cap and requires it, so a timeout fails as a timeout.
 private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(30)
-    while !condition(), ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !condition(), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(condition(), "timed out waiting for \(what)")
@@ -87,8 +87,8 @@ func cancelKillsProcessTree() async throws {
         returned.markFinished()
     }
     runner.cancel()
-    let deadline = ContinuousClock.now + .seconds(30)
-    while !returned.isFinished, ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !returned.isFinished, SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     let cancelled = returned.isFinished
@@ -184,8 +184,8 @@ func normalRunStreamsOutput() async throws {
 // that it exited 0 rather than a bare `CancellationError`, or a completed update reads "cancelled".
 
 private func waitForFile(_ url: URL) async throws {
-    let deadline = Date().addingTimeInterval(30)
-    while !FileManager.default.fileExists(atPath: url.path), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !FileManager.default.fileExists(atPath: url.path), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 20_000_000)
     }
     try #require(FileManager.default.fileExists(atPath: url.path), "timed out waiting for \(url.lastPathComponent)")
@@ -302,8 +302,8 @@ func aKillDuringTheSpawnIsDeliveredAsSIGKILL() async throws {
     // asked for then is applied when the child is recorded. The hook asks there, once the stand-in
     // has set its trap, so a SIGTERM in place of the SIGKILL leaves it running.
     runner.afterSpawnForTesting = { [unowned runner] in
-        let deadline = Date().addingTimeInterval(30)
-        while !FileManager.default.fileExists(atPath: ready.path), Date() < deadline {
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !FileManager.default.fileExists(atPath: ready.path), SuspendingClock.now < deadline {
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
         runner.kill()

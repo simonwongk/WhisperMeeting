@@ -18,8 +18,8 @@ private final class TimeoutRecorder: @unchecked Sendable {
 /// Polls the assertion's own subject against a wall-clock cap, rather than sleeping a fixed time.
 @MainActor
 private func waitUntilFired(_ timeout: TimeoutRecorder) async throws -> Bool {
-    let deadline = ContinuousClock.now + .seconds(30)
-    while !timeout.didFire, ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !timeout.didFire, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     return timeout.didFire

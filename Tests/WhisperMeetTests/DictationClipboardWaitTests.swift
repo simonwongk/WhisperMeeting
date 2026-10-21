@@ -90,17 +90,17 @@ func aStuckClipboardReadDoesNotFreezeTheDelivery() async throws {
     // The press starts the early clipboard read (F601), and it does not come back.
     monitor.onPressStart?()
     try #require(controller.status == .listening)
-    let started = ContinuousClock.now + .seconds(30)
-    while !held.hasEntered, ContinuousClock.now < started {
+    let started = SuspendingClock.now + .seconds(30)
+    while !held.hasEntered, SuspendingClock.now < started {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(held.hasEntered, "the press did not start the clipboard read")
     monitor.onPressEnd?()
 
     // This loop runs on the main actor: it can only see the pill while the main thread is free.
-    let deadline = ContinuousClock.now + .seconds(30)
+    let deadline = SuspendingClock.now + .seconds(30)
     while !overlay.phases.contains(.waitingForClipboard), controller.logStore.log.entries.isEmpty,
-          ContinuousClock.now < deadline {
+          SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(overlay.phases.contains(.waitingForClipboard),
@@ -110,8 +110,8 @@ func aStuckClipboardReadDoesNotFreezeTheDelivery() async throws {
     #expect(controller.status == .delivering)
 
     held.release.signal()
-    let landed = ContinuousClock.now + .seconds(30)
-    while controller.logStore.log.entries.isEmpty, ContinuousClock.now < landed {
+    let landed = SuspendingClock.now + .seconds(30)
+    while controller.logStore.log.entries.isEmpty, SuspendingClock.now < landed {
         try await Task.sleep(for: .milliseconds(5))
     }
     let entry = try #require(controller.logStore.log.entries.first, "the dictation never landed")
@@ -238,12 +238,12 @@ func aDroppedWaitingDictationIsNotPastedAfterReEnabling() async throws {
 
     monitor.onPressStart?()
     try #require(controller.status == .listening)
-    let started = ContinuousClock.now + .seconds(30)
-    while !held.hasEntered, ContinuousClock.now < started { try await Task.sleep(for: .milliseconds(5)) }
+    let started = SuspendingClock.now + .seconds(30)
+    while !held.hasEntered, SuspendingClock.now < started { try await Task.sleep(for: .milliseconds(5)) }
     try #require(held.hasEntered)
     monitor.onPressEnd?()
-    let deadline = ContinuousClock.now + .seconds(30)
-    while !overlay.phases.contains(.waitingForClipboard), ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !overlay.phases.contains(.waitingForClipboard), SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(overlay.phases.contains(.waitingForClipboard))

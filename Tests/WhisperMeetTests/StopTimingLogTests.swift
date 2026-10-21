@@ -51,8 +51,8 @@ private func temporaryDirectory() throws -> URL {
 
 /// Polls `log` until it holds `count` lines or 30 s pass.
 private func waitForLines(_ log: LineLog, count: Int) async throws -> [String] {
-    let deadline = Date().addingTimeInterval(30)
-    while log.lines.count < count, Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while log.lines.count < count, SuspendingClock.now < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
     return log.lines
 }
 

@@ -105,9 +105,9 @@ private func makeFixture(_ label: String, latch: Latch) throws -> (root: URL, mo
 @MainActor
 private func drain(_ model: AppModel, _ latch: Latch) async throws {
     await latch.open()
-    let deadline = ContinuousClock.now + .seconds(30)
+    let deadline = SuspendingClock.now + .seconds(30)
     while model.hasActiveTranscription || model.isRunningAuxiliaryEngine || model.isSummarizing,
-          ContinuousClock.now < deadline {
+          SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(!model.hasActiveTranscription && !model.isRunningAuxiliaryEngine && !model.isSummarizing,
@@ -390,8 +390,8 @@ func restoreRefusedDuringStartupRecovery() async throws {
         return nil
     }
     let recovery = Task { await model.performStartupRecovery() }
-    let deadline = Date().addingTimeInterval(30)
-    while !gate.hasStarted, Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !gate.hasStarted, SuspendingClock.now < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
     try #require(gate.hasStarted, "the startup sweep never reached the interrupted recording")
 
     model.alertMessage = nil

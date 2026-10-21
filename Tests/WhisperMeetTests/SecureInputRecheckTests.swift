@@ -153,8 +153,8 @@ func aHotkeyDictationThatTurnsSecureEndsInTheSecurePill() async throws {
     harness.board.setString("copied while dictating", forType: .string)
     let before = harness.board.changeCount
     monitor.onPressEnd?()
-    let deadline = Date().addingTimeInterval(30)
-    while !overlay.phases.contains(where: \.offersCopy), !overlay.phases.contains(.done), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !overlay.phases.contains(where: \.offersCopy), !overlay.phases.contains(.done), SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(10))
     }
     try #require(overlay.phases.contains(where: { $0.offersCopy || $0 == .done }), "the dictation never delivered")
@@ -243,8 +243,8 @@ func anOrphanedEarlyReadStillGetsTheSecondLook() async throws {
     // Dictation 1: pressed in a text field, so the early read starts, and blocks.
     _ = injector.captureWillStart(autoPaste: true)
     let early = try #require(injector.clipboardPrefetch, "the press did not start the early read")
-    let deadline = Date().addingTimeInterval(30)
-    while !world.entered, Date() < deadline { try await Task.sleep(for: .milliseconds(5)) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !world.entered, SuspendingClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
     try #require(world.entered, "the early read never started")
     // ...and ends without a delivery (the pill goes away: `hideOverlay` → this).
     injector.discardClipboardPrefetch()
@@ -258,8 +258,8 @@ func anOrphanedEarlyReadStillGetsTheSecondLook() async throws {
     // The 100 ms puts the change inside the wait; the outcome does not depend on it — either way
     // the change comes before ⌘V, which is the claim.
     Thread.detachNewThread {
-        let bound = Date().addingTimeInterval(5)
-        while world.probes <= probesBefore, Date() < bound { usleep(1_000) }
+        let bound = SuspendingClock.now + .seconds(5)
+        while world.probes <= probesBefore, SuspendingClock.now < bound { usleep(1_000) }
         usleep(100_000)
         world.passwordPromptTakesFocus()
         world.release.signal()

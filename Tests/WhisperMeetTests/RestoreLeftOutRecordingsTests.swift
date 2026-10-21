@@ -168,8 +168,8 @@ func readOnlyRestoreAddsTheLeftOutRecordingBackNow() async throws {
     #expect(alert.contains("being added back now as a recovered recording, without its notes or transcript; a title typed while it was recording comes back with it."), "\(alert)")
 
     // The restore starts the re-run and does not await it, so the listing is this wait's own subject.
-    let deadline = Date().addingTimeInterval(30)
-    while !model.store.meetings.contains(where: { $0.id == newer }), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !model.store.meetings.contains(where: { $0.id == newer }), SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(10))
     }
     #expect(Set(model.store.meetings.map(\.id)) == [kept, newer])

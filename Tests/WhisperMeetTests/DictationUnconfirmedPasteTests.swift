@@ -89,8 +89,8 @@ private func dictate(
     controller.clipboardNotifier = { [unowned harness] in harness.noticePosted() }
     monitor.onPressStart?()
     monitor.onPressEnd?()
-    let deadline = Date().addingTimeInterval(30)
-    while controller.logStore.log.entries.isEmpty, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while controller.logStore.log.entries.isEmpty, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(10))
     }
     let entry = try #require(controller.logStore.log.entries.first, "the dictation was never recorded")

@@ -206,8 +206,8 @@ func hotkeyDictationCopiesTheClipboardOffTheMainThread() async throws {
     let read = try #require(injector.clipboardPrefetch, "the press did not start the clipboard read")
     await read.value
     monitor.onPressEnd?()
-    let deadline = Date().addingTimeInterval(30)
-    while controller.logStore.log.entries.isEmpty, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while controller.logStore.log.entries.isEmpty, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(10))
     }
     let entry = try #require(controller.logStore.log.entries.first, "the dictation was never recorded")

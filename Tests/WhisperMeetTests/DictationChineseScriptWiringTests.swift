@@ -52,8 +52,8 @@ private func dictate(
 
     if refined != nil {
         controller.setEnabled(true)
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !controller.isRefinerReady, ContinuousClock.now < deadline {
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !controller.isRefinerReady, SuspendingClock.now < deadline {
             try await Task.sleep(for: .milliseconds(5))
         }
         try #require(controller.isRefinerReady, "the refiner never warmed")
@@ -62,8 +62,8 @@ private func dictate(
     monitor.onPressStart?()
     try #require(controller.status == .listening)
     monitor.onPressEnd?()
-    let deadline = ContinuousClock.now + .seconds(30)
-    while controller.logStore.log.entries.isEmpty, ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while controller.logStore.log.entries.isEmpty, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     let entry = try #require(controller.logStore.log.entries.first, "the dictation never finished")

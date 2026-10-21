@@ -274,8 +274,8 @@ func aCancelledConversionIsNotATimeout() async throws {
     }
     // Cancelled once the stand-in runs, so the cancellation reaches the process and not the spawn.
     let started = folder.appendingPathComponent("started")
-    let deadline = Date().addingTimeInterval(60)
-    while !FileManager.default.fileExists(atPath: started.path), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(60)
+    while !FileManager.default.fileExists(atPath: started.path), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 20_000_000)
     }
     try #require(FileManager.default.fileExists(atPath: started.path), "the stand-in ffmpeg never started")
@@ -466,9 +466,9 @@ func realFFmpegWithItsInputStuckIsStoppedByItsOutputStall() async throws {
 
 /// Polls `condition` until it holds or 30 s pass; the caller `#require`s the result.
 private func eventually(_ condition: () -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(30)
+    let deadline = SuspendingClock.now + .seconds(30)
     while !condition() {
-        guard Date() < deadline else { return false }
+        guard SuspendingClock.now < deadline else { return false }
         try? await Task.sleep(nanoseconds: 20_000_000)
     }
     return true

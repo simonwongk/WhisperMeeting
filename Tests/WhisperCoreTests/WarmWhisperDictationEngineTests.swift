@@ -45,8 +45,8 @@ private func finishesWithinCap(_ operation: @escaping @Sendable () async -> Void
         await operation()
         completion.markFinished()
     }
-    let deadline = ContinuousClock.now + .seconds(30)
-    while !completion.isFinished, ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !completion.isFinished, SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     return completion.isFinished

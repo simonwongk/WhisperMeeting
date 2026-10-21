@@ -65,8 +65,8 @@ private func makeModel() -> AppModel {
 /// (AGENTS.md: require the precondition rather than asserting past it).
 @MainActor
 private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(30)
-    while !condition(), ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !condition(), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(condition(), "timed out waiting for \(what)")

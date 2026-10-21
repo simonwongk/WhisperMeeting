@@ -19,8 +19,8 @@ import Testing
 
 @MainActor
 private func waitUntil(_ what: String, timeoutSeconds: Double = 30, _ condition: () -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(timeoutSeconds)
-    while !condition(), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(timeoutSeconds)
+    while !condition(), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(condition(), "timed out waiting for \(what)")

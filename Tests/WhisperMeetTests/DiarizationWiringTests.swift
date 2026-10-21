@@ -80,8 +80,8 @@ private func makeFixture(
 /// wait, as the wait it is (AGENTS.md, "Asserting a consequence…").
 @MainActor
 private func spin(_ label: String, until condition: @MainActor () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(30)
-    while !condition(), ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !condition(), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(condition(), "timed out waiting for \(label)")

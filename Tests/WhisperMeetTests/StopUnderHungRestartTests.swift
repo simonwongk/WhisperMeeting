@@ -46,8 +46,8 @@ private final class Gate: @unchecked Sendable {
     /// A precondition for what the test asserts next, so it is required (F957): 30 s is a ceiling
     /// a passing run never reaches, and a hung restart that never arrives fails here by name.
     func waitUntilEntered() async throws {
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !entered, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !entered, SuspendingClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(entered, "the restart seam was never entered")
     }
 

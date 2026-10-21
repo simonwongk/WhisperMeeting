@@ -45,8 +45,8 @@ private final class InstallSpy: @unchecked Sendable {
 /// hang still fails — on the wait, as the wait it is (AGENTS.md, "Asserting a consequence…").
 @MainActor
 private func settle(until condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(30)
-    while !condition(), ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !condition(), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(condition(), "timed out waiting for the condition")

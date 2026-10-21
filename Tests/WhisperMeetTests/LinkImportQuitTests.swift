@@ -25,9 +25,9 @@ private func readPID(_ url: URL) -> pid_t? {
 
 /// Polls `condition` until it holds or 30 s pass; the caller `#require`s the result.
 private func eventually(_ condition: () -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(30)
+    let deadline = SuspendingClock.now + .seconds(30)
     while !condition() {
-        guard Date() < deadline else { return false }
+        guard SuspendingClock.now < deadline else { return false }
         try? await Task.sleep(nanoseconds: 20_000_000)
     }
     return true

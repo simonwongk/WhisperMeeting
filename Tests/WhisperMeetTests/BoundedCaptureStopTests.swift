@@ -60,8 +60,8 @@ func aHungStopCaptureFinalizesAfterTheBound() async throws {
     }
     await bound.open()
     // The subject itself, polled against the wall clock: before F809 the stop never returns.
-    let deadline = Date().addingTimeInterval(30)
-    while outcome.current == nil, Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while outcome.current == nil, SuspendingClock.now < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
     let artifact = try #require(outcome.current, "the stop never returned: its stopCapture() still holds it").get()
 
     #expect(abs(artifact.duration - 2) < 0.05, "everything written is in the meeting: \(artifact.duration)")

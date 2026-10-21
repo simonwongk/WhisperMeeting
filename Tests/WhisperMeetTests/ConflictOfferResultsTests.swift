@@ -254,9 +254,9 @@ func failureWhileAnOfferIsUpJudgesEachCopyByItself() async throws {
     try #require(store.meeting(id: id)?.transcriptText.isEmpty == true)
 
     model.beginTranscription(id: id)
-    let deadline = Date().addingTimeInterval(30)
+    let deadline = SuspendingClock.now + .seconds(30)
     while model.hasActiveTranscription || model.hasQueuedTranscriptions || store.meeting(id: id)?.status == .processing,
-          Date() < deadline {
+          SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(store.meeting(id: id)?.status == .failed, "fixture: the run failed and the list's copy, with no transcript, says so")
@@ -304,9 +304,9 @@ func cancellationWhileAnOfferIsUpJudgesEachCopyByItself() async throws {
     try #require(store.meeting(id: id)?.transcriptText.isEmpty == true)
 
     model.beginTranscription(id: id)
-    let deadline = Date().addingTimeInterval(30)
+    let deadline = SuspendingClock.now + .seconds(30)
     while model.hasActiveTranscription || model.hasQueuedTranscriptions || store.meeting(id: id)?.status == .processing,
-          Date() < deadline {
+          SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(store.meeting(id: id)?.status == .recorded, "fixture: the run was cancelled and the list's copy, with no transcript, says so")

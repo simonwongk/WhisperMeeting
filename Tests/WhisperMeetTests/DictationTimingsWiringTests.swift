@@ -67,8 +67,8 @@ private final class TimedRefiner: DictationTextRefining, @unchecked Sendable {
 /// Polls `condition` against a 30 s deadline and requires it.
 @MainActor
 private func waitFor(_ what: String, _ condition: () -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(30)
-    while !condition(), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !condition(), SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(condition(), "timed out waiting for \(what)")

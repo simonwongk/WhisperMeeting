@@ -37,8 +37,8 @@ private final class ControlledDownloadEngine: DictationEngine, @unchecked Sendab
     func report(_ downloading: Bool) { lock.withLock { observer }?(downloading) }
 
     private func waitForRelease() async throws {
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !isReleased, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !isReleased, SuspendingClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
     }
 
     private func download() async throws {
@@ -51,8 +51,8 @@ private final class ControlledDownloadEngine: DictationEngine, @unchecked Sendab
     /// The real engine runs a transcription on the same serial queue, after the warm-up — so after
     /// the warm-up's download has reported its end.
     private func waitForDownloadToEnd() async throws {
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !lock.withLock({ ended }), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !lock.withLock({ ended }), SuspendingClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
     }
 
     func warmUp() async throws {
@@ -131,8 +131,8 @@ private struct Harness {
 
     /// Polls `condition` under a 30 s cap and requires it.
     func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !condition(), SuspendingClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(condition(), "timed out waiting for \(what)")
     }
 }

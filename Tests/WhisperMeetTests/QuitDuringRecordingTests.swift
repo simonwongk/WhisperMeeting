@@ -103,8 +103,8 @@ private func makeLifecycle(for model: AppModel, answer: @escaping () -> AppLifec
 /// against the wall clock with a cap far past any real stop, and required rather than assumed.
 @MainActor
 private func waitForReply(_ replies: Locked<[Bool]>) async throws {
-    let deadline = Date().addingTimeInterval(30)
-    while replies.withLock({ $0.isEmpty }), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while replies.withLock({ $0.isEmpty }), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(!replies.withLock { $0.isEmpty }, "the quit was never answered — AppKit would wait forever")
@@ -317,8 +317,8 @@ func stopAndQuitDoesNotStartATranscription() async throws {
                                  model.store.meeting(id: id)?.status) }
     }
     try #require(decision == .terminateLater)
-    let deadline = Date().addingTimeInterval(30)
-    while atReply.withLock({ $0 == nil }), Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while atReply.withLock({ $0 == nil }), SuspendingClock.now < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
     let seen = try #require(atReply.withLock { $0 }, "the quit was never answered")
 
     #expect(seen.quit)
@@ -334,8 +334,8 @@ func stopAndQuitDoesNotStartATranscription() async throws {
 /// Polls the recording's phase — the precondition's own subject — against the wall clock.
 @MainActor
 private func waitUntilStopping(_ model: AppModel) async throws {
-    let deadline = Date().addingTimeInterval(30)
-    while model.recordingState != .stopping, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while model.recordingState != .stopping, SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(model.recordingState == .stopping, "the stop never reached .stopping")
@@ -421,8 +421,8 @@ private final class RebuildGate: @unchecked Sendable {
 /// Polls the gate — the precondition's own subject — against the wall clock.
 @MainActor
 private func waitUntilRebuilding(_ gate: RebuildGate) async throws {
-    let deadline = Date().addingTimeInterval(30)
-    while !gate.hasEntered, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !gate.hasEntered, SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(gate.hasEntered, "the failed stop never reached its rebuild")
@@ -614,8 +614,8 @@ func aQuitThatWaitedForStopAndTranscribeStartsNoJob() async throws {
     }
     try #require(decision == .terminateLater)
     await gate.open()
-    let deadline = Date().addingTimeInterval(30)
-    while atReply.withLock({ $0 == nil }), Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while atReply.withLock({ $0 == nil }), SuspendingClock.now < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
     let seen = try #require(atReply.withLock { $0 }, "the quit was never answered")
 
     #expect(seen.quit)
@@ -741,8 +741,8 @@ private final class QuitWaitClock: @unchecked Sendable {
 private func waitForTheQuitToLook(_ clock: QuitWaitClock, orAnswer replies: Locked<[Bool]>? = nil) async throws {
     let target = clock.readCount + 2
     let answered = { replies?.withLock { !$0.isEmpty } ?? false }
-    let deadline = Date().addingTimeInterval(30)
-    while clock.readCount < target, !answered(), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while clock.readCount < target, !answered(), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(clock.readCount >= target || answered(), "the quit's wait never looked at its clock")
@@ -751,8 +751,8 @@ private func waitForTheQuitToLook(_ clock: QuitWaitClock, orAnswer replies: Lock
 /// Polls a held step, the precondition's own subject, against the wall clock.
 @MainActor
 private func waitUntilHeld(_ gate: RebuildGate, _ what: Comment) async throws {
-    let deadline = Date().addingTimeInterval(30)
-    while !gate.hasEntered, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !gate.hasEntered, SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(gate.hasEntered, what)
@@ -761,8 +761,8 @@ private func waitUntilHeld(_ gate: RebuildGate, _ what: Comment) async throws {
 /// Polls until no stop is left running, so a test does not end under one.
 @MainActor
 private func waitUntilIdle(_ model: AppModel) async throws {
-    let deadline = Date().addingTimeInterval(30)
-    while model.isRecordingFinishing || model.recordingState != .idle, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while model.isRecordingFinishing || model.recordingState != .idle, SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(!model.isRecordingFinishing && model.recordingState == .idle, "the stop never finished")
@@ -904,8 +904,8 @@ private final class WritingStep: @unchecked Sendable {
 /// Polls the held step's entry, the precondition's own subject, against the wall clock.
 @MainActor
 private func waitUntilEntered(_ step: WritingStep) async throws {
-    let deadline = Date().addingTimeInterval(30)
-    while !step.hasEntered, Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !step.hasEntered, SuspendingClock.now < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
     try #require(step.hasEntered, "the stop never reached the held step")
 }
 
@@ -919,8 +919,8 @@ private func driveAWritingSave(_ step: WritingStep, _ clock: QuitWaitClock, repl
     clock.advance(by: most)
     try await waitForTheQuitToLook(clock)
     step.writeOnce()
-    let deadline = Date().addingTimeInterval(30)
-    while step.writeCount < 1, Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while step.writeCount < 1, SuspendingClock.now < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
     try #require(step.writeCount == 1, "the held step never wrote")
     try await waitForTheQuitToLook(clock)
     clock.advance(by: most)
@@ -1001,8 +1001,8 @@ func aQuitDuringAHungCancelQuitsOnceTheCancelsBoundRunsOut() async throws {
 
     let cancel = Task { await model.cancelRecording() }
     // The precondition's own subject: the Cancel is inside its stopCapture, or it went on without it.
-    let deadline = Date().addingTimeInterval(30)
-    while entered.withLock({ $0 }) == 0, model.recordingState != .idle, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while entered.withLock({ $0 }) == 0, model.recordingState != .idle, SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(entered.withLock { $0 } == 1, "the Cancel never ran its stopCapture, so its bound could not be driven")

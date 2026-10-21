@@ -70,8 +70,8 @@ struct DownloadSurfaceRig {
 
     /// Polls `condition` under a 30 s cap and requires it (F645).
     func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(30)
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !condition(), SuspendingClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
         try #require(condition(), "timed out waiting for \(what)")
     }
 }

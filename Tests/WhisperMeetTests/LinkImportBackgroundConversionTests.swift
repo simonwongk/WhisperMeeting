@@ -68,8 +68,8 @@ private func makeModel(root: URL) -> AppModel {
 
 @MainActor
 private func waitForMeeting(_ id: UUID, in model: AppModel) async throws -> MeetingRecord {
-    let deadline = Date().addingTimeInterval(30)
-    while model.store.meeting(id: id) == nil, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while model.store.meeting(id: id) == nil, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(20))
     }
     return try #require(model.store.meeting(id: id), "the meeting was not added within 30 s")
@@ -187,8 +187,8 @@ func quittingDuringABackgroundConversionLeavesTheFolder() async throws {
     model.cancelWorkForQuit()
 
     // The stub observed the cancellation and ended without finishing, and the background work ended.
-    let deadline = Date().addingTimeInterval(30)
-    while !(ended.isOpen && model.deferredLinkImportConversions.isEmpty), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !(ended.isOpen && model.deferredLinkImportConversions.isEmpty), SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(20))
     }
     try #require(ended.isOpen, "the conversion was not stopped by the quit")

@@ -146,9 +146,9 @@ private struct Harness {
 /// Polls the value asserted after it, awaiting between looks; 30 s is far past any host.
 @MainActor
 private func waitUntil(_ condition: () -> Bool) async throws -> Bool {
-    let deadline = ContinuousClock.now + .seconds(30)
+    let deadline = SuspendingClock.now + .seconds(30)
     while !condition() {
-        guard ContinuousClock.now < deadline else { return false }
+        guard SuspendingClock.now < deadline else { return false }
         try await Task.sleep(for: .milliseconds(5))
     }
     return true
@@ -171,8 +171,8 @@ func revocationIsAnsweredWithTheMainThreadBlocked() async throws {
     probe.set(false)
     monitor.accessibilityGranted = false
     gate.release()
-    let blockedUntil = Date().addingTimeInterval(10)
-    while monitor.disarms.count == 0, Date() < blockedUntil { usleep(1_000) }
+    let blockedUntil = SuspendingClock.now + .seconds(10)
+    while monitor.disarms.count == 0, SuspendingClock.now < blockedUntil { usleep(1_000) }
     let disarmedWhileBlocked = monitor.disarms.count
     let probedWhileBlocked = probe.checks
 

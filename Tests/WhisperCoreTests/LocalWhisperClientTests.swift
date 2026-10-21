@@ -272,8 +272,8 @@ func cancelKillsDecoderGrandchild() async throws {
         returned.markReturned()
     }
     task.cancel()
-    let deadline = ContinuousClock.now + .seconds(30)
-    while !returned.hasReturned, ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !returned.hasReturned, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     let cancelled = returned.hasReturned

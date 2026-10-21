@@ -108,15 +108,15 @@ func localModelCorrectionsDiscardAChangedTranscript() async throws {
     let gate = LocalModelGate()
     model.proposeTranscriptCorrections = { _, _, _ in
         gate.enter()
-        let deadline = Date().addingTimeInterval(30)
-        while !gate.isOpen, Date() < deadline { usleep(1_000) }
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !gate.isOpen, SuspendingClock.now < deadline { usleep(1_000) }
         return [TranscriptCorrection(from: "Kestrol", to: "Kestrel")]
     }
     let id = addMeeting(model, lines: ["um um", "the Kestrol release is ready", "Kestrol (a bird) is a quote"])
 
     let pass = Task { await model.proposeLocalCorrections(for: id) }
-    let deadline = Date().addingTimeInterval(30)
-    while !gate.hasEntered, Date() < deadline { try? await Task.sleep(for: .milliseconds(10)) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !gate.hasEntered, SuspendingClock.now < deadline { try? await Task.sleep(for: .milliseconds(10)) }
     try #require(gate.hasEntered, "the model never started")
     try #require(model.removeTranscriptLines(at: IndexSet([0]), from: id) != nil)
     gate.open()

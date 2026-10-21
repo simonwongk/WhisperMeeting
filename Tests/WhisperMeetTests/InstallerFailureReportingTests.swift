@@ -64,8 +64,8 @@ private func makeFixture(installedBefore: Bool) throws -> Fixture {
 
 @MainActor
 private func waitForInstallToEnd(_ model: AppModel) async throws {
-    let deadline = Date().addingTimeInterval(30)
-    while model.isInstallingDiarizationRuntime, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while model.isInstallingDiarizationRuntime, SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 10_000_000)
     }
     try #require(!model.isInstallingDiarizationRuntime, "the install never finished")

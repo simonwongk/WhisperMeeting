@@ -28,9 +28,9 @@ private final class SaveGate: @unchecked Sendable {
     /// A bounded poll on this gate's own state, blocking the calling thread. Large, because the
     /// subject is an ordering, not a speed; false only if the other side never arrived.
     func block(until condition: (SaveGate) -> Bool, seconds: TimeInterval = 60) -> Bool {
-        let deadline = Date().addingTimeInterval(seconds)
+        let deadline = SuspendingClock.now + .seconds(seconds)
         while !condition(self) {
-            guard Date() < deadline else { return false }
+            guard SuspendingClock.now < deadline else { return false }
             usleep(1_000)
         }
         return true
@@ -99,8 +99,8 @@ func indexSaveNeverLandsInsideADelete() async throws {
         _ = await model.askMeetingsByMeaning(query: "pricing", scope: MeetingScope())
     }
     // Wait for the save to begin, on whichever thread it runs.
-    let deadline = Date().addingTimeInterval(60)
-    while !gate.hasEntered, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(60)
+    while !gate.hasEntered, SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 1_000_000)
     }
     try #require(gate.hasEntered, "the search never reached its save")

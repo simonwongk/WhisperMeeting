@@ -74,9 +74,9 @@ private func makeController(
 /// Polls the persisted history (the subject) under a 30 s wall-clock cap and requires it.
 @MainActor
 private func failedEntry(in directory: URL) async throws -> String {
-    let deadline = ContinuousClock.now + .seconds(30)
+    let deadline = SuspendingClock.now + .seconds(30)
     var found: String?
-    while found == nil, ContinuousClock.now < deadline {
+    while found == nil, SuspendingClock.now < deadline {
         if case .failed(let message)? = DictationLogStore(directory: directory).log.entries.first?.outcome {
             found = message
         } else {

@@ -42,8 +42,8 @@ private final class Hold: @unchecked Sendable {
 /// rather than as a claim about what the test goes on to check (F503).
 @MainActor
 private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(30)
-    while !condition(), ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !condition(), SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(condition(), "timed out waiting for \(what)")

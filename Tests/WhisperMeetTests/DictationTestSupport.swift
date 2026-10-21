@@ -12,8 +12,8 @@ import WhisperCore
 /// (SourceContractGuardTests) fails any test that goes back to counting.
 @MainActor
 func pollUntil(_ what: String, timeoutSeconds: Double = 30, _ condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(timeoutSeconds)
-    while !condition(), ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(timeoutSeconds)
+    while !condition(), SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(condition(), "timed out waiting for \(what)")

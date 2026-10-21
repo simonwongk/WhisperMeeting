@@ -46,8 +46,8 @@ func diagnosticsCrashReadRunsOffTheMainActor() async throws {
     let save = Task { await model.saveDiagnostics(to: destination) }
     // This loop runs on the main actor. If the read held the main actor, the loop could not run
     // until the read gave up, and it would find the read already over.
-    let deadline = Date().addingTimeInterval(30)
-    while !held.entered, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !held.entered, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(held.entered, "the crash-report read never started")

@@ -100,8 +100,8 @@ private struct Harness {
         monitor.onPressStart?()
         try #require(controller.status == .listening)
         monitor.onPressEnd?()
-        let deadline = ContinuousClock.now + .seconds(30)
-        while controller.logStore.log.entries.isEmpty, ContinuousClock.now < deadline {
+        let deadline = SuspendingClock.now + .seconds(30)
+        while controller.logStore.log.entries.isEmpty, SuspendingClock.now < deadline {
             try await Task.sleep(for: .milliseconds(5))
         }
         return try #require(controller.logStore.log.entries.first, "the dictation never finished")

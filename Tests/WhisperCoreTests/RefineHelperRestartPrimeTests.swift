@@ -40,8 +40,8 @@ func aRestartedRefineHelperIsPrimedFirst() async throws {
     let pid = try #require(pid_t(String(contentsOf: pidFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
     try FileManager.default.removeItem(at: pidFile)
     #expect(kill(pid, SIGKILL) == 0)
-    let deadline = ContinuousClock.now + .seconds(30)
-    while kill(pid, 0) == 0, ContinuousClock.now < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while kill(pid, 0) == 0, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(kill(pid, 0) != 0, "the killed helper was never reaped")

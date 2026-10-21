@@ -60,8 +60,8 @@ private func batchEngine(whisper: URL, in directory: URL) throws -> (BatchWhispe
 
 /// Polls `condition` under a 30 s cap and requires it (F645).
 private func waitUntil(_ what: String, _ condition: () -> Bool) async throws {
-    let deadline = ContinuousClock.now + .seconds(30)
-    while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !condition(), SuspendingClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
     try #require(condition(), "timed out waiting for \(what)")
 }
 
@@ -155,8 +155,8 @@ func batchEngineDoesNotStallAfterTheDownloadFinishes() async throws {
     try await waitUntil("the finished download to be reported") { figures.all.contains(100) }
     // The subject is that nothing ends the run while openai-whisper is silent after 100 %: three stall
     // windows of it, or the run ending first, whichever comes sooner.
-    let quietUntil = ContinuousClock.now + .seconds(3)
-    while finished.all.isEmpty, ContinuousClock.now < quietUntil { try await Task.sleep(for: .milliseconds(20)) }
+    let quietUntil = SuspendingClock.now + .seconds(3)
+    while finished.all.isEmpty, SuspendingClock.now < quietUntil { try await Task.sleep(for: .milliseconds(20)) }
     #expect(finished.all.isEmpty, "the run was stopped after its download had finished")
     #expect(states.all == [true, false], "a finished download is no longer showing")
 

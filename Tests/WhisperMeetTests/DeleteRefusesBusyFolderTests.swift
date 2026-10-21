@@ -29,9 +29,9 @@ private final class WriterGate: @unchecked Sendable {
     /// A bounded poll on this gate's own state, blocking the calling thread. Large, because the
     /// subject is an ordering, not a speed; false only if the other side never arrived.
     func block(until condition: (WriterGate) -> Bool, seconds: TimeInterval = 60) -> Bool {
-        let deadline = Date().addingTimeInterval(seconds)
+        let deadline = SuspendingClock.now + .seconds(seconds)
         while !condition(self) {
-            guard Date() < deadline else { return false }
+            guard SuspendingClock.now < deadline else { return false }
             usleep(1_000)
         }
         return true
@@ -56,8 +56,8 @@ private func removeInTwoHalves(_ store: MeetingStore, letting gate: WriterGate) 
 /// Waits, on the main actor, for the writer to be inside its write.
 @MainActor
 private func waitUntilEntered(_ gate: WriterGate) async throws {
-    let deadline = Date().addingTimeInterval(60)
-    while !gate.hasEntered, Date() < deadline { try await Task.sleep(nanoseconds: 1_000_000) }
+    let deadline = SuspendingClock.now + .seconds(60)
+    while !gate.hasEntered, SuspendingClock.now < deadline { try await Task.sleep(nanoseconds: 1_000_000) }
     try #require(gate.hasEntered, "the writer never started")
 }
 

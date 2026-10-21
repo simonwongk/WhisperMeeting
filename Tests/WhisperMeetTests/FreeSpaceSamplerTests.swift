@@ -50,8 +50,8 @@ private func captureStandIn() -> (DispatchQueue, DispatchSpecificKey<Bool>) {
 /// Polls `condition` until it holds, with a wall-clock cap far past any real read; the caller
 /// `#require`s the result, so an exhausted cap fails as itself rather than as a later claim.
 private func eventually(_ condition: () -> Bool) -> Bool {
-    let deadline = Date().addingTimeInterval(30)
-    while Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while SuspendingClock.now < deadline {
         if condition() { return true }
         usleep(1_000)
     }

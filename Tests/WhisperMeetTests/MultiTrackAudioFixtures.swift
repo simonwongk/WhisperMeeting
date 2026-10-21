@@ -123,7 +123,7 @@ private func writeFixtureSamples(to url: URL, _ samples: [[[Float]]], starts: [D
     let chunk = 4_800
     var next = [Int](repeating: 0, count: inputs.count)
     var finished = [Bool](repeating: false, count: inputs.count)
-    let deadline = Date().addingTimeInterval(30)
+    let deadline = SuspendingClock.now + .seconds(30)
     // Each turn feeds every input that is ready. Waiting on one input while the writer wants another
     // to catch up first never ends, so no input is waited on alone; a stall fails on the 30 s cap.
     while finished.contains(false) || !videoFinished {
@@ -151,7 +151,7 @@ private func writeFixtureSamples(to url: URL, _ samples: [[[Float]]], starts: [D
             progressed = true
         }
         if !progressed {
-            try #require(writer.status == .writing && Date() < deadline,
+            try #require(writer.status == .writing && SuspendingClock.now < deadline,
                          "the writer stalled: \(String(describing: writer.error))")
             try await Task.sleep(nanoseconds: 1_000_000)
         }

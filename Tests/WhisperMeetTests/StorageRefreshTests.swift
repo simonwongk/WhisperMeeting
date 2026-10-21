@@ -38,9 +38,9 @@ private final class HeldListing: @unchecked Sendable {
 
 @MainActor
 private func waitUntil(_ condition: () -> Bool) async throws -> Bool {
-    let deadline = Date().addingTimeInterval(30)
+    let deadline = SuspendingClock.now + .seconds(30)
     while !condition() {
-        if Date() > deadline { return false }
+        if SuspendingClock.now > deadline { return false }
         try await Task.sleep(for: .milliseconds(5))
     }
     return true

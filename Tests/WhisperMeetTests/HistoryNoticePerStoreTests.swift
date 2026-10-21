@@ -32,8 +32,8 @@ private func makeModel(squatting folders: [String]) throws -> (model: AppModel, 
 /// The subject of the assertion is polled against a wall-clock deadline, never a count of yields.
 @MainActor
 private func nextStorageMessage(_ store: MeetingStore) async -> String? {
-    let deadline = Date().addingTimeInterval(30)
-    while store.storageErrorMessage == nil, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while store.storageErrorMessage == nil, SuspendingClock.now < deadline {
         try? await Task.sleep(nanoseconds: 10_000_000)
     }
     return store.storageErrorMessage

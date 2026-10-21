@@ -53,8 +53,8 @@ private func makeLibrary(meetings count: Int, lines: Int) throws -> (AppModel, U
 /// Polls `condition` under a 30 s wall-clock cap and requires it, so a timeout fails as a timeout.
 @MainActor
 private func waitUntil(_ what: String, _ condition: () async -> Bool) async throws {
-    let deadline = Date().addingTimeInterval(30)
-    while !(await condition()), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !(await condition()), SuspendingClock.now < deadline {
         try await Task.sleep(nanoseconds: 5_000_000)
     }
     try #require(await condition(), "timed out waiting for \(what)")
@@ -67,8 +67,8 @@ private func gatedEmbedder(_ log: EmbedderLog, model: AppModel) -> @Sendable ([S
         if kind == .passage {
             let progress = await MainActor.run { model.askIndexingProgress }
             await log.record(texts, progress)
-            let deadline = Date().addingTimeInterval(60)
-            while !(await log.isOpen), Date() < deadline {
+            let deadline = SuspendingClock.now + .seconds(60)
+            while !(await log.isOpen), SuspendingClock.now < deadline {
                 try await Task.sleep(nanoseconds: 2_000_000)
             }
         }

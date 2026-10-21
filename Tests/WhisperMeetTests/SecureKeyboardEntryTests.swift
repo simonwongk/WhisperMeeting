@@ -227,8 +227,8 @@ private func dictateThroughTheController(_ harness: SecureEntryHarness) async th
     monitor.onPressStart?()
     monitor.onPressEnd?()
     // The delivery is the subject; the wall-clock cap only bounds a hang, and it must be met.
-    let deadline = Date().addingTimeInterval(30)
-    while controller.status == .transcribing, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while controller.status == .transcribing, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(10))
     }
     try #require(controller.status != .transcribing, "the dictation never delivered")

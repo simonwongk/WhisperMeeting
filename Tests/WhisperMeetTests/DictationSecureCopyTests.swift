@@ -169,8 +169,8 @@ private struct SecureCopyController {
     func dictate() async throws {
         monitor.onPressStart?()
         monitor.onPressEnd?()
-        let deadline = Date().addingTimeInterval(30)
-        while !overlay.phases.contains(.secureInput), Date() < deadline {
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !overlay.phases.contains(.secureInput), SuspendingClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         try #require(overlay.phases.contains(.secureInput), "the secure pill never showed")
@@ -213,8 +213,8 @@ func theHeldDictationIsDroppedWhenThePillGoes() async throws {
 
     try await setup.dictate()
     // The dismiss is the subject: wait for the pill to be taken down, then for nothing to be held.
-    let deadline = Date().addingTimeInterval(30)
-    while setup.overlay.hides == 0 || setup.controller.heldSecureDictation != nil, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while setup.overlay.hides == 0 || setup.controller.heldSecureDictation != nil, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(10))
     }
     try #require(setup.overlay.hides > 0, "the pill was never taken down")

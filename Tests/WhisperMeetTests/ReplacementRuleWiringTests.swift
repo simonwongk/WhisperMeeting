@@ -242,8 +242,8 @@ func applySkipsEveryRowOnAChangedLineOnly() async throws {
 /// Polls `condition` on the main actor against the wall clock, with a cap far above any real wait.
 @MainActor
 private func waitUntil(_ condition: () -> Bool) async -> Bool {
-    let deadline = Date().addingTimeInterval(30)
-    while Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while SuspendingClock.now < deadline {
         if condition() { return true }
         try? await Task.sleep(for: .milliseconds(10))
     }
@@ -260,8 +260,8 @@ private final class RulesGate: @unchecked Sendable {
     func record(isMain: Bool) { lock.lock(); ranOnMainThread = isMain; lock.unlock() }
     /// Blocks the pass until opened (capped, so a broken seam fails the test instead of hanging it).
     func wait() {
-        let deadline = Date().addingTimeInterval(30)
-        while !isOpen, Date() < deadline { usleep(1_000) }
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !isOpen, SuspendingClock.now < deadline { usleep(1_000) }
     }
 }
 

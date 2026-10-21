@@ -99,8 +99,8 @@ func theComparisonReadsTheEditedLinesAndTheCaptions() async throws {
         return
     }
     #expect(rows.map(\.transcriptText) == ["We agreed to ship on Friday.", "Thanks, everyone."])
-    let deadline = Date().addingTimeInterval(30)
-    while await inputs.captions.isEmpty, Date() < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
+    let deadline = SuspendingClock.now + .seconds(30)
+    while await inputs.captions.isEmpty, SuspendingClock.now < deadline { try await Task.sleep(nanoseconds: 2_000_000) }
     #expect(await inputs.captions == captions)
     #expect(await inputs.transcript.map(\.text) == ["We agreed to ship on Friday.", "Thanks, everyone."])
     #expect(await inputs.onMainThread == false)

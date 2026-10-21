@@ -66,8 +66,8 @@ private func noticeUnderAnotherMessage(_ root: URL) throws -> (MeetingStore, UUI
 /// cap: the subject of the wait is the very thing asserted.
 @MainActor
 private func waitForMessage(_ store: MeetingStore, _ expected: String) async throws {
-    let deadline = Date().addingTimeInterval(10)
-    while store.storageErrorMessage != expected, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(10)
+    while store.storageErrorMessage != expected, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(store.storageErrorMessage == expected, "the unread notice did not come back")

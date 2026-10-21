@@ -107,8 +107,8 @@ private final class OverlapHarness {
     func startBlockedEarlyRead(_ injector: TextInjector) async throws -> (FocusedTextField.Probe, Task<Void, Never>) {
         let pressedIn = injector.captureWillStart(autoPaste: true)
         let early = try #require(injector.clipboardPrefetch, "the press did not start the early read")
-        let deadline = Date().addingTimeInterval(30)
-        while !reads.snapshot().earlyEntered, Date() < deadline {
+        let deadline = SuspendingClock.now + .seconds(30)
+        while !reads.snapshot().earlyEntered, SuspendingClock.now < deadline {
             try await Task.sleep(for: .milliseconds(5))
         }
         try #require(reads.snapshot().earlyEntered, "the early read never started")
@@ -116,8 +116,8 @@ private final class OverlapHarness {
         let handle = TextInjector.PasteboardHandle(pasteboard: watched ?? board)
         let start = reads.entryCount
         Thread.detachNewThread {
-            let bound = Date().addingTimeInterval(0.5)
-            while !reads.snapshot().laterEntered, handle.pasteboard.changeCount == start, Date() < bound {
+            let bound = SuspendingClock.now + .seconds(0.5)
+            while !reads.snapshot().laterEntered, handle.pasteboard.changeCount == start, SuspendingClock.now < bound {
                 usleep(1_000)
             }
             reads.release.signal()

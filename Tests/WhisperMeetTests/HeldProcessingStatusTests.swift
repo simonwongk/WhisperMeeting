@@ -79,8 +79,8 @@ func aHeldProcessingStatusIsNotQueuedPerTick() async throws {
     }
 
     model.beginTranscription(id: review)
-    let deadline = Date().addingTimeInterval(30)
-    while model.hasActiveTranscription || model.hasQueuedTranscriptions, Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while model.hasActiveTranscription || model.hasQueuedTranscriptions, SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(5))
     }
     try #require(!model.hasActiveTranscription && !model.hasQueuedTranscriptions, "the run did not finish in 30 s")

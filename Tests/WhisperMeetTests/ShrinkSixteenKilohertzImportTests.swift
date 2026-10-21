@@ -152,9 +152,9 @@ private func sixteenKilohertzMonoPCMMovie(_ samples: [Float], to url: URL) async
     writer.startSession(atSourceTime: .zero)
     let pcm = samples.map { Int16(Swift.max(-1, Swift.min(1, $0)) * 32_767) }
     let buffer = try fixtureSampleBuffer(pcm, channels: 1, rate: 16_000, startFrame: 0)
-    let deadline = Date().addingTimeInterval(30)
+    let deadline = SuspendingClock.now + .seconds(30)
     while !input.isReadyForMoreMediaData {
-        try #require(Date() < deadline, "the writer stalled")
+        try #require(SuspendingClock.now < deadline, "the writer stalled")
         try await Task.sleep(nanoseconds: 1_000_000)
     }
     try #require(input.append(buffer), "\(String(describing: writer.error))")

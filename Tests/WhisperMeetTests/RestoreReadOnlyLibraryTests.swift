@@ -96,8 +96,8 @@ func restoreResumesSkippedStartupWork() async throws {
 
     // The re-run is started, not awaited, by the restore — so waiting for its product is this
     // assertion's own subject rather than a precondition for a different claim.
-    let deadline = Date().addingTimeInterval(30)
-    while !FileManager.default.fileExists(atPath: notes.path), Date() < deadline {
+    let deadline = SuspendingClock.now + .seconds(30)
+    while !FileManager.default.fileExists(atPath: notes.path), SuspendingClock.now < deadline {
         try await Task.sleep(for: .milliseconds(10))
     }
     #expect(FileManager.default.fileExists(atPath: notes.path), "startup recovery did not run again")
