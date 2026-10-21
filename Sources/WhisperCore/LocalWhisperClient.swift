@@ -220,9 +220,9 @@ public struct LocalWhisperClient: Sendable {
     /// `modelDownloadStalled` (F901); nil, no limit. openai-whisper's `_download` calls
     /// `urllib.request.urlopen(url)` with no timeout (`whisper/__init__.py`, main and the pinned
     /// 20250625), so a dead connection otherwise waits until the user presses Cancel. The meetings
-    /// path sets it (`AppModel.meetingModelDownloadStallTimeout`); the batch dictation engine leaves
-    /// it nil, because it keeps its own window and reports the download to its observers (F860).
-    public let downloadStallTimeout: TimeInterval?
+    /// path sets it (`AppModel.meetingModelDownloadStallTimeout`), and the batch dictation engine sets
+    /// it on its own copy for each run (F860, one rule since F1023 folded into F1038). A `var` for that.
+    public var downloadStallTimeout: TimeInterval?
     /// Where a run that fails writes the whole log it kept (F624, `TranscriptionFailureLog`) before it
     /// throws the summary; nil, nowhere. Set per meeting by `AppModel.executeEngine`.
     public var failureLogURL: URL?
@@ -747,10 +747,11 @@ func armedExitStream(for process: Process) -> AsyncStream<Void> {
     }
 }
 
-/// One meeting run's view of its first-use model download (F901): whether the download bar is
-/// showing and when it last moved. The rule is F860's for the batch dictation engine
-/// (`CheckpointDownloadWatch`, which also reports the download to the dictation observers): the
-/// parser reports a bar only when it changed, so each download update is movement; a bar at 100 %
+/// One run's view of its first-use model download (F901): whether the download bar is showing and
+/// when it last moved — for a meeting, and since F1023 for the batch dictation engine too, which kept a
+/// copy of this rule (F860) and now only reports the download to its observers
+/// (`CheckpointDownloadReport`). The parser reports a bar only when it changed, so each download update
+/// is movement; a bar at 100 %
 /// ends the download and the window, because what openai-whisper does next — hash the file, load it —
 /// is not the download's to time; and any other phase after the download ends it too.
 ///

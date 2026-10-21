@@ -123,8 +123,9 @@ if let p = allTurns["PYA"], let q = allTurns["SOR"] {
 print(String(format: "total %.0f s", Date().timeIntervalSince(started)))
 
 
-/// `Int(exactly:)`-style clamping, matching `CaptureRestartPolicy.saturatingFrames` in the app:
-/// `Int(Double)` traps on overflow and on NaN, and a bench tool that traps loses the whole run.
+/// Saturating like the app's `Int(saturating:)` (`SaturatingConversion.swift`) — `Int(Double)` traps on
+/// overflow and on NaN, and a bench tool that traps loses the whole run — except that this one truncates
+/// toward zero where the app's rounds to the nearest (F764, folded into F1038).
 extension Int {
     init(saturating value: Double) {
         if value.isNaN { self = 0 }

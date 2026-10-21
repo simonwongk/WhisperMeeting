@@ -1128,12 +1128,8 @@ final class AppModel: ObservableObject {
     /// `libraryIsNotBeingRestored`'s refusal inside `importOne` on every look — the exact repeat this
     /// ticket was filed for, just for that one cause.
     private func watchedFolderImportRefusalMessage() -> String? {
-        if store.isRestoringLibrary {
-            return Self.libraryRestoringMessage("Import")
-        }
-        if store.isDegraded {
-            return ReadOnlyLibraryNotice.actionRefused("Import")
-        }
+        // `libraryRefusal` sets nothing, which is why this can use it (F835, folded into F1038).
+        if let refusal = libraryRefusal("Import") { return refusal }
         refreshRecordingPreflight()
         guard let available = recordingPreflight.availableStorageBytes else { return nil }
         let needed = Self.importStorageNeeded(forFileSizes: pendingWatchedFiles.map { measureImportSource($0) ?? 0 })
@@ -1669,9 +1665,10 @@ final class AppModel: ObservableObject {
         return nil
     }
 
-    /// The message `libraryIsNotBeingRestored` reports, factored out so `watchedFolderImportRefusalMessage()`
-    /// can precompute the identical refusal without the side effect of setting `alertMessage` itself
-    /// (F454 follow-up review) — one string, so the two call sites cannot drift apart in wording.
+    /// The message `libraryIsNotBeingRestored` reports, factored out so `libraryRefusal(_:)` — which the
+    /// watched folder's precompute and Second Opinion's Replace call (F835) — gives the identical refusal
+    /// without the side effect of setting `alertMessage` (F454 follow-up review): one string, so the
+    /// callers cannot drift apart in wording.
     static func libraryRestoringMessage(_ action: String) -> String {
         "\(action) cannot start while your library is being restored. Try again when the restore finishes."
     }
@@ -2298,12 +2295,7 @@ final class AppModel: ObservableObject {
         // F658: the sheet offers no Replace on such a row; refused here as well, so no other caller
         // can write a reading that carries a neighbour's words or leaves this line's out.
         guard span.offersReplacement else { return .refused(Self.secondOpinionReadingOnly) }
-        if store.isRestoringLibrary {
-            return .refused(Self.libraryRestoringMessage(Self.secondOpinionReplaceAction))
-        }
-        if store.isDegraded {
-            return .refused(ReadOnlyLibraryNotice.actionRefused(Self.secondOpinionReplaceAction))
-        }
+        if let refusal = libraryRefusal(Self.secondOpinionReplaceAction) { return .refused(refusal) }
         guard store.meeting(id: id) != nil else { return .refused(Self.secondOpinionReplaceMeetingGone) }
         // What `store.update` leaves it as if it declines to run the change at all — while a lost
         // save's conflict offer is unresolved, which that banner explains (F619).
@@ -5908,11 +5900,12 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.mediaDownloadProgress = progress }
             }
             mediaDownloadProgress = nil
-            // Captions are a reviewable reference only, pinned to the video's OWN language so a
-            // machine-translated track can never enter the transcript. When the probe doesn't report a
-            // language, captions are skipped entirely rather than guessed: asking for a fixed language
-            // on an unknown-language video is exactly how an auto-translated track would be fetched,
-            // and adopting one would break "preserve the original spoken language".
+            // Captions are stored beside the transcript and only ever shown read-only, in the caption
+            // comparison (F740, `AppModel+CaptionComparison`), which copies nothing over. They are pinned
+            // to the video's OWN language. When the probe doesn't report a language, captions are skipped
+            // entirely rather than guessed: asking for a fixed language on an unknown-language video is
+            // exactly how an auto-translated track would be fetched, and showing one beside the
+            // transcript would put a translation where "preserve the original spoken language" promises none.
             //
             // F895: from here on the sheet has no download progress to show, and "Checking the link…",
             // which it shows otherwise, describes the probe. So each step says what it is.

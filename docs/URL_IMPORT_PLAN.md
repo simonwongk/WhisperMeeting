@@ -283,7 +283,7 @@ as the transcript" would not have been.
 | `MediaDownloadClientTests` | argument vector contains `--` before the URL and `--no-playlist`; output template is `recording.%(ext)s` |
 | `MediaDownloadProgressParserTests` | real yt-dlp `--newline` lines → fraction/ETA |
 | `MediaDownloadFailureClassifierTests` | real stderr signatures → private / age-restricted / geo-blocked / live / **stale-extractor → `updateDownloader`** |
-| `SubtitleParserTests` | VTT and SRT round-trip against `TranscriptExporter`; a real auto-caption fixture with rolling duplicates collapses correctly; **`>> `, `JOHN:`, `[Speaker 1]` prefixes are stripped** (no-diarization invariant); **a translated caption track is rejected** (original-language invariant) |
+| `SubtitleParserTests` | VTT and SRT parsing, and a round-trip against `TranscriptExporter` (F491); an inline, hand-written auto-caption sample with rolling duplicates collapses correctly (no real caption file is committed); **`>> `, `JOHN:`, `[Speaker 1]` prefixes are stripped**, entity-escaped ones too (no-diarization invariant, F491, F743). *(Corrected for F742: no test here rejects a translated track. The original-language invariant is held by `MediaDownloadArgumentsTests` — the caption arguments pin the video's own sub-language, a site-supplied language must be a BCP 47 tag, and the track in that language is the one adopted (F183, F495) — and by `importFromURL` skipping captions when the probe reports no language.)* |
 
 **`Tests/WhisperMeetTests/MediaURLImportTests.swift`** — this is where the reachability red-green
 lands, per `AGENTS.md` § "Wiring an unreachable core". Over a temp `MeetingStore(rootDirectory:)`

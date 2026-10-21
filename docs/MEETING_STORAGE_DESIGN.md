@@ -28,8 +28,8 @@ document.
 
 ## What a meeting folder holds today
 
-These figures come from the code. The capture format is fixed: 48 kHz (`AudioCaptureEngine.swift:48`), and each track
-is mono float32 (`:1152-1161`). The arithmetic matches `RecordingSizeEstimator.swift:38-47`.
+These figures come from the code. The capture format is fixed: 48 kHz (`AudioCaptureEngine.targetSampleRate`), and each track
+is mono float32 (`FloatTrackWriter`'s output format). The arithmetic matches `RecordingSizeEstimator`.
 
 | File | Per hour | Read after a meeting is finished by |
 |---|---|---|

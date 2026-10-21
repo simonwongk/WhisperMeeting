@@ -86,7 +86,10 @@ while kill -0 "$test_pid" 2>/dev/null; do
   sleep 2
   elapsed=$((elapsed + 2))
   if (( elapsed >= test_timeout )); then
-    print -u2 "[3/5] TEST WATCHDOG: the suite exceeded ${test_timeout}s — the F121 helper hang."
+    # Two causes look the same from here (F782): a wedged swiftpm-testing-helper (F121), or a test waiting
+    # on a state that never arrives. The last-started test below tells them apart; the sample says where
+    # the helper is stuck.
+    print -u2 "[3/5] TEST WATCHDOG: the suite exceeded ${test_timeout}s — a wedged test helper (F121) or a test waiting on a state that never arrives; see the last-started test."
     print -u2 "  last-started test: $(grep -aE '◇ Test ' "$test_log" | tail -1)"
     # OUR helper, not any helper (F371). This used to be
     # `pgrep -x swiftpm-testing-helper | head -1`, which matches every such process on the machine
