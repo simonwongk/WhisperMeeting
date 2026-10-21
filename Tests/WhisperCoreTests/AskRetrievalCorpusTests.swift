@@ -18,8 +18,8 @@ import Testing
 // so it scores keyword, semantic, or fused retrieval identically — but producing the semantic list
 // needs `intfloat/multilingual-e5-small`, a 490 MB download into the production runtime that is
 // the user's decision to make in Settings and not a test's to start. So the keyword baseline and
-// the fusion mechanics run here, and the floor/`k` sweep the ticket asks for is one command away
-// once that model exists. F392 carries it.
+// the fusion mechanics run here, and the floor/`k` sweep runs on request where the model is installed
+// (F392, `floorAndFusionSweepWithTheInstalledModel` at the end of this file).
 //
 // **F396: the set is bilingual now, as the model and the product are.** Meetings 6 and 7 are
 // Mandarin, written in Mandarin, and each pair names its language: none for the English 24, "zh" for
@@ -250,4 +250,111 @@ func fusionNeverLosesToKeywordAlone() throws {
     let fused = lexical.map { RankFusion.fuse(lexical: $0, semantic: $0, limit: 20) }
     #expect(recall(at: 3, ranked: fused, expected: expected) == keywordAt3)
     #expect(recall(at: 1, ranked: fused, expected: expected) == recall(at: 1, ranked: lexical, expected: expected))
+}
+
+// MARK: - F392: the sweep, with the installed model
+
+// F350 committed the set and the scorer and could not run the semantic half: the model was not installed. It is now
+// (the user installed it on 2026-10-18), so this runs the sweep F392 asks for through the same `recall(at:)`, the
+// app's own `SemanticRanker` and `RankFusion` (at the floor and `k` given), and the app's embedder and helper
+// script. Opt-in, because it needs the model in this Mac's Application Support: `F392_MEASURE=1 swift test
+// --filter floorAndFusionSweepWithTheInstalledModel`. It reads the installed model's files and the committed set,
+// never a meeting. The pools are those of the keyword tests above: English questions over the six English
+// meetings, Mandarin and cross-language questions over all eight. Both lists are 20 deep, as `askFusionDepth`.
+
+/// Five numbers that say where a list of similarities sits.
+private func spread(_ values: [Float]) -> String {
+    let sorted = values.sorted()
+    guard !sorted.isEmpty else { return "none" }
+    func at(_ q: Double) -> Float { sorted[min(sorted.count - 1, Int((Double(sorted.count - 1) * q).rounded()))] }
+    return String(format: "min %.3f · p25 %.3f · median %.3f · p75 %.3f · max %.3f (n %d)",
+                  at(0), at(0.25), at(0.5), at(0.75), at(1), sorted.count)
+}
+
+@Test("Ask's floor and fusion k against the committed set, with the installed search model (F392)",
+      .enabled(if: ProcessInfo.processInfo.environment["F392_MEASURE"] == "1"))
+func floorAndFusionSweepWithTheInstalledModel() async throws {
+    let (corpus, allMeetings) = try loadCorpus()
+    let script = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .deletingLastPathComponent().appendingPathComponent("Scripts/embed_local.py")
+    let embedder = LocalEmbedder(helperScriptURL: script)
+    let passageTexts = allMeetings.flatMap { $0.segments.map(\.text) }
+    let passages = try await embedder.embed(passageTexts, kind: .passage)
+    let questions = try await embedder.embed(corpus.pairs.map(\.question), kind: .query)
+    let dimension = passages.dimension
+    try #require(dimension == 384 && questions.dimension == dimension)
+    try #require(passages.vectors.count == passageTexts.count * dimension)
+    var indexes: [(meeting: SearchableMeeting, index: SegmentEmbeddings)] = []
+    var row = 0
+    for meeting in allMeetings {
+        let rows = meeting.segments.count
+        indexes.append((meeting, SegmentEmbeddings(
+            modelID: AskEmbeddingRuntime.modelID, fingerprint: "", dimension: dimension,
+            vectors: Array(passages.vectors[(row * dimension)..<((row + rows) * dimension)]))))
+        row += rows
+    }
+    func query(_ pair: Int) -> [Float] { Array(questions.vectors[(pair * dimension)..<((pair + 1) * dimension)]) }
+    func dot(_ a: [Float], _ b: ArraySlice<Float>) -> Float { zip(a, b).reduce(0) { $0 + $1.0 * $1.1 } }
+
+    var lines: [String] = []
+    for group in ["en", "zh", "en-zh"] {
+        let members = corpus.pairs.indices.filter { corpus.pairs[$0].languageGroup == group }
+        let pool = group == "en" ? englishMeetingCount : allMeetings.count
+        let poolIndexes = Array(indexes.prefix(pool))
+        let poolMeetings = Array(allMeetings.prefix(pool))
+        let expected = members.map { (meetingID(corpus.pairs[$0].meeting), corpus.pairs[$0].segment) }
+
+        // 1. The two populations: each question's similarity to its own passage, and to every other one in its pool.
+        var correct: [Float] = [], unrelated: [Float] = [], bestUnrelated: [Float] = []
+        for member in members {
+            let pair = corpus.pairs[member], q = query(member)
+            var best: Float = -1
+            for (m, entry) in poolIndexes.enumerated() {
+                for s in 0..<entry.index.count {
+                    let similarity = dot(q, entry.index.vectors[(s * dimension)..<((s + 1) * dimension)])
+                    if m == pair.meeting && s == pair.segment { correct.append(similarity) } else {
+                        unrelated.append(similarity)
+                        best = max(best, similarity)
+                    }
+                }
+            }
+            bestUnrelated.append(best)
+        }
+        lines.append("[\(group)] correct: \(spread(correct))")
+        lines.append("[\(group)] unrelated: \(spread(unrelated))")
+        lines.append("[\(group)] best unrelated per question: \(spread(bestUnrelated))")
+
+        // 2. Meaning alone at each floor.
+        for floor: Float in [0, 0.70, 0.76, 0.80] {
+            let ranked = members.map { SemanticRanker.rank(query: query($0), in: poolIndexes, limit: 20, floor: floor) }
+            lines.append(String(format: "[%@] meaning only, floor %.2f: recall@1 %.3f · recall@3 %.3f · recall@5 %.3f · mean list %.1f",
+                                group, floor, recall(at: 1, ranked: ranked, expected: expected),
+                                recall(at: 3, ranked: ranked, expected: expected), recall(at: 5, ranked: ranked, expected: expected),
+                                Double(ranked.map(\.count).reduce(0, +)) / Double(ranked.count)))
+        }
+
+        // 3. Fused, at each k, over the floor in use and the one F329 moved from; and where F182's five come from.
+        let lexical = members.map { MeetingRetrieval.rank(query: corpus.pairs[$0].question, in: poolMeetings, limit: 20) }
+        lines.append(String(format: "[%@] keyword only: recall@1 %.3f · recall@3 %.3f · recall@5 %.3f", group,
+                            recall(at: 1, ranked: lexical, expected: expected), recall(at: 3, ranked: lexical, expected: expected),
+                            recall(at: 5, ranked: lexical, expected: expected)))
+        for floor: Float in [0.70, 0.76] {
+            let semantic = members.map { SemanticRanker.rank(query: query($0), in: poolIndexes, limit: 20, floor: floor) }
+            for k in [1.0, 5, 10, 20, 60] {
+                let fused = zip(lexical, semantic).map { RankFusion.fuse(lexical: $0, semantic: $1, limit: 20, k: k) }
+                var both = 0, keywordOnly = 0, meaningOnly = 0
+                for ((top, keyword), meaning) in zip(zip(fused, lexical), semantic) {
+                    for hit in top.prefix(5) {
+                        let inKeyword = keyword.contains { $0.id == hit.id }, inMeaning = meaning.contains { $0.id == hit.id }
+                        if inKeyword && inMeaning { both += 1 } else if inKeyword { keywordOnly += 1 } else if inMeaning { meaningOnly += 1 }
+                    }
+                }
+                lines.append(String(format: "[%@] fused, floor %.2f, k %3.0f: recall@1 %.3f · recall@3 %.3f · recall@5 %.3f · top five: both %d, keyword only %d, meaning only %d",
+                                    group, floor, k, recall(at: 1, ranked: fused, expected: expected),
+                                    recall(at: 3, ranked: fused, expected: expected), recall(at: 5, ranked: fused, expected: expected),
+                                    both, keywordOnly, meaningOnly))
+            }
+        }
+    }
+    print("F392 sweep (\(AskEmbeddingRuntime.modelID)):\n" + lines.joined(separator: "\n"))
 }

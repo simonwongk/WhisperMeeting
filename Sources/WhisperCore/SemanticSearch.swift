@@ -117,12 +117,25 @@ public enum SemanticRanker {
     ///
     /// What it still does: drop a passage no reading calls related — a near-zero or negative cosine
     /// from an empty, garbled or wrong-language segment. What it does not do: separate right from
-    /// wrong. The pair set that produced those ranges is not committed, so neither value can be
-    /// re-derived here; that is F350.
+    /// wrong.
+    ///
+    /// **Measured against the committed set (F392, 2026-10-21, `floorAndFusionSweepWithTheInstalledModel`).**
+    /// English questions' own passages scored 0.735–0.850 and every other passage up to 0.837; English
+    /// questions over Mandarin speech 0.779–0.801 against up to 0.825. The populations overlap whole, as
+    /// F329 argued, and 0.70 and 0.76 give the same recall for every language; 0.80 loses most of it
+    /// (English recall@1 0.542 → 0.375, cross-language recall@5 1.000 → 0.333). So 0.70 stays.
     public static let minimumSimilarity: Float = 0.70
 
     public static func rank(
         query: [Float], in meetings: [(meeting: SearchableMeeting, index: SegmentEmbeddings)], limit: Int
+    ) -> [CitedResult] {
+        rank(query: query, in: meetings, limit: limit, floor: minimumSimilarity)
+    }
+
+    /// `rank` at another floor, for F392's sweep against the committed pair set; the app ranks at
+    /// `minimumSimilarity` only.
+    static func rank(
+        query: [Float], in meetings: [(meeting: SearchableMeeting, index: SegmentEmbeddings)], limit: Int, floor: Float
     ) -> [CitedResult] {
         guard limit > 0, !query.isEmpty else { return [] }
         var hits: [CitedResult] = []
@@ -131,7 +144,7 @@ public enum SemanticRanker {
                 let base = row * index.dimension
                 var dot: Float = 0
                 for column in 0..<index.dimension { dot += query[column] * index.vectors[base + column] }
-                guard dot >= minimumSimilarity else { continue }
+                guard dot >= floor else { continue }
                 hits.append(CitedResult(
                     meetingID: meeting.id, meetingTitle: meeting.title, segmentIndex: segment.index,
                     timestamp: segment.start, snippet: segment.text, score: Double(dot)
@@ -160,12 +173,24 @@ public enum SemanticRanker {
 /// For F182 that means `answerPassageLimit = 5` shows the answer model at most two meaning-only
 /// passages whenever BM25 returns anything. `fusionRanksCoOccurrenceAboveEveryone` and
 /// `fusionBreaksExactTiesTowardKeyword` pin both effects, so the behaviour is observed rather than
-/// assumed — but whether `k = 60` is the right constant for 20-deep lists is unmeasured, and
-/// measuring it needs the pair set F350 asks for. Do not change it blind.
+/// assumed.
+///
+/// **Measured against the committed set (F392, 2026-10-21).** It costs what F330 predicted. English
+/// questions over Mandarin speech, which only meaning can answer, found their passage in the top five
+/// 6 of 6 times by meaning alone and 2 of 6 fused at `k` 10, 20 or 60 — English passages in both lists
+/// outranked it — and 5 of 6 at `k = 1`. Whether a smaller `k` costs the questions keyword search
+/// answers best (names, codes) the committed set cannot say, since every question in it is a paraphrase:
+/// that is F1065, and until it is measured this stays 60.
 public enum RankFusion {
     static let k = 60.0
 
     public static func fuse(lexical: [CitedResult], semantic: [CitedResult], limit: Int) -> [CitedResult] {
+        fuse(lexical: lexical, semantic: semantic, limit: limit, k: k)
+    }
+
+    /// `fuse` with another constant, for F392's sweep against the committed pair set; the app fuses
+    /// with `k` only.
+    static func fuse(lexical: [CitedResult], semantic: [CitedResult], limit: Int, k: Double) -> [CitedResult] {
         // `prefix` traps on a negative count, and the sibling rankers already guard it (F333).
         guard limit > 0 else { return [] }
         guard !semantic.isEmpty else { return Array(lexical.prefix(limit)) }
