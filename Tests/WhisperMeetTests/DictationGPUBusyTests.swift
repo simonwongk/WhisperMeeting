@@ -126,3 +126,24 @@ func reportTreatsGPUBusyAsNotAttempted() {
     #expect(tally.attempted == 0)
     #expect(tally.unrecognised == 0)
 }
+
+/// F1052 — F245 meant the refiner to keep every term the user taught the app ("the whole vocabulary, not the
+/// prompt-capped slice"), and it was handed the prompt-capped slice: at most 100 terms and 1,000 characters,
+/// Han terms sorting last. F768 restores a name from the whole list, so a name it had just written was one the
+/// refiner was free to rewrite. Driven with a prompt slice that leaves the name out.
+@MainActor
+@Test("The refiner keeps every vocabulary term, not only the 100 the recognizer is prompted with (F1052)")
+func theRefinerKeepsTheWholeVocabulary() async throws {
+    let harness = try Harness()
+    defer { harness.tearDown() }
+    let whole = (1...150).map { "Term\($0)" } + ["王老师"]
+    harness.controller.configureVocabulary { Array(whole.prefix(100)) }
+    harness.controller.configureReplacementRules({ [] }, knownTerms: { whole })
+    harness.controller.gpuUtilization = { 0 }
+    try await harness.warmRefiner()
+    try await harness.dictateOnce()
+    #expect(harness.refiner.attemptCount == 1, "fixture: the refiner was not consulted")
+    let kept = Set(harness.refiner.lastProtectedTerms ?? [])
+    #expect(kept.contains("王老师"), "a name outside the prompt's 100 terms was left unprotected")
+    #expect(kept.isSuperset(of: whole))
+}

@@ -1600,11 +1600,17 @@ final class DictationController: ObservableObject {
                     // F245: the whole vocabulary, not the prompt-capped slice and not gated on
                     // the engine's prompt support — this is a guard on the model's output, not a
                     // hint to the recognizer, and a term the user taught the app must survive
-                    // whichever engine heard it.
+                    // whichever engine heard it. The whole list is `knownTermsProvider`'s (F1052:
+                    // this read the prompt's at most 100 terms, so a name F768 had just restored
+                    // from the whole list could be rewritten); the prompt's are added in case only
+                    // that provider is set up.
+                    let wholeVocabulary = knownTermsProvider()
+                    let known = Set(wholeVocabulary)
+                    let promptOnly = vocabularyProvider().filter { !known.contains($0) }
                     let refineStarted = clock()
                     let attempt = await refiner.attempt(
                         text: cleaned, languageCode: result.languageCode,
-                        protectedTerms: vocabularyProvider())
+                        protectedTerms: wholeVocabulary + promptOnly)
                     refineSeconds = clock() - refineStarted
                     refinement = attempt.outcome.rawValue
                     if attempt.outcome == .refined {

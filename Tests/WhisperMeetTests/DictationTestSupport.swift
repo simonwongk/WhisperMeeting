@@ -143,6 +143,13 @@ final class FakeRefiner: DictationTextRefining, @unchecked Sendable {
         lock.withLock { _attemptCount += 1 }
         return lock.withLock { _scripted } ?? RefineAttempt(text: text, outcome: .skipped)
     }
+    /// The terms the last attempt was told to keep (F1052).
+    var lastProtectedTerms: [String]? { lock.withLock { _lastProtectedTerms } }
+    private var _lastProtectedTerms: [String]?
+    func attempt(text: String, languageCode: String?, protectedTerms: [String]) async -> RefineAttempt {
+        lock.withLock { _lastProtectedTerms = protectedTerms }
+        return await attempt(text: text, languageCode: languageCode)
+    }
     func shutdown() { lock.withLock { _shutdownCount += 1 } }
     func touch() async {
         lock.withLock { _touchCount += 1 }
