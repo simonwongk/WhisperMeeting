@@ -200,3 +200,31 @@ func notOfferedCountsEachTermOnceAcrossDocuments() throws {
     #expect(result.terms.count == 210)
     #expect(result.notOffered == 40)
 }
+
+private func encoding(_ cf: CFStringEncodings) -> String.Encoding {
+    String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(cf.rawValue)))
+}
+
+/// F1030 — the last resort tried UTF-16 before GB18030 and Big5. Any even-length run of bytes decodes as BOM-less
+/// UTF-16 without an error, so a Chinese glossary the two detectors ever gave up on came back as UTF-16 garbage
+/// (23 of F591's 25 probe samples would have). A byte order mark still says UTF-16, and so do bytes that are
+/// mostly zero on one side, which is what BOM-less UTF-16 of Latin text looks like.
+@Test("The last-resort decode reads BOM-less Chinese as Chinese, and still reads UTF-16 it can tell is UTF-16 (F1030)")
+func theLastResortReadsChineseBeforeUTF16() throws {
+    let chinese = "王老师\n季度预算\n评审会议\n"
+    // GB18030 only: GB18030 accepts almost every Big5 byte pair, so a BOM-less Big5 file the detectors gave up on
+    // reads as GB18030 whatever the order — not planned, it is the detectors' job (they decided all of F591's 25).
+    for (cf, text) in [(CFStringEncodings.GB_18030_2000, chinese)] {
+        var bytes = try #require(text.data(using: encoding(cf)), "fixture: \(cf) cannot write \(text)")
+        if bytes.count % 2 == 1 { bytes.append(contentsOf: Array("\n".utf8)) }   // even, so UTF-16 would not fail
+        #expect(String(data: bytes, encoding: .utf16) != nil, "fixture: UTF-16 must be able to take these bytes")
+        #expect(VocabularyExtractor.decodedByFallback(bytes)?.hasPrefix(text) == true, "\(cf)")
+    }
+    // UTF-16 with its byte order mark, and BOM-less in either byte order.
+    let latin = "Kubernetes\nPrometheus\n"
+    #expect(VocabularyExtractor.decodedByFallback(try #require(latin.data(using: .utf16))) == latin)
+    #expect(VocabularyExtractor.decodedByFallback(try #require(latin.data(using: .utf16LittleEndian))) == latin)
+    #expect(VocabularyExtractor.decodedByFallback(try #require(latin.data(using: .utf16BigEndian))) == latin)
+    // UTF-8 first, as before.
+    #expect(VocabularyExtractor.decodedByFallback(Data(chinese.utf8)) == chinese)
+}

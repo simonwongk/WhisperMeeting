@@ -300,12 +300,41 @@ enum VocabularyExtractor {
                 return text
             }
         }
-        for encoding in [String.Encoding.utf8, .utf16, gb18030Encoding, big5Encoding, .windowsCP1252, .isoLatin1] {
-            if let text = try? String(contentsOf: url, encoding: encoding) {
+        if let data = try? Data(contentsOf: url), let text = decodedByFallback(data) {
+            return text
+        }
+        throw VocabularyImportError.unreadableFile
+    }
+
+    /// The last resort, once both detectors above have given up: each encoding in turn, the first that decodes.
+    ///
+    /// UTF-16 only where the bytes say so (F1030): any even-length run of bytes decodes as BOM-less UTF-16 without an
+    /// error, so trying it before GB18030 and Big5 turned a Chinese glossary the detectors gave up on into garbage. A
+    /// byte order mark says UTF-16, and so do bytes mostly zero on one side — BOM-less UTF-16 of Latin text, which
+    /// GB18030 would otherwise read as text with a NUL between every letter.
+    ///
+    /// Before UTF-8, too: a NUL is valid UTF-8, so UTF-8 took BOM-less UTF-16 as text with a NUL between every letter.
+    /// Big5 still comes after GB18030 and is reached only for bytes GB18030 refuses: GB18030 accepts almost every Big5
+    /// byte pair, and nothing in the bytes alone tells the two apart — that is the detectors' job above.
+    static func decodedByFallback(_ data: Data) -> String? {
+        var encodings: [String.Encoding] = []
+        let bytes = [UInt8](data.prefix(4_096))
+        if bytes.starts(with: [0xFF, 0xFE]) || bytes.starts(with: [0xFE, 0xFF]) {
+            encodings.append(.utf16)
+        } else if bytes.count >= 2 {
+            let pairs = bytes.count / 2
+            let zeroHigh = stride(from: 1, to: pairs * 2, by: 2).filter { bytes[$0] == 0 }.count
+            let zeroLow = stride(from: 0, to: pairs * 2, by: 2).filter { bytes[$0] == 0 }.count
+            if zeroHigh * 2 > pairs { encodings.append(.utf16LittleEndian) }
+            if zeroLow * 2 > pairs { encodings.append(.utf16BigEndian) }
+        }
+        encodings += [.utf8, gb18030Encoding, big5Encoding, .windowsCP1252, .isoLatin1]
+        for encoding in encodings {
+            if let text = String(data: data, encoding: encoding) {
                 return text
             }
         }
-        throw VocabularyImportError.unreadableFile
+        return nil
     }
 
     /// Extracts candidate terms from several files, skipping (never aborting on) any file that cannot
