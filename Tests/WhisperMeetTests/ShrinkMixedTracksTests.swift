@@ -45,6 +45,7 @@ struct MixFixture {
         try await write(recording)
         model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+        model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
         model.store.upsert(MeetingRecord(
             id: id, title: "Client call", duration: duration,
             recordingPath: "Recordings/\(id.uuidString)/recording.\(ext)",
@@ -491,5 +492,6 @@ func appShrinkStartsWithMixingOff() throws {
     defer { try? FileManager.default.removeItem(at: root) }
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     #expect(model.shrinkMixesRecordings == false)
 }

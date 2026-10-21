@@ -505,3 +505,29 @@ func resumeLeftoverTracksDecideWhatIsChecked() {
     #expect(MeetingStoragePlan.Unavailability.otherRecordingHasMoreTracks(name: "recording.caf", tracks: 1, channels: 4)
         .message.contains("which has 4 channels"))
 }
+
+// F1040 — what lands in the Trash says whose original it is: every capture is called meeting.wav.
+@Test("A file Shrink moves to the Trash is named for its meeting and day, safely, and never too long (F1040)")
+func trashNamesSayWhoseOriginalItIs() throws {
+    let id = try #require(UUID(uuidString: "6F1E7C2A-9B53-4C8E-A0D1-3E5F7A9B1C2D"))
+    let utc = try #require(TimeZone(identifier: "UTC"))
+    let day = Date(timeIntervalSince1970: 1_792_540_800)   // 2026-10-21 00:00 UTC
+    func name(_ title: String, _ file: String = "meeting.wav", zone: TimeZone = utc) -> String {
+        MeetingStoragePlan.trashName(forFile: file, meetingTitle: title, createdAt: day, meetingID: id, timeZone: zone)
+    }
+    #expect(name("Weekly sync") == "Weekly sync — 2026-10-21 — original meeting.wav")
+    #expect(name("Weekly sync", "system-audio.f32") == "Weekly sync — 2026-10-21 — original system-audio.f32")
+    // The day is the meeting's in the Mac's own zone.
+    #expect(name("Weekly sync", zone: try #require(TimeZone(identifier: "America/Los_Angeles")))
+        == "Weekly sync — 2026-10-20 — original meeting.wav")
+    // A slash is a folder, a colon is a slash in Finder, a newline or tab is no part of a name, and a dot first hides it.
+    #expect(name("Q3/Q4: plan\nreview\tnotes") == "Q3-Q4- plan-review-notes — 2026-10-21 — original meeting.wav")
+    #expect(name("..hidden") == "hidden — 2026-10-21 — original meeting.wav")
+    // Nothing left is the meeting's id.
+    #expect(name("") == "\(id.uuidString) — 2026-10-21 — original meeting.wav")
+    #expect(name("  ...  ") == "\(id.uuidString) — 2026-10-21 — original meeting.wav")
+    // A long Chinese title is cut so the whole name fits 255 bytes, keeping its end.
+    let long = name(String(repeating: "季度预算评审会议", count: 20))
+    #expect(long.utf8.count <= 255)
+    #expect(long.hasPrefix("季度预算评审会议") && long.hasSuffix(" — 2026-10-21 — original meeting.wav"))
+}

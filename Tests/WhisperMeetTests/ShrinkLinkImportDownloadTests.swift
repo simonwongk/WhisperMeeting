@@ -59,6 +59,7 @@ private struct DownloadFixture {
         try Data("{}".utf8).write(to: folder.appendingPathComponent(MediaSource.sidecarFilename))
         model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+        model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
         model.store.upsert(MeetingRecord(
             id: id, title: "Conference talk", duration: wavSeconds,
             recordingPath: "Recordings/\(id.uuidString)/recording.wav",

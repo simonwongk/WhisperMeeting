@@ -41,6 +41,7 @@ func transcriptionWaitsForShrinkOfItsMeeting() async throws {
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: try #require(UserDefaults(suiteName: testSuiteName())),
                          whisperExecutable: { URL(fileURLWithPath: "/usr/bin/true") }, qwenInstalled: { true })
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     model.selectedEngine = .whisperLarge
     model.store.upsert(MeetingRecord(id: id, title: "Client call", duration: 4,
                                      recordingPath: "Recordings/\(id.uuidString)/recording.wav", status: .recorded))

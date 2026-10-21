@@ -17,6 +17,7 @@ private func makeModel() throws -> AppModel {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     // Pinned off, so adopting a file never starts a real transcription on a machine that has one.
     model.findWhisperExecutable = { nil }
     model.checkQwenInstalled = { false }

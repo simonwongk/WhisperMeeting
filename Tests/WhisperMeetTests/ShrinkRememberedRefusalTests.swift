@@ -48,6 +48,7 @@ private struct Library {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("F1006-\(UUID().uuidString)")
         model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+        model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
         for meeting in meetings {
             let id = UUID()
             let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)

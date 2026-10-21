@@ -18,7 +18,9 @@ The user decided these on 2026-10-02, when asked:
   audio and saves less.
 - **Only when the user presses it.** They chose this over shrinking older meetings automatically.
 - **Originals are deleted at once** after the compressed copy is verified. They chose this over moving them to the
-  Trash, which I had recommended.
+  Trash, which I had recommended. **Changed by the user on 2026-10-17 (F1040): originals now go to the Trash**,
+  each named "<meeting title> — <date> — original <file name>", so a check that missed a sound can be undone; a
+  Trash that refuses a file leaves it in the meeting's folder, and Shrink says it could not finish.
 
 I chose everything else: the codec and its settings, the file names, the refusal list, keeping the library format
 unchanged, and the order of the steps. My reasons are below. The user can override any of them by reviewing this
@@ -270,8 +272,13 @@ verified and the index saved.
    - **If the save fails,** keep every original and report the error. *(Amended after the final review: the new
      `.m4a` is now left in place, not removed. See [Amendments](#amendments-after-the-final-review-2026-10-02).)*
    - **Special case:** if the final name *equals* the original's, as when an import is already `recording.m4a`, the
-     commit point is an atomic `replaceItemAt` and the index is unchanged.
-7. **Delete** the originals, using an explicit list of names. Anything not on the list stays.
+     commit point is an atomic `replaceItemAt` and the index is unchanged. *(Since F1040 the replaced file is kept as
+     `.shrink-<token>.replaced.<ext>` and moved to the Trash in step 7; if Shrink stops first, it is a stale
+     `.shrink-*` file the next Shrink moves there.)*
+7. **Delete** the originals, using an explicit list of names. Anything not on the list stays. *(Since F1040, the user's
+   decision of 2026-10-17: "delete" here means **move to the Trash**, each file renamed "<meeting title> — <date> —
+   original <file name>" first. A Trash that refuses a file — a volume with none, a network share — leaves it in the
+   folder under its own name, and the summary says Shrink could not finish. Nothing is deleted in its place.)*
    - **Deleted:**
      - `meeting.wav`, `meeting-recovered.wav` and `meeting-recovered-superseded-*.wav`;
      - `system-audio.f32` and `microphone-audio.f32`;
@@ -359,8 +366,11 @@ re-made when the action runs. The reasons, in the order a person can act on them
 
 > **Shrink "Weekly sync"?**
 > This replaces the recording with compressed audio: about 1.73 GB → about 15 MB. The original recording and its raw
-> tracks are **deleted permanently**. Playback, transcription and summaries keep working. Rebuild Audio and
-> re-running a single segment will no longer be available for this meeting.
+> tracks are **moved to the Trash**, where you can get them back until you empty the Trash; the space comes back when
+> you do. Playback, transcription and summaries keep working. Rebuild Audio and re-running a single segment will no
+> longer be available for this meeting.
+>
+> *(Until F1040, 2026-10-17, this said the originals were deleted permanently.)*
 
 Extra sentences are added when they apply:
 

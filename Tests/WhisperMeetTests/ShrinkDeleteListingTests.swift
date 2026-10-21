@@ -27,6 +27,7 @@ private struct ListingFixture {
         for (name, size) in before { try Data(count: size).write(to: folder.appendingPathComponent(name)) }
         model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+        model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
         model.store.upsert(MeetingRecord(
             id: id, title: "Imported talk", duration: 60,
             recordingPath: "Recordings/\(id.uuidString)/recording.wav",

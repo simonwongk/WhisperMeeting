@@ -382,6 +382,30 @@ public enum MeetingStoragePlan {
         return encodedBytes <= reclaimableBytes - reclaimableBytes / 4
     }
 
+    /// The name a file Shrink removes is given in the Trash (F1040): "Weekly sync — 2026-10-21 — original
+    /// meeting.wav". Every meeting's capture is called `meeting.wav`, so the meeting's title and day are what tell
+    /// one meeting's originals from another's there. A slash or colon (a slash in Finder) and control characters
+    /// become hyphens, leading dots go so the file is not hidden, and the title is shortened so the whole name fits
+    /// a file system's 255 bytes; a title with nothing left is the meeting's id. The day is the meeting's, in the
+    /// Mac's time zone.
+    public static func trashName(forFile name: String, meetingTitle: String, createdAt: Date, meetingID: UUID,
+                                 timeZone: TimeZone = .current) -> String {
+        var title = String(meetingTitle.map { character -> Character in
+            let unsafe = character == "/" || character == ":"
+                || character.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0) }
+            return unsafe ? "-" : character
+        }).trimmingCharacters(in: .whitespaces)
+        while title.hasPrefix(".") { title.removeFirst() }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        let suffix = " — \(formatter.string(from: createdAt)) — original \(name)"
+        while !title.isEmpty, (title + suffix).utf8.count > 255 { title.removeLast() }
+        title = title.trimmingCharacters(in: .whitespaces)
+        return (title.isEmpty ? meetingID.uuidString : title) + suffix
+    }
+
     /// The sum of `entries`, saturating rather than trapping.
     public static func totalBytes(_ entries: [FolderEntry]) -> Int64 {
         entries.reduce(Int64(0)) { sum, entry in

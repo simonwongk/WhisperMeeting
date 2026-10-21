@@ -751,6 +751,17 @@ final class AppModel: ObservableObject {
     /// Called off the main actor at the moment of each removal, after its last identity check and before the file is
     /// set aside and compared (F1005): lets a test change the file where only that comparison can see it.
     var willUnlinkForShrink: @Sendable (URL) -> Void = { _ in }
+    /// Moves a file Shrink removes to the Trash, already renamed for it, and says where it landed (F1040, the
+    /// user's decision of 2026-10-17): a check that missed a sound can then be undone from the Trash. A Trash that
+    /// refuses — a volume with none, a network share — throws, and Shrink keeps the file; it never deletes one in
+    /// its place. In a test process it refuses without touching anything (F442), so no test reaches the user's
+    /// Trash; a test that shrinks injects a stand-in.
+    var trashForShrink: @Sendable (URL) throws -> URL? = { url in
+        guard TestProcess.allowsRealAccess(to: "the Trash") else { throw CocoaError(.fileWriteNoPermission) }
+        var landed: NSURL?
+        try FileManager.default.trashItem(at: url, resultingItemURL: &landed)
+        return landed as URL?
+    }
     #if DEBUG
     var isBackingUpForTesting: Bool {
         get { isBackingUp }

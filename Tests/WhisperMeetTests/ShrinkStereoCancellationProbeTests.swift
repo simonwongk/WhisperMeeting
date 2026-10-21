@@ -477,6 +477,7 @@ func shrinkResumeKeepsALeftoverItCannotDecode() async throws {
                                        workingWAV: root.appendingPathComponent("work.wav"))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     model.store.upsert(MeetingRecord(id: id, title: "Client call", duration: voiceSeconds,
                                      recordingPath: "Recordings/\(id.uuidString)/recording.m4a",
                                      status: .completed, transcriptText: "Hi."))

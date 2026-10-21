@@ -48,6 +48,7 @@ private func recoveredWebMImport(_ label: String) async throws -> (root: URL, mo
     try unfinishedWAV().write(to: folder.appendingPathComponent("recording.wav"))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     model.crashReportsSince = { _ in [] }
     model.finishInterruptedLinkImportExtraction = { download in
         let finished = download.deletingLastPathComponent().appendingPathComponent("recording.wav")

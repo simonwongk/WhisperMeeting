@@ -147,9 +147,10 @@ runtimes, on top of your recordings. Enabling AI correction adds no download onc
 are installed. Recordings are never auto-deleted and dominate long-term use — an hour of meetings a
 day is roughly 50 GB a month. **Settings → Meeting library → Show Storage…** lists every meeting by
 the space it uses, and each meeting's page shows its size. **Shrink…** replaces a meeting's audio
-with one compressed recording (AAC, 16 kHz mono) and deletes the original WAV and raw tracks, after a
-confirmation, and only when you press it. It is lossy and cannot be undone, and Rebuild Audio and
-single-segment re-runs are no longer available for that meeting.
+with one compressed recording (AAC, 16 kHz mono) and moves the original WAV and raw tracks to the
+Trash, named after the meeting, after a confirmation, and only when you press it. The space comes back
+when you empty the Trash; until then you can put the originals back. The copy is lossy, and Rebuild
+Audio and single-segment re-runs are no longer available for that meeting.
 
 ## Workflow
 

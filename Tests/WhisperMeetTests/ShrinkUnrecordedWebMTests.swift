@@ -51,6 +51,7 @@ private func recoveredWebMImportWithoutARecord(_ label: String) async throws -> 
     try unfinishedWAV().write(to: folder.appendingPathComponent("recording.wav"))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     model.crashReportsSince = { _ in [] }
     model.finishInterruptedLinkImportExtraction = { download in
         let finished = download.deletingLastPathComponent().appendingPathComponent("recording.wav")
@@ -124,6 +125,7 @@ func anUnmeasurableOrLongerWebMIsKept() async throws {
     // Another session: the measurement says the download is longer than the 6 s recording.
     let later = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    later.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     later.availableBytesForShrink = { _ in .max }
     later.measureDownloadForShrink = { _ in 7 }
     await later.refreshStorage(ids: [id])

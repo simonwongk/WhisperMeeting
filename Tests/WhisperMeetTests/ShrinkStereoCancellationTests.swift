@@ -110,6 +110,7 @@ private struct StereoResumeFixture {
                                            workingWAV: root.appendingPathComponent("work-\(UUID().uuidString).wav"))
         model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+        model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
         model.store.upsert(MeetingRecord(
             id: id, title: "Client call", duration: seconds,
             recordingPath: "Recordings/\(id.uuidString)/recording.m4a",
@@ -275,6 +276,7 @@ func shrinkLeavesAMonoCaptureAsItWas() async throws {
         """.utf8).write(to: folder.appendingPathComponent("source-tracks.json"))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     model.store.upsert(MeetingRecord(id: id, title: "Weekly sync", duration: seconds,
                                      recordingPath: "Recordings/\(id.uuidString)/meeting.wav",
                                      status: .completed, transcriptText: "Hi."))

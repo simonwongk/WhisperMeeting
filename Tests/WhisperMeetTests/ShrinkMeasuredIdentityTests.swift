@@ -30,6 +30,7 @@ private struct IdentityFixture {
         try Data(repeating: 0x11, count: 1_000_000).write(to: folder.appendingPathComponent("recording.mp3"))
         model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+        model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
         model.store.upsert(MeetingRecord(
             id: id, title: "Imported talk", duration: 60,
             recordingPath: "Recordings/\(id.uuidString)/recording.wav",
@@ -203,6 +204,7 @@ func shrinkDoesNotReplaceADownloadThatChanged() async throws {
     try Data("{}".utf8).write(to: folder.appendingPathComponent(MediaSource.sidecarFilename))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     model.store.upsert(MeetingRecord(
         id: id, title: "Conference talk", duration: 6,
         recordingPath: "Recordings/\(id.uuidString)/recording.wav", status: .completed, transcriptText: "Hi.",

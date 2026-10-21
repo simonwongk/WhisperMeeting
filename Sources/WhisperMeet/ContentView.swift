@@ -1600,7 +1600,7 @@ struct SettingsView: View {
                         .buttonStyle(.bordered)
                 }
                 .task { await model.refreshStorage(ids: model.store.meetings.map(\.id)) }
-                Text("Lists each meeting by the space it uses. Shrink replaces a meeting's audio with a compressed copy and deletes the original; it runs only when you press it.")
+                Text("Lists each meeting by the space it uses. Shrink replaces a meeting's audio with a compressed copy and moves the original to the Trash; it runs only when you press it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {

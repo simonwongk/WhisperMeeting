@@ -21,13 +21,15 @@ private struct Fixture {
     let model: AppModel
     let id: UUID
     let folder: URL
+    /// Where Shrink's removals go (F1040): never the user's Trash.
+    let trash: ShrinkTestTrash
 
     // 60 s, so the predicted output (246 KB) is well under a quarter of these files and the
     // worth-it rule passes; an hour's prediction (14.8 MB) would make them "already compact".
     // The recording is a real WAV and the tracks have a matching manifest: zero-filled stand-ins
     // read as damaged to Verify Library and Rebuild Audio, and Shrink rightly refuses those.
     init(recordingName: String = "meeting.wav", duration: TimeInterval = 60, wavSeconds: Double = 60,
-         recordingPath: String? = nil, extraFiles: [String: Int] = [:]) throws {
+         recordingPath: String? = nil, extraFiles: [String: Int] = [:], failingTrash: Bool = false) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("ShrinkFlow-\(UUID().uuidString)")
         id = UUID()
         folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
@@ -36,6 +38,8 @@ private struct Fixture {
         for (name, size) in extraFiles { try Data(count: size).write(to: folder.appendingPathComponent(name)) }
         model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+        trash = try ShrinkTestTrash(in: root, failing: failingTrash)
+        model.trashForShrink = trash.seam
         model.store.upsert(MeetingRecord(
             id: id, title: "Weekly sync", duration: duration,
             recordingPath: recordingPath ?? "Recordings/\(id.uuidString)/\(recordingName)",
@@ -288,7 +292,7 @@ func shrinkAndBackupAreExclusive() async throws {
     #expect(f.model.shrinkUnavailability(for: try #require(f.model.store.meeting(id: f.id))) == .backupRunning)
 }
 
-@Test("The confirmation says what changes, that it is permanent, and what is lost (F795)")
+@Test("The confirmation says what changes, where the originals go, and what is lost (F795, F1040)")
 @MainActor
 func shrinkConfirmationStatesItsPromises() {
     let request = AppModel.ShrinkRequest(meetingIDs: [UUID()], titles: ["Weekly sync"], currentBytes: 1_728_000_000,
@@ -296,7 +300,8 @@ func shrinkConfirmationStatesItsPromises() {
                                          includesVideo: true)
     let text = AppModel.shrinkConfirmationMessage(request)
     #expect(AppModel.shrinkConfirmationTitle(request) == "Shrink “Weekly sync”?")
-    #expect(text.contains("deleted permanently"))
+    #expect(text.contains("moved to the Trash") && text.contains("empty the Trash"), "F1040: \(text)")
+    #expect(!text.contains("permanently"))
     #expect(text.contains("Rebuild Audio"))
     #expect(text.contains("picture is removed"))
     #expect(!text.contains("hasn't been transcribed"), "only said when it applies")
@@ -485,4 +490,116 @@ func shrinkLibraryTotalForgetsDeletedMeetings() async throws {
     await f.model.refreshStorage(ids: f.model.store.meetings.map(\.id))
     #expect(f.model.measuredLibraryBytes == f.model.storageBytes(for: f.id))
     #expect(f.model.measuredLibraryBytes < both)
+}
+
+// MARK: - The originals go to the Trash (F1040)
+
+// The user's decision of 2026-10-17: Shrink moves the originals to the Mac's Trash instead of deleting them, so a
+// check that missed a sound can be undone; a Trash that refuses keeps them where they are, never deletes them.
+
+@MainActor
+private func trashName(_ f: Fixture, _ file: String) throws -> String {
+    let meeting = try #require(f.model.store.meeting(id: f.id))
+    return MeetingStoragePlan.trashName(forFile: file, meetingTitle: meeting.title, createdAt: meeting.createdAt,
+                                        meetingID: f.id)
+}
+
+@Test("Shrink moves the original recording and its raw tracks to the Trash, named for the meeting (F1040)")
+@MainActor
+func shrinkMovesTheOriginalsToTheTrash() async throws {
+    let f = try Fixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+    await f.shrink()
+    let originals = ["source-tracks.json", "microphone-audio.f32", "system-audio.f32", "meeting.wav"]
+    let named = try originals.map { try trashName(f, $0) }
+    #expect(f.trash.received == named, "\(f.trash.received)")
+    for (original, name) in zip(originals, named) {
+        #expect(!f.exists(original) && !f.exists(name), "\(original) is still in the meeting's folder")
+        #expect(f.trash.holds(name), "\(name) never reached the Trash")
+    }
+    #expect(named.last?.hasPrefix("Weekly sync — ") == true && named.last?.hasSuffix(" — original meeting.wav") == true)
+    #expect(f.exists("meeting.m4a") && f.exists("notes.md") && f.exists("diarization.json"))
+    let alert = try #require(f.model.alertMessage)
+    #expect(alert.contains("Shrunk") && alert.contains("in the Trash") && alert.contains("empty it"), "\(alert)")
+}
+
+@Test("A Trash that refuses keeps every original where it was, the meeting plays its copy, and Shrink says it could not finish (F1040)")
+@MainActor
+func aRefusingTrashKeepsTheOriginals() async throws {
+    let f = try Fixture(failingTrash: true); defer { try? FileManager.default.removeItem(at: f.root) }
+    let before = try Data(contentsOf: f.folder.appendingPathComponent("meeting.wav"))
+    await f.shrink()
+    for original in ["source-tracks.json", "microphone-audio.f32", "system-audio.f32", "meeting.wav"] {
+        let name = try trashName(f, original)
+        #expect(f.exists(original), "\(original) was removed when the Trash refused it")
+        #expect(!f.exists(name), "\(original) was left under its Trash name")
+    }
+    let after = try Data(contentsOf: f.folder.appendingPathComponent("meeting.wav"))
+    #expect(after == before)
+    // The copy is committed, so the meeting still plays.
+    #expect(f.persistedPath()?.hasSuffix("/meeting.m4a") == true && f.exists("meeting.m4a"))
+    let alert = try #require(f.model.alertMessage)
+    #expect(alert.contains("could not finish") && alert.contains("still in the meeting's folder"), "\(alert)")
+    #expect(!alert.contains("in the Trash;"), "\(alert)")
+}
+
+@Test("A resumed shrink moves its leftovers to the Trash too (F1040)")
+@MainActor
+func aResumeMovesLeftoversToTheTrash() async throws {
+    let f = try Fixture(recordingName: "meeting.m4a", extraFiles: ["meeting.wav": 3_000_000])
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    await f.shrink()
+    let wav = try trashName(f, "meeting.wav"), track = try trashName(f, "system-audio.f32")
+    #expect(!f.exists("meeting.wav") && f.trash.holds(wav))
+    #expect(f.trash.holds(track))
+    #expect(f.exists("meeting.m4a"))
+}
+
+@Test("A file the copy replaces in place goes to the Trash, and stays as it was when the Trash refuses (F1040)")
+@MainActor
+func aFileReplacedInPlaceGoesToTheTrash() async throws {
+    let f = try Fixture(extraFiles: ["meeting.m4a": 7]); defer { try? FileManager.default.removeItem(at: f.root) }
+    await f.shrink()
+    let size = try f.folder.appendingPathComponent("meeting.m4a").resourceValues(forKeys: [.fileSizeKey]).fileSize
+    #expect(size == 15_000)
+    let replaced = try trashName(f, "meeting.m4a")
+    #expect(f.trash.holds(replaced), "the file the copy replaced was deleted: \(f.trash.received)")
+    let replacedSize = try f.trash.folder.appendingPathComponent(replaced).resourceValues(forKeys: [.fileSizeKey]).fileSize
+    #expect(replacedSize == 7)
+    let temps = try FileManager.default.contentsOfDirectory(atPath: f.folder.path).filter { $0.hasPrefix(".shrink-") }
+    #expect(temps.isEmpty, "\(temps)")
+
+    let refused = try Fixture(extraFiles: ["meeting.m4a": 7], failingTrash: true)
+    defer { try? FileManager.default.removeItem(at: refused.root) }
+    await refused.shrink()
+    #expect(refused.exists("meeting.wav"), "the recording was removed when the Trash refused")
+    let alert = try #require(refused.model.alertMessage)
+    #expect(alert.contains("could not finish"), "\(alert)")
+    // Kept in the folder for the next Shrink, which measures it as a leftover and tries the Trash again.
+    let kept = try FileManager.default.contentsOfDirectory(atPath: refused.folder.path)
+        .filter { $0.hasPrefix(".shrink-") && $0.contains(".replaced") }
+    #expect(kept.count == 1, "the replaced file was not kept: \(kept)")
+    if let kept = kept.first {
+        let keptSize = try refused.folder.appendingPathComponent(kept).resourceValues(forKeys: [.fileSizeKey]).fileSize
+        #expect(keptSize == 7)
+    }
+}
+
+@Test("Shrink's removals go through the Trash: nothing on its delete path unlinks or deletes an original (F1040)")
+func shrinkHasNoDeletionOnItsRemovalPath() throws {
+    let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/WhisperMeet/AppModel+Shrink.swift"), encoding: .utf8)
+    // Comments stripped first, or the paragraph explaining the rule would satisfy or break it (F285).
+    let code = source.split(separator: "\n", omittingEmptySubsequences: false)
+        .map { line -> Substring in line.range(of: "//").map { line[..<$0.lowerBound] } ?? line[...] }
+        .joined(separator: "\n")
+    #expect(!code.contains("removeIfUnchanged"), "the delete step unlinks again")
+    #expect(!code.contains("unlink("), "an unlink is back on Shrink's path")
+    // Every removeItem left is one of this run's own scratch files, never a file the user had.
+    let scratch: Set<String> = ["tempM4A", "tempWAV", "mixWAV", "decodedWAV", "scratch"]
+    let removed = code.components(separatedBy: "removeItem(at: ").dropFirst()
+        .map { String($0.prefix { $0.isLetter || $0.isNumber }) }
+    #expect(!removed.isEmpty && removed.allSatisfy(scratch.contains), "removeItem on something else: \(removed)")
+    // The in-place replace keeps what it replaced, for the Trash.
+    #expect(code.contains(".withoutDeletingBackupItem"), "the in-place replace deletes the file it replaces")
 }

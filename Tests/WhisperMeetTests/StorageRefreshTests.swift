@@ -66,6 +66,7 @@ private func makeCapture(seconds: Double = 60) throws -> (root: URL, model: AppM
         """.utf8).write(to: folder.appendingPathComponent("source-tracks.json"))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     model.store.upsert(MeetingRecord(
         id: id, title: "Weekly sync", duration: seconds,
         recordingPath: "Recordings/\(id.uuidString)/meeting.wav",

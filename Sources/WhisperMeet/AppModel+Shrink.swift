@@ -180,12 +180,13 @@ extension AppModel {
     }
 
     /// The confirmation's body. Static and here, not in the view, because it makes the promises the
-    /// user relies on — what changes, that the deletion is permanent, and what is lost — and a
+    /// user relies on — what changes, where the originals go (the Trash, F1040), and what is lost — and a
     /// promise nothing asserts drifts (the `rebuildConfirmationMessage` rule, F267).
     static func shrinkConfirmationMessage(_ request: ShrinkRequest) -> String {
         let size = { (bytes: Int64) in ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
         var text = "This replaces the recording with compressed audio: about \(size(request.currentBytes)) → about \(size(request.predictedBytes)). "
-            + "The original recording and its raw tracks are deleted permanently. "
+            + "The original recording and its raw tracks are moved to the Trash, where you can get them back until you empty the Trash; "
+            + "the space comes back when you do. "
             + "Playback, transcription and summaries keep working. "
             + "Rebuild Audio and re-running a single segment will no longer be available."
         if request.includesUntranscribed {
@@ -218,7 +219,9 @@ extension AppModel {
     }
 
     enum ShrinkOutcome {
-        case shrunk(title: String, before: Int64, after: Int64, unremoved: Int)
+        /// `trashed` originals went to the Trash, `refusedByTrash` were refused by it and kept (F1040), and
+        /// `unremoved` were not the files measured and were kept for the next Shrink.
+        case shrunk(title: String, before: Int64, after: Int64, unremoved: Int, trashed: Int, refusedByTrash: Int)
         case alreadyCompact(title: String)
         case refused(title: String, reason: MeetingStoragePlan.Unavailability)
         case failed(title: String, message: String)
@@ -226,8 +229,17 @@ extension AppModel {
         var sentence: String {
             let size = { (bytes: Int64) in ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
             switch self {
-            case let .shrunk(title, before, after, unremoved):
-                var text = "Shrunk “\(title)” from \(size(before)) to \(size(after))."
+            case let .shrunk(title, before, after, unremoved, trashed, refusedByTrash):
+                var text: String
+                if refusedByTrash > 0 {
+                    text = "“\(title)” now plays its compressed copy, but Shrink could not finish: \(refusedByTrash) original file(s) "
+                        + "could not be moved to the Trash, so they are still in the meeting's folder. Shrink again to try once more."
+                } else {
+                    text = "Shrunk “\(title)” from \(size(before)) to \(size(after))."
+                }
+                if trashed > 0 {
+                    text += " The original files are in the Trash; the space comes back when you empty it."
+                }
                 if unremoved > 0 {
                     text += " \(unremoved) file(s) could not be removed; Shrink again to finish."
                 }
@@ -271,6 +283,8 @@ extension AppModel {
         // F1028: a transcription asked for meanwhile waits in the queue behind this meeting's Shrink; pumped once it ends.
         defer { shrinkRunningID = nil; resumeTranscriptionQueue() }
         let before = MeetingStoragePlan.totalBytes(disk.entries)
+        // The file the copy replaced in place, kept beside it for the Trash (F1040), with its identity then.
+        var replaced: (url: URL, identity: InterruptedLinkImportExtraction.FileIdentity)?
 
         if !MeetingStoragePlan.isResume(disk) {
             let recordingURL = store.recordingURL(for: meeting)
@@ -447,7 +461,18 @@ extension AppModel {
             }
             do {
                 if FileManager.default.fileExists(atPath: final.path) {
-                    _ = try FileManager.default.replaceItemAt(final, withItemAt: tempM4A)
+                    // F1040: what is replaced is an original too, so it is kept, under a `.shrink-` name: moved to
+                    // the Trash once the index names the copy (below), and if Shrink stops before that, a leftover
+                    // the next Shrink measures and moves there. `replaceItemAt` removes an item already called
+                    // that, which the token rules out.
+                    let backupName = ".shrink-\(token).replaced.\(final.pathExtension)"
+                    _ = try FileManager.default.replaceItemAt(final, withItemAt: tempM4A, backupItemName: backupName,
+                                                              options: .withoutDeletingBackupItem)
+                    // Without an identity nothing could show the file moved is this one, so it is left, a leftover.
+                    let backup = folder.appendingPathComponent(backupName)
+                    if let identity = InterruptedLinkImportExtraction.FileIdentity(of: backup) {
+                        replaced = (backup, identity)
+                    }
                 } else {
                     try FileManager.default.moveItem(at: tempM4A, to: final)
                 }
@@ -559,39 +584,88 @@ extension AppModel {
             }
         }
 
-        // Delete (design, step 7), in the planner's order, only names on its list — and of those, only
+        // Remove (design, step 7), in the planner's order, only names on its list — and of those, only
         // what the checks above ran on, unchanged since (F949). A file that appeared or changed during
         // the encode was never measured, so it stays for the next Shrink, which measures it.
+        //
+        // To the Trash, not deleted (F1040, the user's decision of 2026-10-17): every check that can miss a sound
+        // was a risk of permanent loss. Each file goes under a name that says whose original it is, and a Trash that
+        // refuses it leaves it where it was — never a deletion in its place.
         let now = MeetingStoragePlan.removableNow(current: storageEntries(folder), measured: disk.entries, keeping: output)
-        var unremoved = now.changed.count
+        var unremoved = now.changed.count, trashed = 0, refused = 0
+        let trash = trashForShrink
+        func count(_ move: TrashMove) {
+            switch move {
+            case .trashed: trashed += 1
+            case .changed: unremoved += 1
+            case .refused: refused += 1
+            }
+        }
+        func trashName(_ file: String) -> String {
+            MeetingStoragePlan.trashName(forFile: file, meetingTitle: meeting.title, createdAt: meeting.createdAt, meetingID: id)
+        }
+        if let replaced {
+            willRemoveForShrink(output)
+            let name = trashName(output)
+            count(await Task.detached {
+                Self.moveToTrashIfUnchanged(replaced.url, identity: replaced.identity, as: name, trash: trash)
+            }.value)
+        }
         for entry in now.remove {
             willRemoveForShrink(entry.name)
             let url = folder.appendingPathComponent(entry.name)
             let willUnlink = willUnlinkForShrink
-            do {
-                try await Task.detached {
-                    // F1005: only the file that was measured, as it was then. A removal by path removes whatever has
-                    // the name by then, so the file is set aside under a name only this removal uses and unlinked only
-                    // if it is still that file (F894's `removeIfUnchanged`); anything else is put back and counted
-                    // among the files not removed, for the next Shrink to measure.
-                    guard let identity = entry.identity else { throw CocoaError(.fileWriteUnknown) }
-                    guard InterruptedLinkImportExtraction.FileIdentity(of: url) == identity else { throw CocoaError(.fileWriteUnknown) }
-                    // F943: a copy an import made before F804 may still carry Finder's Locked flag,
-                    // which blocks the unlink; it is the app's own file in the meeting's own folder.
-                    MeetingStore.clearUserFlags(at: url)
-                    willUnlink(url)
-                    guard InterruptedLinkImportExtraction.removeIfUnchanged(url, identity: identity) else {
-                        throw CocoaError(.fileWriteUnknown)
-                    }
-                }.value
-            } catch {
-                unremoved += 1
-            }
+            let name = trashName(entry.name)
+            count(await Task.detached { () -> TrashMove in
+                // F1005: only the file that was measured, as it was then. A removal by path removes whatever has
+                // the name by then, so the file is set aside under its Trash name (refused if that name is taken) and
+                // moved only if it is still that file; anything else is put back and counted among the files not
+                // removed, for the next Shrink to measure.
+                guard let identity = entry.identity,
+                      InterruptedLinkImportExtraction.FileIdentity(of: url) == identity else { return .changed }
+                // F943: a copy an import made before F804 may still carry Finder's Locked flag,
+                // which blocks the move; it is the app's own file in the meeting's own folder.
+                MeetingStore.clearUserFlags(at: url)
+                willUnlink(url)
+                return Self.moveToTrashIfUnchanged(url, identity: identity, as: name, trash: trash)
+            }.value)
         }
         let after = await diskFacts(for: store.meeting(id: id) ?? meeting)
         storageFacts[id] = after
-        return .shrunk(title: meeting.title, before: before,
-                       after: MeetingStoragePlan.totalBytes(after.entries), unremoved: unremoved)
+        return .shrunk(title: meeting.title, before: before, after: MeetingStoragePlan.totalBytes(after.entries),
+                       unremoved: unremoved, trashed: trashed, refusedByTrash: refused)
+    }
+
+    /// How one file's move to the Trash went (F1040).
+    enum TrashMove: Sendable {
+        case trashed
+        /// It was not the file the checks measured, or no longer there: kept for the next Shrink to measure.
+        case changed
+        /// The Trash refused it, or its Trash name was taken in the folder: kept where it was.
+        case refused
+    }
+
+    /// Moves `url` to the Trash as `trashName` if it is still the file the checks measured (F1040, F1005): set
+    /// aside under that name in its own folder (which also fails if the name is taken), compared, and only then
+    /// handed to `trash`. A file that changed, or a Trash that refuses, is put back under its own name. Never a
+    /// deletion in its place: the fallback is a deferred action, never a destructive one (AGENTS.md).
+    nonisolated static func moveToTrashIfUnchanged(
+        _ url: URL, identity: InterruptedLinkImportExtraction.FileIdentity, as trashName: String,
+        trash: @Sendable (URL) throws -> URL?
+    ) -> TrashMove {
+        let named = url.deletingLastPathComponent().appendingPathComponent(trashName)
+        guard renamex_np(url.path, named.path, UInt32(RENAME_EXCL)) == 0 else { return .refused }
+        guard InterruptedLinkImportExtraction.FileIdentity(of: named) == identity else {
+            _ = renamex_np(named.path, url.path, UInt32(RENAME_EXCL))
+            return .changed
+        }
+        do {
+            _ = try trash(named)
+            return .trashed
+        } catch {
+            _ = renamex_np(named.path, url.path, UInt32(RENAME_EXCL))
+            return .refused
+        }
     }
 
     /// Throws unless the two-channel `recording`'s channels are shown not to cancel each other when mixed into

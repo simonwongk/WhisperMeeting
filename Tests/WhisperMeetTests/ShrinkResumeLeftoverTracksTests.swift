@@ -35,6 +35,7 @@ private struct ResumeFixture {
         try await makeCopy(leftover, folder.appendingPathComponent("recording.m4a"), root)
         model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+        model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
         model.store.upsert(MeetingRecord(
             id: id, title: "Client call", duration: duration,
             recordingPath: "Recordings/\(id.uuidString)/recording.m4a",

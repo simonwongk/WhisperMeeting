@@ -69,6 +69,7 @@ private func opusFixture(wavSeconds: Double) async throws -> (root: URL, model: 
     try Data("{}".utf8).write(to: folder.appendingPathComponent(MediaSource.sidecarFilename))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     model.store.upsert(MeetingRecord(
         id: id, title: "Conference talk", duration: wavSeconds,
         recordingPath: "Recordings/\(id.uuidString)/recording.wav", status: .completed, transcriptText: "Hi.",
@@ -129,6 +130,7 @@ private func folderWith(_ copy: URL, as copyName: String, wavSeconds: Double, in
     try WAVWriter.wavData(from: tone, sampleRate: 48_000).write(to: folder.appendingPathComponent("recording.wav"))
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
     model.store.upsert(MeetingRecord(id: id, title: "Probe", duration: indexSeconds,
                                      recordingPath: "Recordings/\(id.uuidString)/\(indexed)", status: .completed, transcriptText: "Hi."))
     model.availableBytesForShrink = { _ in .max }
