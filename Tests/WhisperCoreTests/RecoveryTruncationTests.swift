@@ -30,7 +30,7 @@ private struct ReadFailure: Error {}
 @Test("A clean mix writes every frame and reports no truncation")
 func cleanMixWritesEverything() throws {
     var written: [Int16] = []
-    let result = try InterruptedRecordingRecovery.mixTracks(
+    let result = InterruptedRecordingRecovery.mixTracks(
         totalFrames: 300,
         chunkSize: 100,
         readSystem: { [Float](repeating: 0.5, count: $0) },
@@ -103,7 +103,7 @@ func firstChunkFailureWritesNothing() throws {
 @Test("A short final chunk is sized to what remains, never over-read")
 func finalChunkIsSizedToTheRemainder() throws {
     var requested: [Int] = []
-    let result = try InterruptedRecordingRecovery.mixTracks(
+    let result = InterruptedRecordingRecovery.mixTracks(
         totalFrames: 250,
         chunkSize: 100,
         readSystem: { count in requested.append(count); return [Float](repeating: 0, count: count) },

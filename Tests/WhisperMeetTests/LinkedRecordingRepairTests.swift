@@ -163,7 +163,8 @@ func theLinkedOriginalIsCheckedOffTheMainActor() async throws {
 
     await model.refreshLinkedRecordingOffer(id: id)
 
-    let ranOnMain = try #require(seen.lock.withLock { seen.onMain }, "the probe never ran")
+    let observed: Bool? = seen.lock.withLock { seen.onMain }
+    let ranOnMain = try #require(observed as Bool?, "the probe never ran")
     #expect(!ranOnMain, "the original was stat'ed on the main thread")
     #expect(model.linkedRecordingOffers[id]?.standardizedFileURL == original.resolvingSymlinksInPath().standardizedFileURL)
 }

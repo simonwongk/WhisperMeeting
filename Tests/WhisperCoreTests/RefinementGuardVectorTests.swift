@@ -141,7 +141,7 @@ private func guardVerdicts(for records: [RefinementRun]) -> [String: GuardVerdic
 
 private func decodeRuns(_ jsonLines: String) throws -> [RefinementRun] {
     let decoder = JSONDecoder()
-    return try jsonLines
+    return jsonLines
         .split(separator: "\n", omittingEmptySubsequences: true)
         .compactMap { line -> RefinementRun? in
             let trimmed = line.trimmingCharacters(in: .whitespaces)

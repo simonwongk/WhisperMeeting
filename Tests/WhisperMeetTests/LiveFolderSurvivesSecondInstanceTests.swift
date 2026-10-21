@@ -147,7 +147,7 @@ private final class TrackWriter: @unchecked Sendable {
         task = Task.detached {
             while !Task.isCancelled {
                 if let handle = try? FileHandle(forWritingTo: url) {
-                    try? handle.seekToEnd()
+                    _ = try? handle.seekToEnd()
                     try? handle.write(contentsOf: Data(repeating: 0, count: 4_096))
                     try? handle.close()
                 }

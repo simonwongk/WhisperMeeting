@@ -33,7 +33,7 @@ func heldLockReportsALiveWriter() throws {
     defer { try? FileManager.default.removeItem(at: directory) }
 
     let writer = try #require(RecordingCaptureLock.acquire(in: directory))
-    try withExtendedLifetime(writer) {
+    withExtendedLifetime(writer) {
         // Two `open()`s in one process genuinely contend on `flock`, which is what makes this
         // testable without a second process — the same fact the library lease's tests rely on.
         #expect(RecordingCaptureLock.probe(in: directory) == .heldByLiveWriter)
@@ -56,7 +56,7 @@ func releasedLockIsFree() throws {
         Issue.record("a released lock must probe as free")
         return
     }
-    try withExtendedLifetime(taken) {
+    withExtendedLifetime(taken) {
         #expect(RecordingCaptureLock.probe(in: directory) == .heldByLiveWriter)
     }
 }

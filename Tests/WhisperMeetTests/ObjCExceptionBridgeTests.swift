@@ -24,7 +24,7 @@ import Testing
 // machine, with no Xcode installed.
 
 @Test("A raised NSException becomes a Swift error and the process survives (F374)")
-func aRaisedExceptionBecomesAnError() {
+func aRaisedExceptionBecomesAnError() throws {
     var error: NSError?
     let completed = WMRunCatchingObjCExceptions({
         NSException(
@@ -37,10 +37,10 @@ func aRaisedExceptionBecomesAnError() {
     }, &error)
 
     #expect(!completed)
-    let raised = try? #require(error)
-    #expect(raised?.domain == WMObjCExceptionErrorDomain)
-    #expect(raised?.localizedDescription == "required condition is false: format.sampleRate == hwFormat.sampleRate")
-    #expect(raised?.userInfo[WMObjCExceptionNameKey] as? String == NSExceptionName.invalidArgumentException.rawValue)
+    let raised = try #require(error)
+    #expect(raised.domain == WMObjCExceptionErrorDomain)
+    #expect(raised.localizedDescription == "required condition is false: format.sampleRate == hwFormat.sampleRate")
+    #expect(raised.userInfo[WMObjCExceptionNameKey] as? String == NSExceptionName.invalidArgumentException.rawValue)
 }
 
 @Test("A block that does not raise reports success and leaves the error alone (F374)")

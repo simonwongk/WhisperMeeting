@@ -621,7 +621,7 @@ func everyChunkingProducesTheSameAudio() throws {
     for chunk in [1, 7, 100, 8_191, 8_192, 8_193] {
         var systemCursor = 0, microphoneCursor = 0
         var out: [Int16] = []
-        _ = try InterruptedRecordingRecovery.mixTracks(
+        _ = InterruptedRecordingRecovery.mixTracks(
             totalFrames: Int64(frames),
             chunkSize: Int64(chunk),
             readSystem: { count in

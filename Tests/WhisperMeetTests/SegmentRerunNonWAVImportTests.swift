@@ -125,7 +125,7 @@ func segmentClipsAreCutOffTheMainActor() async throws {
     // are not main-actor isolated (an `await` would hop to the main actor and hide it), and they decode
     // on the task's own thread.
     let clips = try await Task.detached { () -> [URL] in
-        #expect(!Thread.isMainThread)
+        #expect(pthread_main_np() == 0, "on the main thread")
         let decoded = try AppModel.decodedSegmentClip(from: recording, startSeconds: 1, endSeconds: 2)
         #expect(throws: SegmentReRunError.unsupportedRecordingFormat) {
             try AppModel.makeSegmentClip(from: recording, startSeconds: 1, endSeconds: 2)

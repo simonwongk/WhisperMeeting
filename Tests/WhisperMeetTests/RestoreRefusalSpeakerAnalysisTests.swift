@@ -12,12 +12,12 @@ import Testing
 private final class HeldAnalysis: @unchecked Sendable {
     private let lock = NSLock()
     private var _started = false
-    private let release = DispatchSemaphore(value: 0)
+    private var _released = false
     var started: Bool { lock.withLock { _started } }
-    func letGo() { release.signal() }
+    func letGo() { lock.withLock { _released = true } }
     func run() async throws {
         lock.withLock { _started = true }
-        while release.wait(timeout: .now()) == .timedOut {
+        while !lock.withLock({ _released }) {
             try await Task.sleep(nanoseconds: 2_000_000)
         }
     }

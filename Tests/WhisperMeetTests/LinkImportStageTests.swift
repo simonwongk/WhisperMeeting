@@ -36,14 +36,16 @@ private func makeModel(root: URL, log: StageLog, language: String?) -> AppModel 
         MediaProbe(title: "Quarterly review", durationSeconds: 600, uploader: "Acme", language: language)
     }
     model.downloadMedia = { [weak model] _, directory, _ in
-        log.stageDuringDownload = await MainActor.run { model?.linkImportStage }
+        let current = model
+        log.stageDuringDownload = await MainActor.run { current?.linkImportStage }
         let file = directory.appendingPathComponent("recording.wav")
         try WAVWriter.wavData(from: [Float](repeating: 0.1, count: 16_000), sampleRate: 16_000).write(to: file)
         return file
     }
     model.downloadCaptions = { [weak model] _, _, _ in
         log.captionsRequested = true
-        let seen = await MainActor.run { (model?.linkImportStage, model?.mediaDownloadProgress) }
+        let current = model
+        let seen = await MainActor.run { (current?.linkImportStage, current?.mediaDownloadProgress) }
         log.stageDuringCaptions = seen.0
         log.progressDuringCaptions = seen.1
         return []
@@ -109,7 +111,8 @@ func aStoppedLinkImportClearsItsStage() async throws {
     // Stop lands during the caption fetch, as in F453's test: the caption runner swallows it.
     model.downloadCaptions = { [weak model] _, _, _ in
         log.captionsRequested = true
-        log.stageDuringCaptions = await MainActor.run { model?.linkImportStage }
+        let current = model
+        log.stageDuringCaptions = await MainActor.run { current?.linkImportStage }
         withUnsafeCurrentTask { $0?.cancel() }
         return []
     }

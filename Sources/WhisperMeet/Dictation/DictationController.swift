@@ -868,7 +868,7 @@ final class DictationController: ObservableObject {
     }
 
     /// What `status` says while the trigger's tap cannot be created.
-    static let tapFailureMessage = "Enable Accessibility (and, if needed, Input Monitoring) for WhisperMeet in System Settings → Privacy & Security."
+    nonisolated static let tapFailureMessage = "Enable Accessibility (and, if needed, Input Monitoring) for WhisperMeet in System Settings → Privacy & Security."
 
     /// What `status` settles to when no dictation is in flight (F633): idle, or the tap failure while
     /// the trigger is dead. Every path that ends a dictation writes this rather than `.idle`: the
@@ -2010,7 +2010,7 @@ final class DictationController: ObservableObject {
     /// can show a compositing spike of a few tens of percent on an otherwise idle GPU (47 was seen
     /// while a window streamed text), while a process that is actually computing reads near 100.
     /// I chose the figure; it was not the user's decision.
-    static let refineSkipGPUBusyPercent = 75
+    nonisolated static let refineSkipGPUBusyPercent = 75
 
     /// Injectable because `UNUserNotificationCenter.current()` requires a real app bundle and
     /// raises an NSException in headless test processes — the F200 wiring tests are the first to

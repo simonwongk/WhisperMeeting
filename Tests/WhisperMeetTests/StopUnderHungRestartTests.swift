@@ -133,7 +133,7 @@ func aHungRestartIsCancelledByStop() async throws {
     try #require(model.recorder.pendingRestartPaddingForTesting > 0, "a second of silence is owed")
     let generationBefore = model.recorder.sessionGenerationForTesting
 
-    await model.stopRecording(title: "hung restart")
+    _ = await model.stopRecording(title: "hung restart")
 
     // **The assertion this ticket turns on.** The generation had already moved by the time the
     // finalize began, so the restart's next `ensureSession` throws and it cannot write into
@@ -204,7 +204,7 @@ func aQuietStopAbandonsNothing() async throws {
     #expect(!model.recorder.abandonInFlightRestart(), "nothing was in flight")
     #expect(model.recorder.sessionGenerationForTesting == before,
             "abandoning nothing must not invalidate the live session")
-    await model.stopRecording(title: "quiet")
+    _ = await model.stopRecording(title: "quiet")
     #expect(model.recordingState == .idle)
 }
 

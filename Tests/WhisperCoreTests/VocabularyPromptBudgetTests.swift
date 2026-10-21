@@ -260,17 +260,17 @@ func oneEnormousTermIsDroppedWhole() {
 // help them.
 
 @Test("Once more terms are starred than fit, the notice stops advising a star (F333)")
-func coverageNoticeStopsAdvisingStarsWhenEveryStarIsFilled() {
+func coverageNoticeStopsAdvisingStarsWhenEveryStarIsFilled() throws {
     let many = (1...100).map { "term\($0)" }
     let fitting = VocabularyPrompt.coverage(of: many).fitting
     #expect(fitting < many.count, "the premise: this list is truncated")
 
-    let fewStarred = try? #require(VocabularyPrompt.coverageNotice(for: many, starredCount: 1))
-    #expect(fewStarred?.contains("Star the terms that matter most") == true)
+    let fewStarred = try #require(VocabularyPrompt.coverageNotice(for: many, starredCount: 1))
+    #expect(fewStarred.contains("Star the terms that matter most"))
 
-    let allStarred = try? #require(VocabularyPrompt.coverageNotice(for: many, starredCount: fitting))
-    #expect(allStarred?.contains("Star the terms that matter most") == false)
-    #expect(allStarred?.contains("unstar the ones that matter least") == true)
+    let allStarred = try #require(VocabularyPrompt.coverageNotice(for: many, starredCount: fitting))
+    #expect(!allStarred.contains("Star the terms that matter most"))
+    #expect(allStarred.contains("unstar the ones that matter least"))
 
     // A list that fits says nothing either way.
     #expect(VocabularyPrompt.coverageNotice(for: ["Acme"], starredCount: 1) == nil)

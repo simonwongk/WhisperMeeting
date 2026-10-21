@@ -106,7 +106,11 @@ private func quitDuringImport(extracting: Bool) async throws {
     try #require(await eventually { FileManager.default.fileExists(atPath: markers.appendingPathComponent("started").path) },
                  "the stand-in downloader never started")
     let leader = try #require(readPID(markers.appendingPathComponent("leader.pid")))
-    let child = extracting ? try #require(readPID(markers.appendingPathComponent("child.pid"))) : nil
+    var child: pid_t?
+    if extracting {
+        let found: pid_t = try #require(readPID(markers.appendingPathComponent("child.pid")))
+        child = found
+    }
     try #require(isAlive(leader))
 
     // What AppEntry wires `AppLifecycle.onTerminate` to.

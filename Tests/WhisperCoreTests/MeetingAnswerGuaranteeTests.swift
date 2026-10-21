@@ -45,7 +45,7 @@ func answerCitationIsPerAnswerNotPerSentence() throws {
 }
 
 @Test("A degraded or truncated helper response is not an answer (F332)")
-func degradedHelperOutputIsNotShown() {
+func degradedHelperOutputIsNotShown() throws {
     #expect(LocalSummarizer.answerRefusal(warning: nil, finishReason: "stop") == nil)
     #expect(LocalSummarizer.answerRefusal(warning: nil, finishReason: nil) == nil)
     #expect(LocalSummarizer.answerRefusal(warning: nil, finishReason: "length") == .answerTruncated)
@@ -56,7 +56,7 @@ func degradedHelperOutputIsNotShown() {
 
     // The copy must not name Claude: nothing here leaves this Mac, and saying it did would be both
     // wrong and alarming in a local-only product.
-    let truncated = try? #require(SummarizerError.answerTruncated.errorDescription)
-    #expect(truncated?.contains("on-device") == true)
-    #expect(truncated?.contains("Claude") == false)
+    let truncated = try #require(SummarizerError.answerTruncated.errorDescription)
+    #expect(truncated.contains("on-device"))
+    #expect(!truncated.contains("Claude"))
 }
