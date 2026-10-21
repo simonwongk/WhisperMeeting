@@ -229,6 +229,25 @@ func shrinkKeepsADownloadWhoseDecodeIsShort() async throws {
     }
 }
 
+// F1058 — the check refused a decode shorter than the measured download and trusted a longer one: a download measured
+// at six seconds that decodes to twelve is not the file that was measured, or the decode is not of it, and its
+// channels then say nothing about the six seconds the plan weighed. Refused both ways now.
+@Test("A download whose decode comes out longer than its measured length is kept too (F1058)")
+@MainActor
+func shrinkKeepsADownloadWhoseDecodeIsLong() async throws {
+    let long: [[Float]] = [monoOf(ordinary) + monoOf(ordinary)]
+    for resume in [false, true] {
+        let f = try UnreadableDownloadFixture(download: ordinary, decoded: long, resume: resume)
+        defer { try? FileManager.default.removeItem(at: f.root) }
+
+        await f.shrink()
+
+        let alert = f.model.alertMessage ?? "nil"
+        #expect((try? Data(contentsOf: f.download)) == webm, "resume \(resume): \(alert)")
+        #expect(alert.contains("could not be checked"), "resume \(resume): \(alert)")
+    }
+}
+
 @Test("A resume checks the free space a download's decode needs before decoding it (F1004 round 2)")
 @MainActor
 func shrinkResumeChecksFreeSpaceBeforeDecoding() async throws {

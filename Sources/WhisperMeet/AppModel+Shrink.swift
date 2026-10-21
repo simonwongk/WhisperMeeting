@@ -692,9 +692,10 @@ extension AppModel {
     /// Decodes `url` — a file Shrink would remove whose tracks AVFoundation cannot read, a link import's WebM/Opus
     /// download — with `decodeUnread` into `scratch`, then checks its channels against `copy` as
     /// `checkChannelsInCopy` checks a two-channel file (F1004): one channel has nothing to cancel against; two are
-    /// measured; any other count, a decode or read that fails, or a decode shorter than the file's measured length
-    /// `seconds` (less F911's tolerance; none measured is not shown either) — ffmpeg can exit 0 on a decode that stopped
-    /// early, and the rest would go unchecked (review 2 of Wave 8 lane A, finding 4b) — throws `leftoverUnchecked` with
+    /// measured; any other count, a decode or read that fails, or a decode whose length differs from the file's measured
+    /// length `seconds` by more than F911's tolerance (none measured is not shown either) — ffmpeg can exit 0 on a decode
+    /// that stopped early, and the rest would go unchecked (review 2 of Wave 8 lane A, finding 4b), and a longer decode is
+    /// not of the file that was measured (F1058) — throws `leftoverUnchecked` with
     /// the file's name, and a cancellation `leftoverChannelNotInCopy`. `scratch` is removed whatever happens.
     nonisolated static func checkUnreadChannelsInCopy(
         _ url: URL, scratch: URL, seconds: TimeInterval?, copy: URL,
@@ -713,8 +714,10 @@ extension AppModel {
         } catch {
             throw ShrinkFailure.leftoverUnchecked(name: name)
         }
+        // Either way (F1058): a decode longer than the measured download is not of the file that was measured, or the
+        // file is not what was measured, and its channels say nothing about the seconds the plan weighed.
         guard let seconds, seconds.isFinite, decoded.duration.isFinite,
-              decoded.duration >= seconds - InterruptedLinkImportExtraction.lengthTolerance else {
+              abs(decoded.duration - seconds) <= InterruptedLinkImportExtraction.lengthTolerance else {
             throw ShrinkFailure.leftoverUnchecked(name: name)
         }
         switch channels {
