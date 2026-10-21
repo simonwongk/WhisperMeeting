@@ -44,8 +44,9 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// "Priya Raman said" proposes nothing for "Priya Raman"), a row `apply` would leave unchanged
 /// is not proposed at all (F820's review), a term of three or more words is compared with
 /// windows up to one more than its own length and is present only across no more words than its
-/// own (F940, F968), a window that is itself another term is never proposed (F1003), a proposal
-/// names the window's text as it stands and
+/// own (F940, F968), a window that is itself another term is never proposed (F1003), nor one that
+/// writes other digits than the term, one of function words alone, or one scoring exactly half
+/// (F1039), a proposal names the window's text as it stands and
 /// is applied to that window (F914, `characterOffset`), a dash ends a word as a space does
 /// while a possessive 's is outside the window (F915), and windows of more than three words are
 /// compared only where the line holds at least half the term's words (F972). A term containing
@@ -91,6 +92,10 @@ public struct GlossaryCorrection: Sendable, Equatable {
 /// kept); 4.71 s → 3.45 s with 50 phrases of 10–20 words on 10–21-word lines; 27.58 s → 13.62 s on
 /// 40–80-word lines (F972's closure).
 public enum GlossaryCorrector {
+    /// The score a Latin window must EXCEED (F1039; F65 accepted it equal). Half of a short term's
+    /// letters is two or fewer, which ordinary words share by chance: at exactly 0.5, "more" and "ask"
+    /// were proposed as Mark, "join" as Jira, "agreed" as Redis, and "in", "is" and "it" as a
+    /// two-letter term, in correctly transcribed lines.
     static let similarityThreshold = 0.5
     /// The score a window must exceed in a line where the term already stands (F994, round 2).
     static let presentLineThreshold = 0.75
@@ -98,6 +103,29 @@ public enum GlossaryCorrector {
     /// "Kestrels", "deployed", "releasing". A doubled or extra letter ("Kestrell", "Seann") is not one.
     static let inflections: Set<String> = ["s", "es", "ed", "d", "ing", "er", "ers", "ment", "ments"]
     static let maxWindow = 3
+    /// English function words (F1039): a window made only of these is never taken for a mishearing,
+    /// unless it spells the term split across words ("and or" for Andor, F968). "and" scores 0.67
+    /// against Ann and Dan, so every line with it proposed both, ticked; one Apply then renamed every
+    /// "and" in the meeting. Closed-class words only, normalized as a window's words are ("don't" is
+    /// "dont") — an open-class word misheard for a term is what the pass is for ("radius" for Redis).
+    static let functionWords: Set<String> = [
+        "a", "an", "the", "this", "that", "these", "those", "some", "any", "all", "each", "every", "both",
+        "either", "neither", "no", "none", "more", "most", "much", "many", "few", "less", "such", "other",
+        "another", "own", "same",
+        "i", "me", "my", "mine", "you", "your", "yours", "he", "him", "his", "she", "her", "hers", "it", "its",
+        "we", "us", "our", "ours", "they", "them", "their", "theirs", "who", "whom", "whose", "what", "which", "one",
+        "of", "to", "in", "on", "at", "by", "for", "with", "from", "into", "onto", "over", "under", "about",
+        "after", "before", "between", "through", "during", "as", "than", "up", "down", "out", "off", "upon",
+        "via", "per",
+        "and", "or", "but", "nor", "so", "yet", "if", "then", "because", "while", "though", "although",
+        "unless", "until", "since", "whether",
+        "is", "am", "are", "was", "were", "be", "been", "being", "do", "does", "did", "have", "has", "had",
+        "can", "could", "will", "would", "shall", "should", "may", "might", "must",
+        "not", "too", "also", "just", "very", "here", "there", "when", "where", "why", "how", "now", "yes",
+        "ok", "okay", "oh", "um", "uh",
+        "im", "ive", "youre", "youve", "theyre", "weve", "dont", "doesnt", "didnt", "isnt", "arent", "wasnt",
+        "cant", "wont", "thats", "theres", "lets",
+    ]
 
     public static func corrections(
         vocabulary: [String],
@@ -209,17 +237,21 @@ public enum GlossaryCorrector {
     }
 
     /// F65's search, which picks the same window for text without Chinese: the first 1–3-token
-    /// window (1–(n+1) for a term of n ≥ 3 words, F940 and F968, below) with the highest ratio at
-    /// or above the threshold, among the windows that do not run across the term where it already
+    /// window (1–(n+1) for a term of n ≥ 3 words, F940 and F968, below) with the highest ratio
+    /// above the threshold (F65 took one equal to it; F1039), among the windows that do not run across the term where it already
     /// stands as a window — one token or, since F820, several: F65 asked only whether it was one
     /// token, so a correct "Priya Raman said" scored 10/14 against "Priya Raman" and was proposed
     /// as it, deleting "said". Until F994 a term standing anywhere in the segment stopped the search
     /// there, so "Priya Raman and Pria Ramen spoke" proposed nothing (the Wave 5 review's T11); now
     /// the rest of the line is searched — except, beside the right spelling, a word that is it with an
     /// English ending ("Kestrels", "deployed"), which is the term inflected rather than misheard, and
-    /// at a stricter bar there: the window must write the term's digits and score above 0.75 (round 2:
+    /// at a stricter bar there: the window must score above 0.75 (round 2:
     /// at 0.5 the review of lane E found Mike → Mark, Q4 → Q3 and "radius" → Redis in lines that named
     /// the term correctly, 14 rows on a 25-line meeting with no mishearing, now none; F994's closure).
+    /// Everywhere, a window must write the term's digits, and is no candidate when every word in it
+    /// is a function word, unless it spells the term split (F1039: in the same meeting's lines without
+    /// the term, 31 rows — and → Ann, can → Dan, more → Mark, agreed → Redis — became two, at 0.58 and
+    /// 0.67: "cluster needs" for Kubernetes and "radius" for Redis; and Q4 is not proposed as Q3).
     /// The phrase returned is the window's text as it stands in
     /// the segment (F914) without the punctuation stuck to its outer words, less what the term's
     /// own spelling begins or ends with (F819), and the row is applied to that window — see
@@ -311,13 +343,13 @@ public enum GlossaryCorrector {
         // the term would be present (above), and the LCS ratio gives it 1.
         func score(_ candidates: ArraySlice<LatinWindows.Window>) {
             for window in candidates where !window.containsCJK && !window.ids.isEmpty {
-                if standsHere {
-                    if present.contains(where: { $0.overlaps(window.tokens) }) { continue }
-                    // Beside the right spelling, a window that writes other digits is another
-                    // thing the speaker named — Q4 beside Q3, iOS 18 beside iOS 17, GPT beside
-                    // GPT-4 (the review of lane E) — never a mishearing of it.
-                    if window.normalized.filter(\.isNumber) != termDigits { continue }
-                }
+                if standsHere, present.contains(where: { $0.overlaps(window.tokens) }) { continue }
+                // A window that writes other digits is another thing the speaker named — Q4 for Q3,
+                // iOS 18 for iOS 17, GPT for GPT-4 — never a mishearing of it: beside the right
+                // spelling (F994, round 2) and, since F1039, anywhere. A numeral is never changed.
+                if window.normalized.filter(\.isNumber) != termDigits { continue }
+                // Nor is a function word a mishearing (F1039), unless it is the term split ("and or").
+                if window.onlyFunctionWords, window.ids != term.ids { continue }
                 // Spelled as another listed term — even one this term holds ("Raman" for "Priya Raman")
                 // — or across where one stands.
                 let onAnotherTerm = (window.ids != term.ids && otherTerms[window.ids] != nil)
@@ -326,12 +358,12 @@ public enum GlossaryCorrector {
                 // The LCS is at most the shorter length, so this ratio bounds the score: skip a window
                 // that cannot reach the threshold, or cannot beat the best already found (F536).
                 let bound = Double(min(window.ids.count, term.ids.count)) / Double(longer)
-                guard bound >= similarityThreshold, bound > (best?.similarity ?? 0) else { continue }
+                guard bound > similarityThreshold, bound > (best?.similarity ?? 0) else { continue }
                 let score = Double(scratch.lcs(window.ids, term.ids)) / Double(longer)
                 // Beside the right spelling the bar is higher (F994): at 0.5, Mike was proposed as
                 // Mark, Jan as Jon and "radius" as Redis in the line that names them correctly; a
                 // real second mishearing scores higher (Pria Ramen 0.8, Kestrol 0.86, Grafanna 0.88).
-                let passes = standsHere ? score > presentLineThreshold : score >= similarityThreshold
+                let passes = standsHere ? score > presentLineThreshold : score > similarityThreshold
                 if passes, score > (best?.similarity ?? 0) {
                     best = (score, window, onAnotherTerm)
                 }
@@ -564,8 +596,10 @@ public enum GlossaryCorrector {
             let containsCJK: Bool
             /// Its tokens in the segment (F1003).
             let tokens: Range<Int>
-            /// Its normalized text, for the digit check beside the term (F994).
+            /// Its normalized text, for the digit check (F994, F1039).
             let normalized: String
+            /// Whether every word in it is a function word (F1039).
+            let onlyFunctionWords: Bool
         }
 
         /// Every built window's normalized text, with the fewest tokens it is spelled across — a
@@ -614,7 +648,8 @@ public enum GlossaryCorrector {
                             range: range,
                             containsCJK: tokens[slice].contains(where: \.isCJK),
                             tokens: slice,
-                            normalized: joined
+                            normalized: joined,
+                            onlyFunctionWords: normalized[slice].allSatisfy(GlossaryCorrector.functionWords.contains)
                         ))
                     }
                 }

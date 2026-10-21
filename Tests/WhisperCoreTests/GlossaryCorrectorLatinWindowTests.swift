@@ -78,13 +78,14 @@ func termsOwnPunctuationIsNotDoubled() {
         #expect(GlossaryCorrector.apply(corrections, to: segments)[0].text == applied, "\(term) in \(text)")
     }
     // F819's first round trimmed every window, and apply then wrote "..NET", "Inc..", "!!", "@@".
-    check(".NET", "the .NOT runtime is old", from: ".NOT", applied: "the .NET runtime is old")
+    // (".NUT" where this said ".NOT": a function word is never taken for a mishearing since F1039.)
+    check(".NET", "the .NUT runtime is old", from: ".NUT", applied: "the .NET runtime is old")
     check("Acme Inc.", "we signed with Acme Ink. yesterday", from: "Acme Ink.", applied: "we signed with Acme Inc. yesterday")
     check("Yahoo!", "Yahooo! said hi", from: "Yahooo!", applied: "Yahoo! said hi")
     check("@kestrel", "ping @kestrol now", from: "@kestrol", applied: "ping @kestrel now")
     // Only the term's own share goes with it: the comma and the brackets stay where they were.
     check("Acme Inc.", "Acme Ink., the vendor, signed", from: "Acme Ink.", applied: "Acme Inc., the vendor, signed")
-    check(".NET", "the (.NOT) runtime", from: ".NOT", applied: "the (.NET) runtime")
+    check(".NET", "the (.NUT) runtime", from: ".NUT", applied: "the (.NET) runtime")
     // A full stop that is both the term's and the sentence's is written once.
     check("Acme Inc.", "we signed with Acme Ink.", from: "Acme Ink.", applied: "we signed with Acme Inc.")
 }
@@ -103,8 +104,8 @@ func onlyTheTermsOwnMarksGoWithTheWord() {
     check("Acme Inc.", "Acme Ink, the vendor, signed", from: "Acme Ink", applied: "Acme Inc., the vendor, signed")
     check("Acme Inc.", "we signed with Acme Ink?", from: "Acme Ink", applied: "we signed with Acme Inc.?")
     check("Acme Inc.", "(Acme Ink) signed", from: "Acme Ink", applied: "(Acme Inc.) signed")
-    check(".NET", "the (NOT) runtime is old", from: "NOT", applied: "the (.NET) runtime is old")
-    check(".NET", "the \"NOT\" runtime", from: "NOT", applied: "the \".NET\" runtime")
+    check(".NET", "the (NUT) runtime is old", from: "NUT", applied: "the (.NET) runtime is old")   // not "NOT" (F1039)
+    check(".NET", "the \"NUT\" runtime", from: "NUT", applied: "the \".NET\" runtime")
     check("@kestrel", "ping (kestrol) now", from: "kestrol", applied: "ping (@kestrel) now")
     check("Yahoo!", "Yahooo, said hi", from: "Yahooo", applied: "Yahoo!, said hi")
     check("(beta)", "the betta, release", from: "betta", applied: "the (beta), release")
@@ -399,4 +400,71 @@ func termStandsAsThePassReadsIt() {
         GlossaryCorrection(segmentIndex: 2, from: "Carla", to: "Carl"),                    // no line: nothing to read
     ]
     #expect(GlossaryReviewDefaults.besideTheirTerm(rows) == [0])
+}
+
+// F1039 — the review of Wave 8 lane E (finding 9) ran Correct Toward Vocabulary over 25 correctly
+// transcribed meeting lines: every row it made was false, and Latin rows arrive ticked. The digit
+// rule F994 added held only beside the right spelling, so a line without the term still had Q4
+// proposed as Q3; "and" was proposed as Ann and as Dan in every line that had it; and a word sharing
+// exactly half its letters with a term was taken for it (more → Mark, join → Jira, agreed → Redis).
+
+@Test("A window that writes other digits than the term is never proposed, where the term is absent too (F1039)")
+func otherDigitsAreNeverAMishearing() {
+    #expect(rows(["Q3"], "the Q4 plans are late").isEmpty)
+    #expect(rows(["iOS 17"], "iOS 16 ships today").isEmpty)
+    #expect(rows(["iOS 17"], "the iOS build passed").isEmpty)      // a number the speaker never said
+    #expect(rows(["GPT-4"], "GPT-3 is old now").isEmpty)
+    #expect(rows(["GPT-4"], "the GPT model").isEmpty)
+    #expect(rows(["v2"], "v1 replaces it today").isEmpty)
+    #expect(rows(["Kestrel"], "the Kestrel2 build").isEmpty)
+    // The same digits, split or glued differently, are still a mishearing of the term.
+    #expect(rows(["Q3"], "the Q 3 deck") == ["Q 3 → Q3"])
+    #expect(rows(["GPT4"], "the GPT-4 model") == ["GPT-4 → GPT4"])
+}
+
+@Test("A common short word is never taken for a mishearing, and a window shares more than half its letters with the term (F1039)")
+func commonWordsAndHalfMatchesAreNotMishearings() {
+    let vocabulary = ["Mark", "Ann", "Dan", "Priya Raman", "Kestrel", "Grafana", "Redis", "Q3", "iOS 17", "Kubernetes", "Jira"]
+    // The review's meeting: transcribed correctly, so every row is false.
+    let lines = [
+        "Mark and Mike will sync on the Kestrel rollout.", "Ann and Bob reviewed the Grafana dashboards yesterday.",
+        "Dan said the Redis cluster needs more memory.", "Priya Raman asked whether Priya could join the call.",
+        "Our Q3 numbers look good and Q4 is planned.", "We will support iOS 17 and iOS 18 this fall.",
+        "Kubernetes upgrades go out on Monday.", "Mark wants the Jira tickets cleaned up.",
+        "Ann will send the notes to Dan and Mark.", "The Kestrel team met with Grafana support.",
+        "Redis and Kafka both had incidents last week.", "Dan and Ann agreed on the plan.",
+        "Jira is slow again, Mark said.", "Let us move the Kestrel demo to Thursday.",
+        "Kubernetes and Docker images are rebuilt nightly.", "Mark, can you share the Q3 deck?",
+        "Ann asked about the radius of the search.", "Priya Raman and Mark own the migration.",
+        "We need a Grafana panel for Redis latency.", "The iOS 17 build passed, the iOS 16 one failed.",
+        "Dan will ask Jim about Jira access.", "Kestrel and Kestrel Gateway both ship today.",
+        "Mark marked the ticket as done.", "Ann and Anne are different people.", "Dan and Danny will pair on it.",
+    ]
+    let made = GlossaryCorrector.corrections(vocabulary: vocabulary, segments: lines.map(seg))
+        .map { "[\($0.segmentIndex)] \($0.from) → \($0.to)" }
+    // 31 rows before: and → Ann and Dan in seven lines, can → Ann and Dan, more/are/ask/pair → Mark,
+    // join/pair → Jira, agreed/marked/"and iOS" → Redis, done → Dan, numbers/"the notes" → Kubernetes.
+    // The two left share more than half their letters in order with the term, and spelling alone
+    // cannot tell them from a mishearing ("radius" is how Redis is often misheard).
+    #expect(made == ["[2] cluster needs → Kubernetes", "[16] radius → Redis"])
+    // A two-letter term had a row on every "in", "is" and "it" (one letter of two).
+    #expect(rows(["Li"], "it is in the plan").isEmpty)
+}
+
+@Test("Real mishearings of short and long terms are still proposed (F1039)")
+func realMishearingsSurviveTheCommonWordRules() {
+    let cases: [(term: String, line: String, from: String)] = [
+        ("Mark", "ask Marc about it", "Marc"), ("Mark", "Mork will join", "Mork"), ("Ann", "Anne said yes", "Anne"),
+        ("Dan", "Dann said yes", "Dann"), ("Jira", "open the Gira board", "Gira"), ("Jira", "the Jeera board", "Jeera"),
+        ("Redis", "the Reddis cache", "Reddis"), ("Redis", "the red is cache", "red is"), ("Kafka", "the Cafca queue", "Cafca"),
+        ("Grafana", "the Graphana panel", "Graphana"), ("Kubernetes", "we deployed cooper netties", "cooper netties"),
+        ("Kestrel", "the Castrel build", "Castrel"), ("Priya Raman", "ask Pria Ramen now", "Pria Ramen"),
+        ("Sean", "ask Shawn now", "Shawn"), ("Jon", "ask John now", "John"), ("Tao", "ask Tau now", "Tau"),
+        ("AWS", "on ABS today", "ABS"), ("Siobhan", "ask Shivon now", "Shivon"), ("Ali", "ask Allie now", "Allie"),
+        // A term split into function words is still the term, whole (F968).
+        ("Andor", "we shipped and or today", "and or"),
+    ]
+    for (term, line, from) in cases {
+        #expect(rows([term], line) == ["\(from) → \(term)"], "\(term) in \(line)")
+    }
 }

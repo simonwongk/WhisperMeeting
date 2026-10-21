@@ -40,6 +40,9 @@ import Testing
 // - F1003: a window equal to another term of the vocabulary, or overlapping where one stands as any
 //   run of words (a split one too), unless this term's spelling holds that one's, is no row — and
 //   when it is the best window, no row at all, so the next one never reaches over a neighbour.
+// - F1039: anywhere, not only beside the right spelling, a window must write the term's digits; a
+//   window of function words alone is never a candidate unless it spells the term; and a score must
+//   exceed 0.5 rather than equal it. Three switches, one per rule.
 //
 // Not an amendment: the oracle remembers its scores across runs (F1011, `OracleScores`), which
 // changes no answer — only how often the same pair is scored.
@@ -58,6 +61,9 @@ private struct Amendments {
     var f972Fourth = true
     var f1003 = true
     var f994 = true
+    var f1039Digits = true
+    var f1039FunctionWords = true
+    var f1039Strict = true
 }
 
 /// One of a segment's words, with where it stands (F914).
@@ -169,11 +175,15 @@ private enum PreF536GlossaryCorrector {
                         if windowNormalized == termNormalized, !splitWord { presentAsAWindow = true } // amended
                         guard !windowNormalized.isEmpty, windowNormalized != termNormalized || splitWord else { continue } // amended
                         if blocked.contains(where: { $0.overlaps(start..<(start + size)) }) { continue } // amended
-                        if standsHere, windowNormalized.filter(\.isNumber) != termNormalized.filter(\.isNumber) { continue } // amended (F994)
+                        if standsHere || amended.f1039Digits, windowNormalized.filter(\.isNumber) != termNormalized.filter(\.isNumber) { continue } // amended (F994, F1039)
+                        // The list is production's: the oracle checks where the rule applies, not which words are on it. // amended (F1039)
+                        if amended.f1039FunctionWords, windowNormalized != termNormalized, // amended (F1039)
+                           normalizedWords[start..<(start + size)].allSatisfy(GlossaryCorrector.functionWords.contains) { continue } // amended
                         let onAnotherTerm = amended.f1003 && ((windowNormalized != termNormalized && termSpellings.contains(windowNormalized)) // amended
                             || others.contains { $0.span.count <= largest && $0.span.overlaps(start..<(start + size)) }) // amended
                         let score = scores.similarity(windowNormalized, termNormalized) // F1011: remembered
-                        let passes = standsHere ? score > 0.75 : score >= similarityThreshold // amended (F994)
+                        let passes = standsHere ? score > 0.75 // amended (F994)
+                            : amended.f1039Strict ? score > similarityThreshold : score >= similarityThreshold // amended (F1039)
                         if passes, score > (best?.similarity ?? 0) {
                             best = (score, start..<(start + size), onAnotherTerm)
                         }
@@ -414,14 +424,15 @@ func englishSuggestionsMatchThePreF536Oracle() {
     // them, one spelled right and one across a tab (F940); then a window whose text first occurs
     // earlier as a whole word of a worse window, trimmed and untrimmed (F914); and a three-word term
     // misheard across four words with none of its own (F972's fourth); and two terms a letter apart,
-    // one spoken (F1003); a mishearing and an inflection beside the right spelling (F994) — added
+    // one spoken (F1003); a mishearing and an inflection beside the right spelling (F994); and a
+    // three-letter name every "and" scores 0.67 against, and other digits than a term's (F1039) — added
     // after generating, so
     // the seeded corpus above is the one F536 pinned.
     let vocabulary = generated + ["Acme Inc.", ".NET", "(beta)", "Bank of New York", "Bank of New York Mellon", "Priya Raman Iyer",
-                                   "Harrier", "Harrior"]
+                                   "Harrier", "Harrior", "Ann"]
     let fixedLines: [String] = [
-        "we signed with Acme Ink, the vendor.", "Acme Ink., the vendor, signed.", "the (NOT) runtime is old.",
-        "the .NOT runtime is old.", "the betta, release ships.",
+        "we signed with Acme Ink, the vendor.", "Acme Ink., the vendor, signed.", "the (NUT) runtime is old.",
+        "the .NUT runtime is old.", "the betta, release ships.",
         "the Bank of New Yolk said yes.", "the Bonk of New York said yes.", "we bank with Bank of New York Melon.",
         "the Bank of New York said yes.", "the Bank\tof New York review.",
         "the Kestrol/Falcon build and the Kestrol release.", "the Kestrol-ish build and the Kestrol.",
@@ -429,6 +440,7 @@ func englishSuggestionsMatchThePreF536Oracle() {
         "the Bank of New Yor k said yes.", "we deployed Kuber netes today.", "ask Priya Ram an now.",
         "the Bonk off Noo Yolk said yes.", "ask Pria Ram an Eyer now.", "the Harrior build is late.",
         "Kestrel shipped and Kestrol followed.", "the Kestrel build and the Kestrels nest.",
+        "we tested GPT3 and GPT5 today.",
     ]
     let segments = syntheticTranscript(generated, &random) + fixedLines.enumerated().map {
         TranscriptSegment(speaker: nil, start: Double(60 + $0.offset), end: Double(61 + $0.offset), text: $0.element)
@@ -507,6 +519,12 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withoutF940.f940 = false
     #expect(oracle(withoutF940) != oracle(withF940Only),
             "no term in the corpus has four or more words and a mishearing, so F940's amendment is untested here")
+    for (name, off) in [("digits", \Amendments.f1039Digits), ("function words", \Amendments.f1039FunctionWords),
+                        ("strict score", \Amendments.f1039Strict)] {
+        var without = Amendments()
+        without[keyPath: off] = false
+        #expect(oracle(without) != expected, "nothing in the corpus answers to F1039's \(name) rule, so it is untested here")
+    }
     let identical = actual == expected
     #expect(identical, "first difference: \(zip(actual, expected).first { $0 != $1 }.map { "\($0) vs \($1)" } ?? "counts \(actual.count) vs \(expected.count)")")
 }
