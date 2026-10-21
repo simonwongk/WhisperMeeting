@@ -869,14 +869,25 @@ extension AppModel {
         }
     }
 
+    /// Why `action` cannot start on this meeting now, or nil (F1059): Shrink is replacing its recording and
+    /// moving the originals to the Trash, so a second opinion, a segment re-run or speaker analysis would
+    /// read a file being replaced, and a source-tracks rebuild would write in the folder Shrink writes in
+    /// — `folderWriters` refuses only a delete. Refused rather than queued, like the meeting's other
+    /// conflicts; F1028 made a transcription wait instead, because it is queued work.
+    func refusalWhileShrinking(_ id: UUID, _ action: String) -> String? {
+        guard shrinkRunningID == id else { return nil }
+        return "\(action) has to wait while this meeting is being shrunk. Try again when Shrink finishes."
+    }
+
     // MARK: - Facts
 
     private func liveShrinkFacts(for id: UUID) -> MeetingStoragePlan.LiveFacts {
         var live = MeetingStoragePlan.LiveFacts()
         live.libraryReadOnly = store.isDegraded
         live.captureOrImportInProgress = isRecordingActive || isImporting
+        // And a second opinion (F1059), which reads the recording Shrink would replace.
         live.meetingBusy = transcription.contains(id) || diarizationRunningID == id
-            || segmentReTranscriptionRunningID == id || sourceRebuildRunningID == id
+            || segmentReTranscriptionRunningID == id || sourceRebuildRunningID == id || secondOpinionRunningID == id
         live.backupRunning = isBackingUp
         live.anotherShrinkRunning = shrinkRunningID != nil
         live.shrinkingThis = shrinkRunningID == id

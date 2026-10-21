@@ -2163,6 +2163,10 @@ final class AppModel: ObservableObject {
         // Guarded here as well as in the worker, so the refusal is one immediate message rather than
         // one raised from inside a detached task after the engine flag was already claimed (F187).
         guard libraryAcceptsChanges("Requesting a second opinion") else { return false }
+        if let refusal = refusalWhileShrinking(id, "A second opinion") {
+            alertMessage = refusal
+            return false
+        }
         // F874: the menu greys this for an edited transcript; refused here too, so no other caller
         // can compare the original lines and offer them for Replace (which refuses an edited one).
         if let meeting = store.meeting(id: id), store.isTranscriptEdited(meeting) {
@@ -2570,6 +2574,10 @@ final class AppModel: ObservableObject {
         // Before the runtime check, so a read-only library is reported as the real blocker rather than
         // as a missing model the user would then install for nothing.
         guard libraryAcceptsChanges("Speaker analysis") else { return }
+        if let refusal = refusalWhileShrinking(id, "Speaker analysis") {
+            alertMessage = refusal
+            return
+        }
         guard isDiarizationModelInstalled() else {
             alertMessage = ErrorPresentation.readable(LocalDiarizationError.runtimeNotInstalled)
             return
@@ -2614,6 +2622,10 @@ final class AppModel: ObservableObject {
         // `MeetingStore` reference, so nothing below this line would refuse to write a sidecar into a
         // read-only library — the F187 backstop, placed where inspection cannot miss it.
         guard libraryAcceptsChanges("Speaker analysis") else { return }
+        if let refusal = refusalWhileShrinking(request.meetingID, "Speaker analysis") {
+            alertMessage = refusal
+            return
+        }
         // F560: FluidAudio's in-process analysis can run for minutes on a long recording, so the Mac
         // must not idle-sleep partway through it.
         await withEngineActivityHeld(reason: "Analyzing speaker turns") {
@@ -2941,6 +2953,10 @@ final class AppModel: ObservableObject {
     /// + wraps.
     func reTranscribeSegment(id: UUID, index: Int) async {
         guard libraryAcceptsChanges("Re-transcribing a segment") else { return }
+        if let refusal = refusalWhileShrinking(id, "Re-transcribing a segment") {
+            alertMessage = refusal
+            return
+        }
         guard !conflictBannerHoldsChanges else {
             alertMessage = Self.segmentReRunRefusedForConflict
             return
@@ -3075,6 +3091,10 @@ final class AppModel: ObservableObject {
         // Guarded here as well as in the delegate, so the refusal is one immediate message rather
         // than one raised from inside a detached task after the engine flag was already claimed (F187).
         guard libraryAcceptsChanges("Re-transcribing a segment") else { return }
+        if let refusal = refusalWhileShrinking(id, "Re-transcribing a segment") {
+            alertMessage = refusal
+            return
+        }
         // F863: the line could not be put in while the banner waits for an answer, so the engine is
         // not run for it.
         guard !conflictBannerHoldsChanges else {
@@ -8634,6 +8654,10 @@ extension AppModel {
             return
         }
         guard libraryIsNotBeingRestored("Rebuilding a recording") else { return }
+        if let refusal = refusalWhileShrinking(id, "Rebuilding the audio") {
+            alertMessage = refusal
+            return
+        }
         // F459: only one rebuild runs at a time — `sourceRebuildRunningID` is a single slot, filled
         // by whichever meeting's rebuild is in flight. Without this, a second press (on this
         // meeting, or requesting one for another while this one runs) could start a second
@@ -8715,6 +8739,11 @@ extension AppModel {
         // folder, off the main actor, so the meeting is held until it finishes and a delete of it
         // meanwhile is refused rather than racing it. A delete runs synchronously on the main
         // actor, so none is under way here and `begin` does not fail; the guard is for its contract.
+        // F1059: asked again, as F469 asks about a transcription — the dialog can outlast the start of a Shrink.
+        if let refusal = refusalWhileShrinking(request.meetingID, "Rebuilding the audio") {
+            alertMessage = refusal
+            return nil
+        }
         guard store.folderWriters.begin(request.meetingID) else {
             alertMessage = "This meeting is being deleted, so its audio was not rebuilt."
             return nil
