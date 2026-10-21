@@ -199,3 +199,35 @@ func theViewsUseTheSharedDraft() throws {
     #expect(content.contains(".onChange(of: store.meeting(id: meetingID)?.notes)"))
     #expect(content.contains("notesDraft.libraryChanged("))
 }
+
+// F1055 — typing in a focused field and deleting it again left it marked as typed in, so a rename from the other
+// window was not followed and the field's commit then wrote the old title back over it. The owner and due fields of
+// an action item share the type and did the same. Typing back to what the field was given is no edit now.
+@MainActor
+@Test("A field typed in and typed back is not an edit, so a rename from the other window survives it (F1055)")
+func aFieldTypedBackDoesNotWriteOverARename() throws {
+    let (store, id, root) = try makeStore()
+    defer { store.flushPendingEdits(); try? FileManager.default.removeItem(at: root) }
+    var windowA = SharedFieldDraft(stored: "Weekly sync")
+    var windowB = SharedFieldDraft(stored: "Weekly sync")
+
+    // B's user types a letter and deletes it, still in the field.
+    windowB.userTyped("Weekly syncx")
+    windowB.userTyped("Weekly sync")
+    // A renames meanwhile.
+    windowA.userTyped("Q3 budget review")
+    MeetingFieldSync.commitTitle(&windowA, store: store, meetingID: id)
+    windowB.libraryChanged(to: "Q3 budget review", isEditingHere: true)
+    #expect(windowB.text == "Weekly sync", "not re-seeded under the cursor")
+
+    // B's field lets go of focus: it catches up, and has nothing of its own to write.
+    windowB.libraryChanged(to: store.meeting(id: id)?.title ?? "", isEditingHere: false)
+    #expect(windowB.text == "Q3 budget review", "the field kept the old title after the user typed it back")
+    MeetingFieldSync.commitTitle(&windowB, store: store, meetingID: id)
+    #expect(store.meeting(id: id)?.title == "Q3 budget review", "window B wrote the old title back over the rename")
+
+    // Typing something else still is an edit.
+    var windowC = SharedFieldDraft(stored: "Q3 budget review")
+    windowC.userTyped("Q3 budget")
+    #expect(windowC.hasUnsavedEdit)
+}
