@@ -136,6 +136,43 @@ public enum CaptureGapPolicy {
     }
 }
 
+extension CaptureGapPolicy {
+    /// Seconds to move a track's timestamp baseline forward at the first buffer after a restart's
+    /// silence (F1050), or 0 to leave it where it is.
+    ///
+    /// A restart pads the outage it measured, and for a wake that is the sleep by the wall clock. The
+    /// stream's stamps are taken to be on the host clock, which `mach_absolute_time`'s documentation
+    /// says does not run while the Mac sleeps — so after a wake the new stream's first buffer would be
+    /// EARLY by about the sleep, and so would every buffer after it: none padded (F151) or steered
+    /// (F556) again for the rest of the recording (the review of Wave 8 lane Q, read from the code).
+    /// The restart is the one place a new baseline is justified, because it is a known break in the
+    /// stream; an early buffer anywhere else may be a re-delivery, and moving the baseline for one
+    /// would make the next buffer look late and pad silence that never happened.
+    ///
+    /// - Early by more than `toleranceFrames` and by no more than the restart's silence (plus the
+    ///   tolerance): the whole of it, so this buffer is on time and later ones are measured from here.
+    ///   The silence is already on disk, so nothing is lost that the old baseline could have saved:
+    ///   an early buffer is never padded or steered.
+    /// - Early by more than the silence could explain: 0. A stamp that wild is no anchor, and taking
+    ///   it would make every later buffer look a gap away.
+    /// - On time or late: 0, so F460's deliberately short restart padding is topped up as before.
+    ///   That is also what a clock that did run through the sleep gives, so this is right whichever
+    ///   clock the stamps use (unmeasured until a real recording with a sleep, F737).
+    public static func reanchoringShift(
+        presentationOffset: TimeInterval,
+        writtenFrames: Int64,
+        restartPaddingFrames: Int64,
+        sampleRate: Double
+    ) -> TimeInterval {
+        guard sampleRate > 0, presentationOffset.isFinite, restartPaddingFrames > 0 else { return 0 }
+        // In the Double domain throughout, so no conversion can trap (F151's reason).
+        let early = Double(writtenFrames) - presentationOffset * sampleRate
+        guard early > Double(toleranceFrames),
+              early <= Double(restartPaddingFrames) + Double(toleranceFrames) else { return 0 }
+        return early / sampleRate
+    }
+}
+
 /// What `CaptureGapPolicy.alignment` decided for one captured buffer (F556).
 public enum CaptureAlignment: Equatable, Sendable {
     /// Write the buffer as it is: the healthy case, every buffer of a capture on time.

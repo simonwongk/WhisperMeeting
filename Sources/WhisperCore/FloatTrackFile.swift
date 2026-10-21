@@ -152,8 +152,29 @@ public final class FloatTrackFile {
         }
     }
 
+    /// Writes a restart's silence (F275) and lets the first captured buffer after it re-anchor the
+    /// track's timeline (F1050, `CaptureGapPolicy.reanchoringShift`): after a wake, the stream's
+    /// host-clock stamps carry on from before the sleep while the silence covered it, and every later
+    /// buffer looked early. Owed before the write, so silence a throw leaves half-written is still
+    /// within what the anchor may account for; two restarts before a buffer add up.
+    public func appendRestartSilence(frames: Int64) throws {
+        guard !isFinished, frames > 0 else { return }
+        let (owed, overflowed) = (restartSilenceSinceLastBuffer ?? 0).addingReportingOverflow(frames)
+        restartSilenceSinceLastBuffer = overflowed ? .max : owed
+        try appendSilence(frames: frames)
+    }
+
+    /// Restart silence written since the last captured buffer, or nil (F1050).
+    private var restartSilenceSinceLastBuffer: Int64?
+    /// Seconds added to every presentation offset since a restart re-anchored the timeline (F1050).
+    /// Stays finite: each step is bounded by the restart's own silence.
+    private var timelineShift: TimeInterval = 0
+
     /// Appends one captured buffer where its presentation offset says it belongs (F151, F556), and
-    /// returns what `CaptureGapPolicy.alignment` decided for it.
+    /// returns what `CaptureGapPolicy.alignment` decided for it. The offset is measured from the
+    /// track's first buffer, as the writer passes it, and moved by any re-anchoring a restart's
+    /// silence made (F1050) — never the writer's `firstPresentationTime`, which the mixer aligns the
+    /// two tracks by.
     ///
     /// Here rather than in `FloatTrackWriter.append` so the capture path and the replay tests run the
     /// same lines: `CaptureGapReplayTests` used to restate the writer's two calls by hand, and a
@@ -169,8 +190,15 @@ public final class FloatTrackFile {
         presentationOffset: TimeInterval,
         sampleRate: Double
     ) throws -> CaptureAlignment {
+        if let silence = restartSilenceSinceLastBuffer {
+            restartSilenceSinceLastBuffer = nil
+            timelineShift += CaptureGapPolicy.reanchoringShift(
+                presentationOffset: presentationOffset + timelineShift, writtenFrames: frameCount,
+                restartPaddingFrames: silence, sampleRate: sampleRate
+            )
+        }
         let decision = CaptureGapPolicy.alignment(
-            presentationOffset: presentationOffset,
+            presentationOffset: presentationOffset + timelineShift,
             writtenFrames: frameCount,
             bufferFrames: frames,
             sampleRate: sampleRate

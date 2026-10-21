@@ -118,3 +118,39 @@ func absurdFiniteTimestampDoesNotTrap() {
         presentationOffset: .nan, writtenFrames: 0, sampleRate: 48_000
     ) == 0)
 }
+
+// F1050 — the first buffer after a restart's silence may move the track's baseline, and only by what
+// that silence can explain. Every offset is a multiple of 375 frames (48,000 / 128), so it survives the
+// trip through seconds exactly and no boundary below is decided by rounding.
+@Test("A restart re-anchors only an early first buffer, and only by what its silence can explain (F1050)")
+func reanchoringShiftIsBoundedByTheRestartsSilence() {
+    let written: Int64 = 48_000 + 5_760_000   // a second, then a two-minute sleep's silence
+    func shift(_ offsetFrames: Double, padding: Int64 = 5_760_000) -> Double {
+        CaptureGapPolicy.reanchoringShift(
+            presentationOffset: offsetFrames / 48_000, writtenFrames: written,
+            restartPaddingFrames: padding, sampleRate: 48_000
+        )
+    }
+    // The host clock never saw the sleep: early by the whole of it, moved by the whole of it.
+    #expect(shift(48_000) == 120)
+    // Less than the silence (the stream died a moment before the sleep): moved by that much.
+    #expect(shift(96_000) == 119)
+    // Within F151's tolerance is jitter, and F556 steers it.
+    #expect(shift(5_808_000 - 375) == 0)
+    // On time or late: F460's top-up, untouched.
+    #expect(shift(5_808_000) == 0)
+    #expect(shift(5_856_000) == 0)
+    // Up to the silence plus the tolerance, and no further: a stamp earlier than that is no anchor.
+    #expect(shift(48_000 - 375) == 120.0078125)
+    #expect(shift(48_000 - 750) == 0)
+    // Nothing to explain anything with, and stamps that say nothing.
+    #expect(shift(48_000, padding: 0) == 0)
+    for offset in [Double.nan, .infinity, -.infinity] {
+        #expect(CaptureGapPolicy.reanchoringShift(
+            presentationOffset: offset, writtenFrames: 48_000, restartPaddingFrames: 48_000, sampleRate: 48_000
+        ) == 0)
+    }
+    #expect(CaptureGapPolicy.reanchoringShift(
+        presentationOffset: 0, writtenFrames: .max, restartPaddingFrames: .max, sampleRate: 48_000
+    ).isFinite)
+}

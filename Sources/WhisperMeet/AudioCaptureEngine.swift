@@ -1623,9 +1623,10 @@ final class FloatTrackWriter {
         return AVAudioFormat(streamDescription: streamDescription, channelLayout: layout)
     }
 
-    /// Writes a gap the capture could not record as silence, keeping offsets honest (F275).
+    /// Writes a gap the capture could not record as silence, keeping offsets honest (F275) — the
+    /// restart's padding, so the first buffer after it may re-anchor the track's timeline (F1050).
     func appendSilence(frames: Int64) throws {
-        try track.appendSilence(frames: frames)
+        try track.appendRestartSilence(frames: frames)
     }
 
     #if DEBUG
