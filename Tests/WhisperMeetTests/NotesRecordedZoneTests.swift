@@ -168,3 +168,42 @@ func anImportKeepsItsZone() async throws {
     let stored = try #require(model.store.meeting(id: id))
     #expect(stored.createdTimeZone == TimeZone.current.identifier)
 }
+
+// F1061 — `TimeZone.current` keeps the zone the process first read until `NSTimeZone.resetSystemTimeZone()`,
+// which nothing called, so an app left running across a trip stamped new meetings with the zone it left.
+// The stamp now goes through `AppModel.currentTimeZone`, which resets first; here it is a zone this host
+// is not in, so a stamp read from anywhere else fails.
+@MainActor
+@Test("A new recording and a new import are stamped with the zone the Mac is in now, read fresh (F1061)")
+func newMeetingsAreStampedWithTheZoneReadFresh() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("F1061-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let recorder = AudioCaptureEngine(
+        stoppingCapture: {}, finishingTracks: {}, preservingPartialTracks: {},
+        startingCapture: { _, _, _ in }, restartingCapture: { _ in }, directory: root
+    )
+    let model = AppModel(
+        store: MeetingStore(rootDirectory: root), recorder: recorder,
+        defaults: UserDefaults(suiteName: testSuiteName())!,
+        whisperExecutable: { nil }, qwenInstalled: { false }
+    )
+    model.crashReportsSince = { _ in [] }
+    let elsewhere = TimeZone.current.identifier == "Pacific/Kiritimati" ? "Asia/Kathmandu" : "Pacific/Kiritimati"
+    model.currentTimeZone = { TimeZone(identifier: elsewhere)! }
+
+    await model.startRecording()
+    let id = try #require(model.activeMeetingID)
+    try model.recorder.beginTestTrackSession(in: model.store.recordingDirectoryURL(for: id))
+    try model.recorder.writeTestFrames(system: 48_000, microphone: 48_000, systemStart: 100.0, microphoneStart: 100.0)
+    _ = await model.stopRecording(title: "Board call")
+    #expect(model.store.meeting(id: id)?.createdTimeZone == elsewhere)
+
+    let imported = UUID()
+    let folder = model.store.recordingDirectoryURL(for: imported)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let file = folder.appendingPathComponent("meeting.wav")
+    try Data([0]).write(to: file)
+    await model.adoptImportedRecording(id: imported, at: file, title: "Imported", knownDuration: 1)
+    #expect(model.store.meeting(id: imported)?.createdTimeZone == elsewhere)
+}

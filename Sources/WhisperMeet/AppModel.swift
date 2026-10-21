@@ -751,6 +751,13 @@ final class AppModel: ObservableObject {
     /// Called off the main actor at the moment of each removal, after its last identity check and before the file is
     /// set aside and compared (F1005): lets a test change the file where only that comparison can see it.
     var willUnlinkForShrink: @Sendable (URL) -> Void = { _ in }
+    /// The zone a new meeting is stamped with (F786), read fresh each time (F1061): `TimeZone.current`
+    /// keeps the zone the process first saw until `NSTimeZone.resetSystemTimeZone()` is called, so an app
+    /// left running across a trip stamped the zone it left. Injectable so a test can choose the zone.
+    var currentTimeZone: () -> TimeZone = {
+        NSTimeZone.resetSystemTimeZone()
+        return TimeZone.current
+    }
     /// Moves a file Shrink removes to the Trash, already renamed for it, and says where it landed (F1040, the
     /// user's decision of 2026-10-17): a check that missed a sound can then be undone from the Trash. A Trash that
     /// refuses — a volume with none, a network share — throws, and Shrink keeps the file; it never deletes one in
@@ -4693,7 +4700,7 @@ final class AppModel: ObservableObject {
                 // notes.md say why this recording is short whichever way it was saved.
                 recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil,
                 // F786: made now, so the zone the Mac is in now is the one it was held in.
-                createdTimeZone: TimeZone.current.identifier
+                createdTimeZone: currentTimeZone().identifier
             )
             // A result, not an edit (F662): saved even while a conflict banner is up, which used to
             // leave the meeting out of the list with its audio on disk and nothing said.
@@ -4802,7 +4809,7 @@ final class AppModel: ObservableObject {
                         recoveryWarning: recoveryWarning,
                         recoverySource: recovered.source.rawValue,
                         recoveryInterruption: isStoppingForSleep ? RecoveryInterruption.systemSleep.rawValue : nil,
-                        createdTimeZone: TimeZone.current.identifier   // F786: this Stop, so now
+                        createdTimeZone: currentTimeZone().identifier   // F786: this Stop, so now
                     ), as: .result)
                     // F477: this recovery path also upserts a meeting using `title`, so it must
                     // also clear the field the fallback read from — see the success path above.
@@ -6175,7 +6182,7 @@ final class AppModel: ObservableObject {
             tags: Self.provenanceTags(for: source),
             source: source,
             referenceSegments: (referenceSegments?.isEmpty ?? true) ? nil : referenceSegments,
-            createdTimeZone: TimeZone.current.identifier   // F786: imported now, in this zone
+            createdTimeZone: currentTimeZone().identifier   // F786: imported now, in this zone
         ), as: .result)   // F662: the copy is done; saved even while a conflict banner is up
         isImporting = false
         refreshRuntime()
