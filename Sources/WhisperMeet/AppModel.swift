@@ -3232,7 +3232,10 @@ final class AppModel: ObservableObject {
         }
         let source = file.processingFormat
         let channels = Int(source.channelCount)
-        guard source.sampleRate > 0, channels > 0 else {
+        // F1045: a file AVAudioFile opens but counts no frames in (an MP4 holding Opus, F1037) raises an
+        // Objective-C exception at `framePosition` below, which no `catch` sees. The re-run refuses a
+        // non-WAV recording before this; the probe makes the raise impossible here whatever the caller.
+        guard source.sampleRate > 0, channels > 0, !DecodedAudio.opensButCountsNoFrames(wavURL) else {
             throw SegmentReRunError.unsupportedAudioLayout
         }
         let frames = try SegmentAudioRange.frameRange(

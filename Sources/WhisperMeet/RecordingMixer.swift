@@ -1100,19 +1100,25 @@ enum RecordingMixer {
     }
 
     /// A mono AVAudioFile read in order, `count` frames at a time; silence past its end.
+    ///
+    /// It counts the frames it read rather than asking `framePosition` (F1045), which raises an Objective-C
+    /// exception on a file AVAudioFile opens and counts no frames in (an MP4 holding Opus, F1037). It reads only
+    /// Shrink's own copy today, which `audit` checks is 16 kHz mono first; the count keeps that from mattering.
     private final class MonoReader {
         let file: AVAudioFile
         private var buffered: [Float] = []
+        private var position: AVAudioFramePosition = 0
 
         init(file: AVAudioFile) { self.file = file }
 
         /// The next `count` frames, and how many of them the file held (the rest are silence past its end).
         func read(_ count: Int) throws -> (samples: [Float], valid: Int) {
-            while buffered.count < count, file.framePosition < file.length {
+            while buffered.count < count, position < file.length {
                 guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 65_536) else { break }
                 try file.read(into: buffer)
                 let frames = Int(buffer.frameLength)
                 guard frames > 0, let data = buffer.floatChannelData?[0] else { break }
+                position += AVAudioFramePosition(frames)
                 buffered.append(contentsOf: UnsafeBufferPointer(start: data, count: frames))
             }
             var out = Array(buffered.prefix(count))

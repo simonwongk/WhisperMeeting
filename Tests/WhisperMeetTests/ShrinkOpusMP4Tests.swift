@@ -173,3 +173,33 @@ func shrinkKeepsAMonoOpusMP4BesideAShorterRecording() async throws {
     #expect((try? Data(contentsOf: mp4)) == before, "\(alert)")
     #expect(alert.contains("recording.mp4"), "\(alert)")
 }
+
+// F1045 — the sweep F1037 asked for: `AVAudioFile.framePosition` is left in no path that can meet a file the app did
+// not write. The segment re-run's clip opens the meeting's recording, and is probed before it seeks.
+@Test("Cutting a segment's clip from an MP4 holding Opus refuses it, and raises nothing (F1045)")
+func aSegmentClipOfAnOpusMP4IsRefusedWithoutRaising() {
+    var outcome: Result<URL, Error>?
+    var exception: NSError?
+    let completed = WMRunCatchingObjCExceptions({
+        outcome = Result { try AppModel.decodedSegmentClip(from: fixture, startSeconds: 0.5, endSeconds: 1.5) }
+    }, &exception)
+    #expect(completed, "AVAudioFile raised: \(exception?.localizedDescription ?? "?")")
+    guard case .failure(let error)? = outcome else {
+        Issue.record("a clip was cut from a file AVAudioFile counts no frames in: \(String(describing: outcome))")
+        return
+    }
+    #expect(error as? SegmentReRunError == .unsupportedAudioLayout, "\(error)")
+}
+
+@Test("No framePosition is read or set outside the probed clip and the paths the app's own files take (F1045)")
+func framePositionIsLeftOnlyBehindTheProbe() throws {
+    var uses: [String] = []
+    for url in try SourceAssertion.swiftFileURLs(under: "Sources") {
+        let relative = String(url.path.dropFirst(SourceAssertion.repositoryRoot.path.count + 1))
+        for line in try SourceAssertion.uncommentedLines(relative) where line.text.contains(".framePosition") {
+            uses.append("\(url.lastPathComponent):\(line.number)")
+        }
+    }
+    // The one left: `decodedSegmentClip`'s seek, after `opensButCountsNoFrames`.
+    #expect(uses.count == 1 && uses.first?.hasPrefix("AppModel.swift:") == true, "\(uses)")
+}
