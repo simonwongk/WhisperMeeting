@@ -150,6 +150,8 @@ func warmRefineEngineEvictionForceStopsWedgedHelper() async throws {
         modelDirectory: modelDir
     )
     defer { engine.shutdown() }
+    // The escalation fires this long after the request: 5 s in the app, half a second here (F1063).
+    engine.helperForceStopGrace = 0.5
     let warm = Task { try await engine.warmUp() }
     // Wait for a readable pid, not merely for the file: `open(..., "w")` creates it empty before
     // the write flushes, and a cleanup with no pid to signal leaves a TERM-ignoring descendant
@@ -164,8 +166,8 @@ func warmRefineEngineEvictionForceStopsWedgedHelper() async throws {
         completion.markFinished()
     }
 
-    // 7 s, as before: production's SIGKILL escalation fires 5 s after the eviction request, and a
-    // helper that ignores TERM is what this measures, so the cap is deliberately close above it.
+    // 7 s: the SIGKILL escalation fires `helperForceStopGrace` after the eviction request (0.5 s
+    // here, 5 s in the app), and a helper that ignores TERM is what this measures.
     let finishedWithoutManualKill = try await pollUntilOrTimeout(seconds: 7) { completion.isFinished }
     // Signal every recorded pid directly rather than the process group: production's escalation
     // may already have reaped the group leader, and `getpgid` on a dead leader cannot name the

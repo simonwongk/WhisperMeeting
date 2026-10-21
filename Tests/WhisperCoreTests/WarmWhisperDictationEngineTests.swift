@@ -379,6 +379,8 @@ func warmDictationEngineEvictionForceStopsWedgedHelper() async throws {
         modelDirectory: tmp
     )
     defer { engine.shutdown() }
+    // The escalation fires this long after the request: 5 s in the app, half a second here (F1063).
+    engine.helperForceStopGrace = 0.5
     // Keep `warmUp()` blocked inside `stdout.availableData`. A helper that's already ready lets
     // queued cleanup schedule its old SIGKILL fallback, which is not the failure mode here.
     let warm = Task { try await engine.warmUp() }
@@ -400,9 +402,9 @@ func warmDictationEngineEvictionForceStopsWedgedHelper() async throws {
 
     // The red proof intentionally cleans the test helper up itself if production has no
     // off-queue SIGKILL fallback yet. `#expect` records the failure but continues to this cleanup.
-    // F645: 30 s, not 7. Production's own SIGKILL escalation fires 5 s after the eviction request
-    // (`requestHelperTermination`), so a 7 s cap left 2 s for a loaded machine to deliver the kill
-    // and unwind the eviction; it passed at 5.1–5.3 s with 11 CPU hogs running. Only the failing
+    // F645: 30 s, not 7. The SIGKILL escalation fires `helperForceStopGrace` after the eviction
+    // request (`requestHelperTermination`; 5 s in the app, 0.5 s here since F1063), and a loaded
+    // machine needs time beyond it to deliver the kill and unwind the eviction. Only the failing
     // case waits the full cap.
     let finishedWithoutManualKill = try await pollUntilOrTimeout(seconds: 30) { completion.isFinished }
     // Clean up before recording the red expectation: a failure must never leave an intentionally
@@ -531,7 +533,8 @@ func warmDictationEngineDownloadHeartbeatsOutliveTheFlatWarmUpLimit() async thro
         modelDirectory: tmp
     )
     defer { engine.shutdown() }
-    engine.warmUpTimeout = 5
+    // 2 s, not 5 (F1063): the wait below is the limit twice over, and it was 10 s of CI's suite.
+    engine.warmUpTimeout = 2
     engine.downloadStallTimeout = 60 // far above the 0.25 s heartbeat gap: only a real stall reaches it
 
     let completion = EvictionCompletion()
@@ -542,7 +545,7 @@ func warmDictationEngineDownloadHeartbeatsOutliveTheFlatWarmUpLimit() async thro
     }
     let began = ContinuousClock.now
     try await waitUntil("the flat warm-up limit to pass twice over") {
-        completion.isFinished || ContinuousClock.now - began > .seconds(10)
+        completion.isFinished || ContinuousClock.now - began > .seconds(4.5)
     }
     #expect(!completion.isFinished, "the warm-up ended while the helper was still reporting progress: \(outcome.value)")
 

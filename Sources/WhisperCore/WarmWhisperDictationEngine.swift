@@ -8,7 +8,8 @@ import Foundation
 /// `Process` and PID; it can never kill a later re-warmed helper.
 private func requestHelperTermination(
     process: Process?,
-    input: FileHandle?
+    input: FileHandle?,
+    grace: TimeInterval = 5
 ) {
     try? input?.close()
     guard let process, process.isRunning else { return }
@@ -34,7 +35,7 @@ private func requestHelperTermination(
     // through Process.terminationHandler, and its `isRunning` check makes repeated termination
     // requests safe even if a later request replaces this cancellation handler.
     process.terminationHandler = { _ in forceStop.cancel() }
-    DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: forceStop)
+    DispatchQueue.global().asyncAfter(deadline: .now() + grace, execute: forceStop)
     process.terminate()
 }
 
@@ -170,6 +171,9 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
     /// Once the helper reports a download in progress (F522), the wait is no longer this flat budget
     /// but "no progress for this long". Internal so a test can shorten it.
     var downloadStallTimeout: TimeInterval = 180
+    /// How long a helper asked to exit may ignore SIGTERM before its process group is killed (F206).
+    /// Internal so a test can shorten it (F1063): the escalation's two tests waited out 5 s each.
+    var helperForceStopGrace: TimeInterval = 5
 
     /// Told when the helper's first-run model download starts and ends (F823). Guarded by
     /// `liveLock`, because the controller sets it from the main thread while `queue` reads it.
@@ -303,7 +307,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // it) having to wait out the read's 120s/1800s timeout. Mirrors the off-queue terminate the
         // readLine watchdog and LocalWhisperClient's ProcessCancellationController already rely on.
         let (process, input) = requestStopAndCaptureLiveProcess()
-        requestHelperTermination(process: process, input: input)
+        requestHelperTermination(process: process, input: input, grace: self.helperForceStopGrace)
 
         queue.async {
             self.clearProcessState()
@@ -315,7 +319,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // the next hotkey press. Close/terminate off the queue so a blocked line read unblocks,
         // then wait until cleanup confirms the child is gone before another model starts.
         let (process, input) = requestStopAndCaptureLiveProcess()
-        requestHelperTermination(process: process, input: input)
+        requestHelperTermination(process: process, input: input, grace: self.helperForceStopGrace)
 
         await withCheckedContinuation { continuation in
             queue.async {
@@ -327,7 +331,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
 
     public func retire() async {
         let (process, input) = markRetiredAndCaptureLiveProcess()
-        requestHelperTermination(process: process, input: input)
+        requestHelperTermination(process: process, input: input, grace: self.helperForceStopGrace)
 
         await withCheckedContinuation { continuation in
             queue.async {
@@ -460,7 +464,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
             // Same escalation as every other termination site: a helper that ignores TERM while
             // being retired or evicted mid-launch must not outlive this call on the strength of the
             // queued `clearProcessState()` happening to reach it later.
-            requestHelperTermination(process: process, input: self.stdin)
+            requestHelperTermination(process: process, input: self.stdin, grace: self.helperForceStopGrace)
             if shouldStop {
                 throw processFailure("Dictation model was replaced before it finished starting.")
             }
@@ -531,7 +535,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
         // `ensureRunning()` would short-circuit and the next request would fail EBADF on write
         // instead of respawning.
         let watchdog = ReadWatchdog {
-            requestHelperTermination(process: watchdogProcess, input: nil)
+            requestHelperTermination(process: watchdogProcess, input: nil, grace: self.helperForceStopGrace)
         }
         watchdog.arm(after: timeout, inStallWindow: false)
         defer { watchdog.cancel() }
@@ -654,7 +658,7 @@ public final class WarmWhisperDictationEngine: DictationEngine, @unchecked Senda
 
     private func terminateAndWait(_ process: Process) {
         guard process.isRunning else { return }
-        requestHelperTermination(process: process, input: nil)
+        requestHelperTermination(process: process, input: nil, grace: self.helperForceStopGrace)
         process.waitUntilExit()
     }
 }
@@ -695,6 +699,9 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
     private var stderrText = ""
     private var stderrHandle: FileHandle?
 
+    /// How long a helper asked to exit may ignore SIGTERM before its process group is killed (F206).
+    /// Internal so a test can shorten it (F1063).
+    var helperForceStopGrace: TimeInterval = 5
     private static let readyTimeout: TimeInterval = 300
     /// The caller (`DictationRefiner`) enforces the user-facing budget; this watchdog only stops a
     /// wedged child from hanging the serial queue forever.
@@ -791,7 +798,7 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
         // Same off-queue interrupt as WarmWhisperDictationEngine.shutdown: terminating the child
         // closes its stdout, unblocking a parked read so queued state cleanup runs immediately.
         let (process, input) = requestStopAndCaptureLiveProcess()
-        requestHelperTermination(process: process, input: input)
+        requestHelperTermination(process: process, input: input, grace: self.helperForceStopGrace)
         queue.async {
             self.clearProcessState()
         }
@@ -801,7 +808,7 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
         // Same temporary, wait-for-exit boundary as the ASR helper above. A meeting Qwen run can
         // otherwise begin while this 4B/8B model is still consuming unified memory.
         let (process, input) = requestStopAndCaptureLiveProcess()
-        requestHelperTermination(process: process, input: input)
+        requestHelperTermination(process: process, input: input, grace: self.helperForceStopGrace)
 
         await withCheckedContinuation { continuation in
             queue.async {
@@ -876,7 +883,7 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
         let askedToStop = stopRequests != stopsWhenAsked
         liveLock.unlock()
         if askedToStop {
-            requestHelperTermination(process: process, input: self.stdin)
+            requestHelperTermination(process: process, input: self.stdin, grace: self.helperForceStopGrace)
             throw DictationHelperStoppedError()
         }
         helperStartHookForTesting?(.registered)
@@ -908,7 +915,7 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
         // `ensureRunning()` would short-circuit and the next request would fail EBADF on write
         // instead of respawning.
         let watchdog = DispatchWorkItem {
-            requestHelperTermination(process: watchdogProcess, input: nil)
+            requestHelperTermination(process: watchdogProcess, input: nil, grace: self.helperForceStopGrace)
         }
         DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
         defer { watchdog.cancel() }
@@ -955,7 +962,7 @@ public final class WarmRefineEngine: DictationRefineEngine, @unchecked Sendable 
     private func clearProcessState() {
         try? stdin?.close()
         if let process, process.isRunning {
-            requestHelperTermination(process: process, input: nil)
+            requestHelperTermination(process: process, input: nil, grace: self.helperForceStopGrace)
             process.waitUntilExit()
         }
         process = nil

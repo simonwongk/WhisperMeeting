@@ -446,24 +446,32 @@ func englishSuggestionsMatchThePreF536Oracle() {
         TranscriptSegment(speaker: nil, start: Double(60 + $0.offset), end: Double(61 + $0.offset), text: $0.element)
     }
 
-    // Every run of the oracle below shares one memo of its scores (F1011): sixteen runs over the
-    // same windows and terms, each pair scored once.
+    // Every run of the oracle below shares one memo of its scores (F1011), each pair scored once.
     let scores = OracleScores()
     func oracle(_ amended: Amendments = Amendments()) -> [GlossaryCorrection] {
         PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments, amended: amended, scores: scores)
     }
     let expected = oracle()
     let actual = GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments)
+    // The premises below run over the fixed lines only (F1063): each amendment has a fixed line that
+    // exercises it (measured: all fifteen do), and the oracle answers each segment on its own, so a
+    // difference on the fixed lines is a difference on the whole corpus. Over all 84 lines they were
+    // sixteen of the nineteen runs and most of this test's 30 s on the CI runner.
+    let fixedSegments = Array(segments.suffix(fixedLines.count))
+    func premise(_ amended: Amendments = Amendments()) -> [GlossaryCorrection] {
+        PreF536GlossaryCorrector.corrections(vocabulary: vocabulary, segments: fixedSegments, amended: amended, scores: scores)
+    }
+    let fixedExpected = premise()
 
     // The premise: the transcript is rich enough to exercise the search, and each amendment.
     #expect(expected.count >= 20, "only \(expected.count) proposals — the corpus exercises too little")
     var withoutF819 = Amendments()
     withoutF819.f819 = false
-    #expect(oracle(withoutF819) != expected,
+    #expect(premise(withoutF819) != fixedExpected,
             "no proposal in the corpus carries punctuation, so F819's amendment is untested here")
     var byCount = Amendments()
     byCount.f819ByIdentity = false
-    #expect(oracle(byCount) != expected,
+    #expect(premise(byCount) != fixedExpected,
             "no window in the corpus has a mark that is not the term's, so F819's identity rule is untested here")
     // Judged with the no-op amendment off on both sides: a row the in-place rule leaves untrimmed
     // and unfindable is a row that changes nothing, which the no-op amendment drops either way.
@@ -473,35 +481,35 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withInPlaceOnly.f914 = false
     var withoutInPlace = withInPlaceOnly
     withoutInPlace.f819InPlace = false
-    #expect(oracle(withoutInPlace) != oracle(withInPlaceOnly),
+    #expect(premise(withoutInPlace) != premise(withInPlaceOnly),
             "no trimmed proposal in the corpus would be applied elsewhere, so F819's in-place amendment is untested here")
     var withoutF914 = Amendments()
     withoutF914.f914 = false
-    #expect(oracle(withoutF914) != expected,
+    #expect(premise(withoutF914) != fixedExpected,
             "no window in the corpus stands across a separator or after an earlier occurrence of its text, so F914's amendment is untested here")
     var withoutF915 = Amendments()
     withoutF915.f915 = false
-    #expect(oracle(withoutF915) != expected,
+    #expect(premise(withoutF915) != fixedExpected,
             "no window in the corpus has a possessive or a dash, so F915's amendment is untested here")
     var withoutF968 = Amendments()
     withoutF968.f968 = false
-    #expect(oracle(withoutF968) != expected,
+    #expect(premise(withoutF968) != fixedExpected,
             "no term in the corpus is misheard with a word split in two, so F968's amendment is untested here")
     var withoutF972 = Amendments()
     withoutF972.f972 = false
-    #expect(oracle(withoutF972) != expected,
+    #expect(premise(withoutF972) != fixedExpected,
             "no line in the corpus is misheard in more than half a long term's words, so F972's amendment is untested here")
     var withoutF972Fourth = Amendments()
     withoutF972Fourth.f972Fourth = false
-    #expect(oracle(withoutF972Fourth) != expected,
+    #expect(premise(withoutF972Fourth) != fixedExpected,
             "no three-word term in the corpus is misheard across four words on a line holding none of its own, so F972's fourth window is untested here")
     var withoutF994 = Amendments()
     withoutF994.f994 = false
-    #expect(oracle(withoutF994) != expected,
+    #expect(premise(withoutF994) != fixedExpected,
             "no line in the corpus holds a term and a mishearing of it, so F994's amendment is untested here")
     var withoutF1003 = Amendments()
     withoutF1003.f1003 = false
-    #expect(oracle(withoutF1003) != expected,
+    #expect(premise(withoutF1003) != fixedExpected,
             "no window in the corpus is itself another vocabulary term, so F1003's amendment is untested here")
     // With F914 off too: a placed row is a genuine occurrence where it stands, so with F914 on no
     // row changes nothing and the no-op rule is a consequence rather than a step of its own.
@@ -509,7 +517,7 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withNoOpOnly.f914 = false
     var withoutNoOp = withNoOpOnly
     withoutNoOp.f820NoOp = false
-    #expect(oracle(withoutNoOp) != oracle(withNoOpOnly),
+    #expect(premise(withoutNoOp) != premise(withNoOpOnly),
             "no proposal in the corpus changes nothing, so F820's no-op amendment is untested here")
     // With F968 off on both sides: F968's allowance (one more word than the term) covers F940's
     // (the term's own words), so F940's switch answers only with F968 off.
@@ -517,13 +525,13 @@ func englishSuggestionsMatchThePreF536Oracle() {
     withF940Only.f968 = false
     var withoutF940 = withF940Only
     withoutF940.f940 = false
-    #expect(oracle(withoutF940) != oracle(withF940Only),
+    #expect(premise(withoutF940) != premise(withF940Only),
             "no term in the corpus has four or more words and a mishearing, so F940's amendment is untested here")
     for (name, off) in [("digits", \Amendments.f1039Digits), ("function words", \Amendments.f1039FunctionWords),
                         ("strict score", \Amendments.f1039Strict)] {
         var without = Amendments()
         without[keyPath: off] = false
-        #expect(oracle(without) != expected, "nothing in the corpus answers to F1039's \(name) rule, so it is untested here")
+        #expect(premise(without) != fixedExpected, "nothing in the corpus answers to F1039's \(name) rule, so it is untested here")
     }
     let identical = actual == expected
     #expect(identical, "first difference: \(zip(actual, expected).first { $0 != $1 }.map { "\($0) vs \($1)" } ?? "counts \(actual.count) vs \(expected.count)")")

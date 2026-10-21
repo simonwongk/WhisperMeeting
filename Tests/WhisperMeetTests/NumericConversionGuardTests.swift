@@ -44,13 +44,27 @@ private struct Conversion {
 /// Every `SomeIntegerType( … )` in `code`, with its balanced argument text.
 private func integerConversions(in code: String, file: String) -> [Conversion] {
     let characters = Array(code)
+    // Where each line starts, once (F1063): counting the newlines before every match from the top of
+    // the file, and copying a slice at every position to compare it, made this one test 12 s of CI's
+    // suite. The same matches, found without allocating.
+    var lineStarts = [0]
+    for (offset, character) in characters.enumerated() where character == "\n" { lineStarts.append(offset + 1) }
+    func line(of offset: Int) -> Int {
+        var low = 0, high = lineStarts.count - 1
+        while low < high {
+            let middle = (low + high + 1) / 2
+            if lineStarts[middle] <= offset { low = middle } else { high = middle - 1 }
+        }
+        return low + 1
+    }
     var found: [Conversion] = []
     for type in integerTypes {
         let needle = Array(type + "(")
         var index = 0
         while index + needle.count <= characters.count {
             defer { index += 1 }
-            guard Array(characters[index..<(index + needle.count)]) == needle else { continue }
+            guard characters[index] == needle[0],
+                  characters[index..<(index + needle.count)].elementsEqual(needle) else { continue }
             // `Point(` must not match `Int(`, and `.Int(` is not a conversion either.
             if index > 0 {
                 let before = characters[index - 1]
@@ -69,8 +83,7 @@ private func integerConversions(in code: String, file: String) -> [Conversion] {
             }
             guard end > index else { continue }
             let argument = String(characters[(index + needle.count)...end])
-            let line = characters[0..<index].filter { $0 == "\n" }.count + 1
-            found.append(Conversion(file: file, line: line, text: type + "(" + argument))
+            found.append(Conversion(file: file, line: line(of: index), text: type + "(" + argument))
         }
     }
     return found
