@@ -189,35 +189,50 @@ func anAbsurdJumpIsCapped() throws {
 
 /// Replays a stream in which the sample writes for `failing` indices do not land.
 ///
-/// Distinct from `replay(_:into:padding:)` above in shape rather than arithmetic. In a *drop* no
-/// buffer arrives, so no offset is consumed. Here every buffer arrives on time and it is the
-/// append that fails, which is the write-failure case. Production computes the padding **before**
-/// the sample write (`AudioCaptureEngine.append`), so the order below is that order.
-///
-/// The failure is modelled by not writing, the way this file already models a drop the
-/// `SCStream` will not perform on demand: what a throw leaves behind is precisely samples that
-/// were not written, and `FloatTrackFile` has no accounting for an attempt.
-@discardableResult
+/// Whether the track's writes fail, switched per buffer by the replay below.
+private final class WriteFailure: @unchecked Sendable {
+    var on = false
+}
+
+/// A track whose writes fail while `failure.on`, through `FloatTrackFile`'s own injected writer (F1043).
+private func failingTrack(_ name: String, _ body: (FloatTrackFile, WriteFailure) throws -> Void) throws {
+    let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("gap-replay-\(name)-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let failure = WriteFailure()
+    let track = try FloatTrackFile(
+        url: directory.appendingPathComponent("track.f32"), syncIntervalBytes: .max, sync: { _ in },
+        writer: { data, handle in
+            if failure.on { throw CocoaError(.fileWriteOutOfSpace) }
+            try ThrowingFileHandleIO.write(data, to: handle)
+        }
+    )
+    try body(track, failure)
+}
+
+/// Replays `buffers` through `FloatTrackFile.appendCaptured`, the call the capture path makes, with the writes
+/// for the buffers at `failing` refused by the track's own writer (F1043; F397 restated the padding by hand).
+/// Distinct from `replay(_:into:padding:)` above in shape rather than arithmetic: in a *drop* no buffer arrives,
+/// and here every buffer arrives on time and it is the write that fails. As the sample handler does, a refused
+/// write is recorded and the capture goes on. Returns the silence the track padded for the gap.
 private func replayWithFailedWrites(
     _ buffers: [(offset: Double, frames: Int)],
     failing: Range<Int>,
-    into track: FloatTrackFile
-) throws -> Int64 {
-    var padded: Int64 = 0
+    into track: FloatTrackFile,
+    failure: WriteFailure
+) -> Int64 {
     for (index, buffer) in buffers.enumerated() {
-        let gap = CaptureGapPolicy.paddingFrames(
-            presentationOffset: buffer.offset,
-            writtenFrames: track.frameCount,
-            sampleRate: replayRate
-        )
-        if gap > 0 {
-            try track.appendSilence(frames: gap)
-            padded += gap
+        failure.on = failing.contains(index)
+        let samples = [Float](repeating: 0.5, count: buffer.frames)
+        _ = try? samples.withUnsafeBufferPointer { pointer in
+            try track.appendCaptured(
+                pointer.baseAddress!, frameCount: buffer.frames, presentationOffset: buffer.offset, sampleRate: replayRate
+            )
         }
-        guard !failing.contains(index) else { continue }
-        try track.append([Float](repeating: 0.5, count: buffer.frames))
     }
-    return padded
+    failure.on = false
+    return track.gapPaddedFrames
 }
 
 @Test("A run of failed writes leaves the timeline honest rather than shifted (F397)")
@@ -228,10 +243,10 @@ func failedWritesAreReconciledToWallClock() throws {
     // shifted the timeline, every timestamp after it would be wrong and stopping would be the
     // better choice. The argument lives in `docs/PRODUCT_SPEC.md`; the property lives here, so
     // that changing the behaviour breaks a test rather than quietly falsifying a decision.
-    try temporaryTrack("failed-writes") { track, _ in
+    try failingTrack("failed-writes") { track, failure in
         // Three seconds of 100 ms buffers; the writes for one full second of them fail.
         let buffers = healthyStream(seconds: 3.0)
-        let padded = try replayWithFailedWrites(buffers, failing: 10..<20, into: track)
+        let padded = replayWithFailedWrites(buffers, failing: 10..<20, into: track, failure: failure)
 
         #expect(track.frameCount == Int64(3.0 * replayRate),
                 "the track must still span the wall-clock it covers")
