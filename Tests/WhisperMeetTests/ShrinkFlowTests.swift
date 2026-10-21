@@ -586,13 +586,8 @@ func aFileReplacedInPlaceGoesToTheTrash() async throws {
 
 @Test("Shrink's removals go through the Trash: nothing on its delete path unlinks or deletes an original (F1040)")
 func shrinkHasNoDeletionOnItsRemovalPath() throws {
-    let source = try String(contentsOf: URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("Sources/WhisperMeet/AppModel+Shrink.swift"), encoding: .utf8)
     // Comments stripped first, or the paragraph explaining the rule would satisfy or break it (F285).
-    let code = source.split(separator: "\n", omittingEmptySubsequences: false)
-        .map { line -> Substring in line.range(of: "//").map { line[..<$0.lowerBound] } ?? line[...] }
-        .joined(separator: "\n")
+    let code = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppModel+Shrink.swift")
     #expect(!code.contains("removeIfUnchanged"), "the delete step unlinks again")
     #expect(!code.contains("unlink("), "an unlink is back on Shrink's path")
     // Every removeItem left is one of this run's own scratch files, never a file the user had.
