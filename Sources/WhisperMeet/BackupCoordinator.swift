@@ -394,6 +394,13 @@ enum BackupCoordinator {
                 at: base, includingPropertiesForKeys: [.isRegularFileKey]
             ) else { return }
             for case let url as URL in enumerator {
+                // A deleted meeting's folder set aside for removal (F609) is not the library's: a removal
+                // that failed leaves it until a launch sweeps it, and each backup meanwhile copied the
+                // deleted meeting's audio and notes into a new generation (F1047).
+                if url.lastPathComponent.hasPrefix(MeetingStore.setAsidePrefix) {
+                    enumerator.skipDescendants()
+                    continue
+                }
                 let values = try url.resourceValues(forKeys: [.isRegularFileKey])
                 guard values.isRegularFile == true else { continue }
                 let full = url.standardizedFileURL.path

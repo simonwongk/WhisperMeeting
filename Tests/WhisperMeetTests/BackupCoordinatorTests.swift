@@ -697,3 +697,28 @@ func hardLinkProbeThatCannotRunDoesNotClaimUnsupported() {
     ))
     #expect(attempts == 0)
 }
+
+// F1047 — a delete renames the meeting's folder to a hidden `.deleted-…` name before removing it (F609),
+// and a removal that fails leaves it until a launch sweeps it. The backup's walk took every regular file,
+// so each backup in that window copied the deleted meeting's audio and notes into a new generation.
+@Test("A backup does not copy a deleted meeting's set-aside folder (F1047)")
+func backupSkipsADeletedMeetingsSetAsideFolder() throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("BackupCoordinatorTests-\(UUID().uuidString)")
+    let source = tmp.appendingPathComponent("library")
+    let dest = tmp.appendingPathComponent("backup")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    try write("meeting index", to: source.appendingPathComponent("meetings.json"))
+    try write("audio-A", to: source.appendingPathComponent("Recordings/A/meeting.wav"))
+    let setAside = "Recordings/\(MeetingStore.setAsidePrefix)B-6F1E7C2A"
+    try write("deleted audio", to: source.appendingPathComponent("\(setAside)/meeting.wav"))
+    try write("deleted notes", to: source.appendingPathComponent("\(setAside)/notes.md"))
+
+    let summary = try BackupCoordinator.backUp(source: source, destination: dest, now: 1_000, retain: 2)
+
+    #expect(summary.verified)
+    let generation = backupRoot(dest).appendingPathComponent("1000")
+    #expect(FileManager.default.fileExists(atPath: generation.appendingPathComponent("Recordings/A/meeting.wav").path))
+    #expect(!FileManager.default.fileExists(atPath: generation.appendingPathComponent(setAside).path),
+            "a deleted meeting's audio was copied into the backup")
+    #expect(summary.copied == 2, "\(summary.copied) files copied: the index and meeting A's recording only")
+}
