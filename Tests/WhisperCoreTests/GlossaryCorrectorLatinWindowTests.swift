@@ -468,3 +468,19 @@ func realMishearingsSurviveTheCommonWordRules() {
         #expect(rows([term], line) == ["\(from) → \(term)"], "\(term) in \(line)")
     }
 }
+
+@Test("A row renames a person when every word it changes is a first name and so is what it becomes (F1064)")
+func renamesAPersonReadsEveryChangedWord() {
+    func renames(_ from: String, _ to: String) -> Bool { GlossaryReviewDefaults.renamesAPerson(from: from, to: to) }
+    #expect(renames("Carla", "Carl"))
+    #expect(renames("Sarah", "Sara"))
+    #expect(renames("bryan", "Brian"), "case is not a difference")
+    #expect(renames("Sarah Lee", "Sara Lee"), "the surname is the same; the first name is changed")
+    #expect(renames("Carla's", "Carl"), "a possessive is the same name")
+    #expect(!renames("Kestrol", "Kestrel"), "not names: a mishearing")
+    #expect(!renames("Pria Ramen", "Priya Raman"), "Pria and Ramen are no first names: a mishearing")
+    #expect(!renames("Carla Smyth", "Carl Smith"), "the surname is misheard too, so it reads as a mishearing")
+    #expect(!renames("Carl", "Carl"), "nothing changed")
+    #expect(!renames("Carla Lee", "Carl"), "a different number of words is no rename")
+    #expect(!renames("陈经理", "张经理"))
+}

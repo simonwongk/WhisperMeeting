@@ -5040,6 +5040,11 @@ private struct GlossarySuggestionSheet: View {
                                 Label("\(proposal.to) is spelled right in this line too — this may be another name. Tick it to apply", systemImage: "person.2")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                            } else if review.renamesAPerson.contains(index) {
+                                // F1064: one first name to another — never applied in one click.
+                                Label("\(proposal.from) and \(proposal.to) are both first names — this may rename a person. Tick it to apply", systemImage: "person.2")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             } else if review.uncheckedByDefault.contains(index) {
                                 // F536: a Chinese match is by sound; it is never applied in one click.
                                 Label("Sounds like the term — check it, then tick it to apply", systemImage: "ear")

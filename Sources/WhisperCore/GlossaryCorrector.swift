@@ -1036,6 +1036,31 @@ public enum GlossaryReviewDefaults {
         })
     }
 
+    /// Indices of `proposals` that would turn one person's first name into another's (F1064): every
+    /// word the row changes is a common first name (`CommonGivenNames`), and so is the word it becomes.
+    /// Carla → Carl, Sarah → Sara, Bryan → Brian in a line without the term score as a mishearing does
+    /// and write the same digits, so F1039's rules keep them, and spelling alone cannot tell the person
+    /// Carla from a mishearing of Carl. The user chose on 2026-10-22 that they arrive unticked, as
+    /// `besideTheirTerm`'s do. A row toward a name from a word that is not one — Kestrol → Kestrel,
+    /// Pria Ramen → Priya Raman — is untouched.
+    public static func renamesAPerson(_ proposals: [GlossaryCorrection]) -> Set<Int> {
+        Set(proposals.indices.filter { renamesAPerson(from: proposals[$0].from, to: proposals[$0].to) })
+    }
+
+    static func renamesAPerson(from: String, to: String) -> Bool {
+        guard !ReplacementBoundary.hasCJK(from), !ReplacementBoundary.hasCJK(to) else { return false }
+        func words(_ text: String) -> [String] {
+            text.split(whereSeparator: { $0.isWhitespace || $0 == "-" })
+                .map { $0.trimmingCharacters(in: .punctuationCharacters) }
+                .map { $0.hasSuffix("'s") || $0.hasSuffix("’s") ? String($0.dropLast(2)) : $0 }
+                .filter { !$0.isEmpty }
+        }
+        let heard = words(from), term = words(to)
+        guard !heard.isEmpty, heard.count == term.count else { return false }
+        let changed = zip(heard, term).filter { $0.lowercased() != $1.lowercased() }
+        return !changed.isEmpty && changed.allSatisfy { CommonGivenNames.contains($0) && CommonGivenNames.contains($1) }
+    }
+
     /// Indices of `proposals` whose span contains a Chinese character (F536) — what the app leaves
     /// unticked from Correct Toward Vocabulary, whose Chinese matches are by sound.
     public static func chineseSpans(_ proposals: [GlossaryCorrection]) -> Set<Int> {

@@ -14,7 +14,8 @@ private func row(_ segment: Int, _ from: String, _ to: String) -> GlossaryCorrec
 @Test("Ticking one of two rows for one place unticks the other, and Select All picks one per place (F966)")
 func alternativesTakeOneTick() {
     let review = ProposalReview(
-        proposals: [row(0, "Kestral", "Kestrel"), row(0, "Kestral", "Kestrol"), row(1, "Jon", "Jonathan")],
+        // The third row is no first-name pair: since F1064 "Jon → Jonathan" would arrive unticked.
+        proposals: [row(0, "Kestral", "Kestrel"), row(0, "Kestral", "Kestrol"), row(1, "Kubernets", "Kubernetes")],
         source: .vocabulary
     )
     let groups = [0: 0, 1: 0]
@@ -171,12 +172,46 @@ func rowsBesideTheirTermArriveUnticked() {
         #expect(!afterSelectAll.contains(row), "Select All ticked \(row)")
     }
     #expect(review.besideTheirTerm == Set(shown.indices.filter { beside.contains(shown[$0]) }))
-    // A mishearing in a line without its term is ticked as before. (So is "Carla → Sara" — Carla in a
-    // line without Sara — a near-identical name where the term is absent, which is F1039's.)
+    // A mishearing in a line without its term is ticked as before. "Carla → Sara" — Carla in a line
+    // without Sara — was too, until F1064: both are first names, so it now arrives unticked.
     #expect(pre.contains("Kestrol → Kestrel"))
+    if shown.contains("Carla → Sara") { #expect(!pre.contains("Carla → Sara"), "a first name renamed in one click") }
     // From the other tools nothing changes: a rule is the user's own, a model's row is reviewed as before.
     #expect(ProposalReview(proposals: rows, source: .replacementRules).preselected(touching: []).count == rows.count)
     // The sheet says why such a row is unticked.
     let source = (try? SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")) ?? ""
     #expect(source.contains("} else if review.besideTheirTerm.contains(index) {"))
+}
+
+// F1064 — F1039's rules keep a row toward a name in a line without it when the window scores 0.8, writes the
+// term's digits and is no function word: so Carla → Carl, Sarah → Sara and Bryan → Brian arrived ticked, and
+// one Apply could rename a person the user never misheard. The user chose on 2026-10-22 that a row turning one
+// common first name into another starts unticked. A mishearing toward a name is ticked as before.
+@MainActor
+@Test("A row turning one first name into another arrives unticked; a mishearing toward a name is still ticked (F1064)")
+func firstNameToFirstNameRowsArriveUnticked() {
+    let vocabulary = ["Carl", "Sara", "Brian", "Kestrel", "Priya Raman"]
+    let lines = ["Carla will sync on Friday", "Sarah agreed with the plan", "Bryan agreed too",
+                 "the Kestrol launch moved", "ask Pria Ramen about it"]
+    let segments = lines.map { TranscriptSegment(speaker: nil, start: 0, end: 1, text: $0) }
+    let rows = GlossaryCorrector.proposing(GlossaryCorrector.corrections(vocabulary: vocabulary, segments: segments), on: segments)
+    let review = ProposalReview(proposals: rows, source: .vocabulary)
+    let shown = review.proposals.map { "\($0.from) → \($0.to)" }
+    let pre = Set(review.preselected(touching: [], groups: [:]).map { shown[$0] })
+    let afterSelectAll = Set(review.toggledAll([], groups: [:]).map { shown[$0] })
+    for row in ["Carla → Carl", "Sarah → Sara", "Bryan → Brian"] {
+        #expect(shown.contains(row), "\(row) is no longer offered: \(shown)")
+        #expect(!pre.contains(row), "\(row) arrived ticked")
+        #expect(!afterSelectAll.contains(row), "Select All ticked \(row)")
+    }
+    for row in ["Kestrol → Kestrel", "Pria Ramen → Priya Raman"] {
+        #expect(pre.contains(row), "\(row) — a mishearing — arrived unticked: \(shown)")
+    }
+}
+
+@Test("The sheet says why a first-name row is unticked (F1064)")
+func theSheetSaysWhyAFirstNameRowIsUnticked() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    #expect(source.contains("} else if review.renamesAPerson.contains(index) {"))
+    #expect(source.contains("are both first names — this may rename a person"))
 }

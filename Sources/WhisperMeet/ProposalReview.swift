@@ -49,8 +49,11 @@ struct ProposalReview: Identifiable, Equatable {
         }
         self.pages = pages.isEmpty ? [0..<0] : pages
         let beside = source == .vocabulary ? GlossaryReviewDefaults.besideTheirTerm(proposals) : []
-        let unchecked = source == .vocabulary ? GlossaryReviewDefaults.chineseSpans(proposals).union(beside) : []
+        let renames = source == .vocabulary ? GlossaryReviewDefaults.renamesAPerson(proposals) : []
+        let unchecked = source == .vocabulary
+            ? GlossaryReviewDefaults.chineseSpans(proposals).union(beside).union(renames) : []
         besideTheirTerm = beside
+        renamesAPerson = renames
         uncheckedByDefault = unchecked
         selectableAll = Set(proposals.indices).subtracting(unchecked)
     }
@@ -88,6 +91,11 @@ struct ProposalReview: Identifiable, Equatable {
     /// mishearing there (Carla 0.8 and Kestrol 0.86 — the second review of lane E), so they arrive
     /// unticked and out of Select All, each with its sentence. The user chose that on 2026-10-18.
     let besideTheirTerm: Set<Int>
+
+    /// Correct Toward Vocabulary's rows that would turn one common first name into another (F1064):
+    /// Carla → Carl, Sarah → Sara. Unticked and out of Select All, each with its sentence, as
+    /// `besideTheirTerm`'s are. The user chose that on 2026-10-22.
+    let renamesAPerson: Set<Int>
 
     /// What the sheet ticks on a page when that page is first checked (F818, round 3), once it knows
     /// which of its proposals touch a vocabulary term (F245): everything else, less
