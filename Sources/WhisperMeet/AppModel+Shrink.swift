@@ -408,11 +408,20 @@ extension AppModel {
                         do {
                             defer { try? FileManager.default.removeItem(at: lanesFile) }
                             if let keptRead {
-                                measured = try auditLanes(keptRead.lanes, keptRead.trackChannels, keptRead.frames, tempM4A)
-                                reads = try await compareReads(recordingURL, keptRead.lanes, keptRead.trackChannels, keptRead.frames)
+                                do {
+                                    measured = try auditLanes(keptRead.lanes, keptRead.trackChannels, keptRead.frames, tempM4A)
+                                    reads = try await compareReads(recordingURL, keptRead.lanes, keptRead.trackChannels, keptRead.frames)
+                                } catch {
+                                    // F1078: a kept read cut short, a second read that ended early, a channel count
+                                    // that is not the mix's — faults of this run's reads, not of the original, which a
+                                    // retry may not meet. Said as they are.
+                                    throw ShrinkFailure.copyNotChecked(reason: ShrinkFailure.checkReason(error))
+                                }
                             } else {
                                 measured = try await audit(recordingURL, tempM4A)
                             }
+                        } catch let failure as ShrinkFailure {
+                            throw failure
                         } catch { throw ShrinkFailure.unreadableOriginal }
                         if let finding = RecordingMixPlan.firstFinding(
                             measured, nativeChannelWindows: original.channelWindowLevels, nativeLevel: original.level
@@ -816,6 +825,9 @@ extension AppModel {
         /// (com.apple.coreaudio.avfaudio error …)") is not the sentence the user reads (F801).
         case unreadableCopy
         case unreadableOriginal
+        /// The copy could not be checked against the mixer's own read or a read of the recording beside it —
+        /// a fault of this run's reads, not of the original (F1078). `reason` is what failed, without a capital.
+        case copyNotChecked(reason: String)
         /// The copy is missing the recording's sound in the stretch that starts at this second (F801
         /// review). It is the first such stretch the check found, and the check stops there, so this
         /// says nothing about the stretches after it (second review, R7).
@@ -839,6 +851,17 @@ extension AppModel {
 
         /// What a channel finding says, of `owner`'s channels — "the recording's", or "its" for a leftover or a
         /// download — and the copy, without a capital or a full stop.
+        /// What failed, for `copyNotChecked` (F1078): a mixer read's own detail — "the mix's kept read holds … frames",
+        /// "the second read of the recording ended early" — which its `errorDescription` does not carry, else the
+        /// error's sentence, without its capital or full stop.
+        static func checkReason(_ error: Error) -> String {
+            if case let RecordingMixer.Failure.unreadable(detail) = error { return detail }
+            var text = ErrorPresentation.readable(error).trimmingCharacters(in: .whitespacesAndNewlines)
+            if text.hasSuffix(".") { text.removeLast() }
+            guard let first = text.first else { return "a read failed" }
+            return first.lowercased() + text.dropFirst()
+        }
+
         static func sentence(_ finding: RecordingMixPlan.ChannelPresenceFinding, owner: String) -> String {
             let window = { (index: Int) in TranscriptFormatter.clock(Double(index) * MeetingStoragePlan.levelWindowSeconds) }
             switch finding {
@@ -912,6 +935,8 @@ extension AppModel {
                 return "The compressed copy could not be read back, so it was discarded."
             case .unreadableOriginal:
                 return "The recording could not be read to check the compressed copy against it, so the copy was discarded."
+            case let .copyNotChecked(reason):
+                return "The compressed copy could not be checked against the recording (\(reason)), so it was discarded; trying again may work."
             case let .soundLost(at):
                 return "The compressed copy is missing sound the recording has at about \(TranscriptFormatter.clock(at)), so it was discarded."
             case let .mixNotShown(finding):

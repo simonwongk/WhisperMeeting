@@ -773,3 +773,41 @@ func shrinkRemovesTheMixScratchAnEarlierRunLeft() async throws {
     #expect(!f.exists(".shrink-0LD.mix.wav") && !f.exists(".shrink-0LD.mix.wav.lanes"), "the earlier run's scratch is still there")
     #expect(try Data(contentsOf: f.recording) == original)
 }
+
+// MARK: - A check that could not run says why (F1078)
+
+@Test("When the copy cannot be checked against the mixer's read, Shrink says why, not that the original is unreadable (F1078)")
+@MainActor
+func shrinkSaysWhyTheCopyCouldNotBeChecked() async throws {
+    // Two causes the kept-read checks throw for, neither a fault of the original: a kept read cut short of the mix,
+    // and a second read that ended early. Both used to read "The recording could not be read to check …".
+    let a = fixtureVoice(voiceA, seconds: 6), b = fixtureVoice(voiceB, seconds: 6)
+    for cause in ["short kept read", "second read ended early"] {
+        let f = try await MixFixture(recordingExtension: "mov", duration: 6, mixing: true) { url in
+            try await writeFixtureRawTracks(to: url, [[a], [b]])
+        }
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        if cause == "short kept read" {
+            f.model.mixForShrink = { input, output in
+                let lanes = RecordingMixer.lanes(beside: output)
+                let result = try await RecordingMixer.mixEveryChannel(of: input, to: output, lanes: lanes)
+                let handle = try FileHandle(forWritingTo: lanes)
+                try handle.truncate(atOffset: UInt64(result.frames / 2 * result.channels * MemoryLayout<Float>.size))
+                try handle.close()
+                return result
+            }
+        } else {
+            f.model.compareReadsForShrink = { _, _, _, _ in throw RecordingMixer.Failure.unreadable("the second read of the recording ended early") }
+        }
+        let original = try Data(contentsOf: f.recording)
+
+        await f.shrink()
+
+        let alert = f.model.alertMessage ?? "nil"
+        #expect(alert.contains("nothing was removed") && alert.contains("could not be checked against the recording"), "\(cause): \(alert)")
+        #expect(!alert.contains("could not be read to check"), "\(cause): \(alert)")
+        let named = cause == "short kept read" ? "kept read holds" : "second read of the recording ended early"
+        #expect(alert.contains(named), "\(cause): \(alert)")
+        #expect(try Data(contentsOf: f.recording) == original, "\(cause)")
+    }
+}
