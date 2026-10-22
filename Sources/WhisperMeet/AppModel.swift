@@ -679,8 +679,8 @@ final class AppModel: ObservableObject {
     /// and only the sheet's presents (F795).
     @Published var isStorageSheetOpen = false
     /// Whether Shrink mixes a recording with several audio tracks or more than two channels into its copy:
-    /// `MeetingStoragePlan.shrinkMixesRecordings`, the switch, which is off (F980). Only the tests of the
-    /// held-back mixing Shrink set it, so that path keeps running until the switch is turned on.
+    /// `MeetingStoragePlan.shrinkMixesRecordings`, the switch, on since F1071. The tests of the refusal it
+    /// replaced set it off, so that path keeps running.
     var shrinkMixesRecordings = MeetingStoragePlan.shrinkMixesRecordings
     var encodeForShrink: @Sendable (_ input: URL, _ output: URL, _ workingWAV: URL) throws -> Void = {
         try AudioCompressor.compressSpeech(input: $0, output: $1, workingWAV: $2)

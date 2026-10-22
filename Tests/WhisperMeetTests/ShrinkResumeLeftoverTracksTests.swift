@@ -8,9 +8,9 @@ import Testing
 // it read only their length (F911), never their tracks or channels. A build without F801's refusal (the
 // installed F795 build) shrank a two-track or four-channel import to its first track or channel; if it
 // was interrupted between saving the index and removing the original, the next resume deleted the last
-// copy of the rest. As shipped, while Shrink of a recording that needs mixing is held back (F980), such a
-// leftover is always kept. With the switch on (`mixing: true`, the held-back path these tests keep running),
-// it is removed only when the copy is shown to hold each of its channels, the check a mixing encode makes —
+// copy of the rest. While Shrink of a recording that needs mixing was held back (F980, the switch off), such a
+// leftover was always kept. With the switch on (as shipped since F1071), it is removed only when the copy is
+// shown to hold each of its channels, the check a mixing encode makes —
 // so a copy a mixing build made finishes, and one that kept track 1 keeps its original. Driven through the
 // Shrink button's calls, with the real encoder and decoder.
 
@@ -23,8 +23,10 @@ private struct ResumeFixture {
 
     /// A meeting whose index already names `recording.m4a` (the copy `makeCopy` writes from the leftover
     /// `leftoverName`, which `writeLeftover` makes): the state an interrupted Shrink leaves.
-    /// `mixing` sets `shrinkMixesRecordings`, the switch: off as shipped (F980), on for the held-back path.
-    init(leftoverName: String, duration: TimeInterval, mixing: Bool = false, writeLeftover: (URL) async throws -> Void,
+    /// `mixing` sets `shrinkMixesRecordings`, the switch: as shipped by default (on since F1071), off for the
+    /// refusal it replaced.
+    init(leftoverName: String, duration: TimeInterval, mixing: Bool = MeetingStoragePlan.shrinkMixesRecordings,
+         writeLeftover: (URL) async throws -> Void,
          makeCopy: (URL, URL, URL) async throws -> Void) async throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("F955-\(UUID().uuidString)")
         id = UUID()
@@ -208,12 +210,12 @@ func shrinkResumeRemovesAOneTrackLeftover() async throws {
     #expect(!f.exists("recording.mov") && f.exists("recording.m4a"), "\(alert)")
 }
 
-// F980: while Shrink of a recording that needs mixing is held back, a resume keeps a several-track leftover
-// too, even beside a copy that is its own mix: the check that would show the copy holds it is F980's.
-@Test("A resume keeps a several-track leftover while mixing Shrink is held back, even beside its own mix (F955, F980)")
+// F980: with Shrink of a recording that needs mixing held back (the switch off; on since F1071), a resume keeps a
+// several-track leftover too, even beside a copy that is its own mix: the check that would show the copy holds it is F980's.
+@Test("With mixing Shrink held back, a resume keeps a several-track leftover, even beside its own mix (F955, F980)")
 @MainActor
 func shrinkResumeKeepsASeveralTrackLeftoverWhileMixingIsHeldBack() async throws {
-    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20,
+    let f = try await ResumeFixture(leftoverName: "recording.mov", duration: 20, mixing: false,
                                     writeLeftover: twoSidedCall, makeCopy: mixedCopy)
     defer { try? FileManager.default.removeItem(at: f.root) }
     let original = try Data(contentsOf: f.folder.appendingPathComponent("recording.mov"))

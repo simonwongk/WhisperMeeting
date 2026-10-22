@@ -277,13 +277,17 @@ public enum MeetingStoragePlan {
     /// per-track alignment, fail closed on what it cannot measure) and no probe of either review deletes an
     /// original through it; but a good copy of tracks that share their sound — identical tracks, OBS's
     /// master beside its stems, a dual-mono track beside a mono one — is still refused in some runs, so the
-    /// switch stays off until that is fixed too (the integrator's condition of 2026-10-15). The mixing
-    /// Shrink stays in place behind this switch and its tests run it; a test pins that it is off.
-    public static let shrinkMixesRecordings = false
+    /// switch stayed off until that was fixed too (the integrator's condition of 2026-10-15). F998 fits the
+    /// copy against the mixer's own read, which ended those false refusals, and F1072–F1076 hold that read to a
+    /// read of the recording of its own; three independent reviews found no false accept of any size left but
+    /// the known X1–X4/W shapes and level-blind moves. On (F1071): the user's answer of 2026-10-22, "Turn it on
+    /// (Recommended)", the originals going to the Trash (F1040). A test pins that it is on; the tests of the
+    /// refusal set it off.
+    public static let shrinkMixesRecordings = true
 
     /// Whether Shrink mixes this recording into its copy rather than encoding it as it is (F942): it
     /// has several audio tracks, or more than two channels. One or two channels of one track are mixed
-    /// by the encode itself (F796). While `shrinkMixesRecordings` is off, such a recording is refused.
+    /// by the encode itself (F796). With `shrinkMixesRecordings` off, such a recording is refused.
     public static func needsMix(_ disk: DiskFacts) -> Bool {
         (disk.audioTrackCount ?? 1) > 1 || (disk.channelCount ?? 0) > 2
     }

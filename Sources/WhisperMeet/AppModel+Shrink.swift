@@ -300,8 +300,8 @@ extension AppModel {
             let tempWAV = folder.appendingPathComponent(".shrink-\(token).wav")
             // F942: a recording with several audio tracks or more than two channels is mixed into this
             // 16 kHz mono WAV first, every channel of every track, and the mix is what is encoded. Reached
-            // only with `shrinkMixesRecordings` on: while it is off (F980), `unavailability` refuses such a
-            // recording above, and a resume keeps a leftover that would need it.
+            // only with `shrinkMixesRecordings` on (as shipped since F1071): with it off (F980), `unavailability`
+            // refuses such a recording above, and a resume keeps a leftover that would need it.
             let mixWAV = folder.appendingPathComponent(".shrink-\(token).mix.wav")
             // F998: where the mixer keeps its read, beside the mix (`mixForShrink`'s default).
             let lanesFile = RecordingMixer.lanes(beside: mixWAV)
@@ -565,8 +565,8 @@ extension AppModel {
             // F955: a resume encodes nothing, but before it removes a leftover with several tracks or more
             // than two channels it checks the copy against it as an encode checks a mix (F942, review R2):
             // a copy a build before F942 made kept only the first track or channel, and the leftover then
-            // holds the last copy of the rest. Reached only with `shrinkMixesRecordings` on; while it is off
-            // (F980), `unavailability` keeps every such leftover.
+            // holds the last copy of the rest. Reached only with `shrinkMixesRecordings` on (as shipped since
+            // F1071); with it off (F980), `unavailability` keeps every such leftover.
             let leftovers = MeetingStoragePlan.otherRecordingsToVerify(disk)
             let copyURL = store.recordingURL(for: meeting)
             let decode = decodeForShrink, audit = auditForShrink

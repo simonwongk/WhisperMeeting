@@ -5,8 +5,8 @@ import os
 import WhisperCore
 
 /// Mixes every channel of every audio track of a recording into one 16 kHz mono 16-bit WAV (F942), for
-/// the engines and speaker analysis — and for Shrink, held back behind `MeetingStoragePlan.shrinkMixesRecordings`
-/// — and measures a mono copy against the tracks it was made from (`audit`), so that Shrink deletes nothing a
+/// the engines and speaker analysis — and for Shrink, behind `MeetingStoragePlan.shrinkMixesRecordings` (on since
+/// F1071) — and measures a mono copy against the tracks it was made from (`audit`), so that Shrink deletes nothing a
 /// mix or an encode lost (F980). `RecordingMixPlan` decides
 /// when, combines a track's channels (`channelWeight`) and judges the measurement; this reads and writes.
 ///

@@ -9,6 +9,43 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
+## Maintenance cycle — one ticket at a time: 56 closed, 2026-10-21 to 2026-10-22
+
+One session (whisper-1f) worked the board after Wave 8 one ticket at a time, each test-first, gated in its own worktree, pushed and
+watched to a green CI run before it was closed. The user answered three questions in chat, each recorded on its ticket: first-name
+corrections start unticked (F1064); mixing Shrink stayed off until its check was rebuilt and reviewed (F998); then it was turned on
+(F1071). The full trail is in the ticket log under each ID.
+
+**What changed for the user**
+- **Shrink of recordings with several audio tracks or more than two channels is on (F998, F1071–F1076).** OBS files, multi-microphone
+  recordings and the like now shrink. The check that every track is in the copy was rebuilt: the mixer keeps its own read, the copy is
+  fitted against exactly that, and a second read of the recording, lined up with it, must agree channel by channel. False refusals of
+  good copies went from 3 in 60 to none in 150, and a 30-minute ffmpeg-made file that the first version refused in every run now passes.
+  Three independent reviews found what is fixed above; the known gaps the user accepted are named on F1071. Originals go to the Trash
+  (F1040). Left open: a resumed, interrupted Shrink of such a file often keeps its leftover and needs another try (F1075).
+- **Shrink, otherwise (F1040, F1058, F1059, F1062, F1074).** Shrink moves the original to the Trash instead of deleting it. A download
+  decode longer than measured is no longer trusted. Second Opinion and other per-meeting jobs wait for a Shrink of that meeting. An
+  Opus MP4 import shrinks. Scratch an interrupted Shrink left is cleared by the next.
+- **Vocabulary and corrections (F1064, F1039, F1052, F1030, F1057).** A correction that would turn one first name into another arrives
+  unticked; short common words and numerals are no longer proposed toward short terms; names restored from the full vocabulary are
+  protected from the refiner; a BOM-less Chinese import can no longer come out as UTF-16 garbage. Keep Together stays as it is (F1057,
+  wontfix).
+- **Ask (F392, F1065, F1060, F841, F1048).** Answers only meaning finds are no longer buried by keywords: an English question over Mandarin
+  speech finds its passage; search by meaning is about 15 times faster at 20,000 rows; leaving and returning to Ask mid-indexing no longer
+  falls back to keyword search.
+- **Saving and quitting (F1034, F1054, F1036, F1055, F1056, F1041).** The quit question also counts a dictation whose history save was
+  refused, and a meeting save lost to another copy; a cleared title field no longer beats a rename from another window; action items
+  keep their typed text across a re-summarize; an index holding `-1e400` no longer crashes the app at every launch.
+- **Recording and dictation (F1050, F1049, F1061, F1067, F693, F924, F925, F926, F1051).** Drift steering survives a Mac sleep; a
+  recording's time is its start, in the zone it was recorded in; a model download is not stopped for the time the Mac slept; choosing ⌘
+  or ⌃ alone as the trigger asks first; the menu bar's failed-dictation line is cut at a word.
+- **Installer (F824, F825).** A Repair resumes the 1.6 GB dictation-model download instead of starting over; `hf-xet` is pinned.
+
+**Verification.** Every ticket closed with its failing-before test, its gate and its CI run in the log. Two pushes went red: on
+`38c8c86b` F901's slow-download test changed its estimate too rarely for a slow runner (fixed by F1070), and on `e45d69ab` F1072's
+test did not compile on the runner's Swift 6.1, though it did on the developer's newer compiler (fixed by `88ff1e43`); the next run
+was green each time. CI's known issues are F957's deliberate timeout test (two on the runner, one locally).
+
 ## Maintenance cycle — Wave 8: 123 tickets closed, 2026-10-16 to 2026-10-18
 
 Ten lanes, each worked test-first in its own worktree and reviewed by a second agent; Shrink (which deletes audio) had two reviews

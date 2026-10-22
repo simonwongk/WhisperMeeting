@@ -33,9 +33,9 @@ struct MixFixture {
     let folder: URL
     let recording: URL
 
-    /// `mixing` sets `shrinkMixesRecordings`, the switch for Shrink of a recording that needs mixing: off
-    /// as shipped (F980); on for the tests that run the held-back path.
-    init(recordingExtension ext: String, duration: TimeInterval, mixing: Bool = false,
+    /// `mixing` sets `shrinkMixesRecordings`, the switch for Shrink of a recording that needs mixing: as shipped
+    /// by default (on since F1071); off for the tests of the refusal it replaced.
+    init(recordingExtension ext: String, duration: TimeInterval, mixing: Bool = MeetingStoragePlan.shrinkMixesRecordings,
          write: (URL) async throws -> Void) async throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("F942-shrink-\(UUID().uuidString)")
         id = UUID()
@@ -405,12 +405,12 @@ func shrinkConfirmationSaysTheTracksAreMixed() async throws {
 // sound was not in the copy, with the real mixer: D1, a quiet track whose stereo channels cancel, judged only
 // above a tenth of the whole recording's level, even where it sounds alone; D2, one NaN channel of a float
 // WAV, which silenced the mix while the audit read NaN as silence. The integrator's decision, following the
-// user's answer to F942 ("keep refusing now, mix later"): Shrink refuses every recording that needs mixing
-// until its audit is proven (F980, and the false refusals it left); transcription keeps mixing, since it
-// deletes nothing. These run the shipped
-// behaviour; the tests above run the held-back path.
+// user's answer to F942 ("keep refusing now, mix later"): Shrink refused every recording that needs mixing
+// until its audit was proven (F980, and the false refusals it left); transcription keeps mixing, since it
+// deletes nothing. The switch is on since F1071; the refusal is kept, and pinned here with it off. D1 and D2
+// below run with the switch as shipped, so the audit itself keeps those originals.
 
-@Test("Shrink refuses a recording that needs mixing, before anything is mixed or encoded (F942, F980)")
+@Test("With the switch off, Shrink refuses a recording that needs mixing, before anything is mixed or encoded (F942, F980)")
 @MainActor
 func shrinkRefusesEveryRecordingThatNeedsMixing() async throws {
     let poly = [300.0, 500.0, 700.0, 900.0].map { fixtureTone(frequency: $0, amplitude: 0.2, seconds: 4) }
@@ -424,7 +424,7 @@ func shrinkRefusesEveryRecordingThatNeedsMixing() async throws {
         ("5.1", "wav", "6 channels", { url in try fixturePolyWAV(surround, mask: 0x3F).write(to: url) }),
     ]
     for c in cases {
-        let f = try await MixFixture(recordingExtension: c.ext, duration: 4, write: c.write)
+        let f = try await MixFixture(recordingExtension: c.ext, duration: 4, mixing: false, write: c.write)
         defer { try? FileManager.default.removeItem(at: f.root) }
         let mixed = CallFlag(), encoded = CallFlag()
         f.model.mixForShrink = { _, _ in mixed.set(); throw CancellationError() }
@@ -485,13 +485,13 @@ func shrinkKeepsAnOriginalWithANaNChannel() async throws {
     #expect(!f.exists("recording.m4a"), "\(alert)")
 }
 
-@Test("The app's Shrink starts with mixing off, as the plan's switch is (F980)")
+@Test("The app's Shrink starts with mixing on, as the plan's switch is (F980, F1071)")
 @MainActor
-func appShrinkStartsWithMixingOff() throws {
+func appShrinkStartsWithMixingOn() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("F980-switch-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: root) }
     let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
                          defaults: UserDefaults(suiteName: testSuiteName())!)
     model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
-    #expect(model.shrinkMixesRecordings == false)
+    #expect(model.shrinkMixesRecordings == true)
 }

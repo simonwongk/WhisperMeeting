@@ -85,11 +85,11 @@ invalidated after Stop, import, Shrink, Rebuild Audio and delete. Sizes are form
     but **not** for AAC output: a right-only stereo file encoded straight to AAC with `-c 1 --mix` decoded to silence.
   - The two-step path kept it (RMS 4240 against 4242 for the mixed WAV). Native captures are mono, so this matters for
     stereo imports.
-  - **Step 0, for a recording with several audio tracks or more than two channels (F942, 2026-10-12) — held back.**
-    As shipped, such a recording is refused (*Refusals*): `MeetingStoragePlan.shrinkMixesRecordings`, the switch, is
-    off. F980 rewrote step 4's check of a mix and no probe of either review deletes an original through it, but a good
-    copy of tracks that share their sound is still refused in some runs, so the switch stays off until that is fixed
-    (see the F942 amendment). With the switch on, the recording is first mixed into a 16 kHz mono WAV, `.shrink-<uuid>.mix.wav`, by `RecordingMixer`, by a capture's rule: each track's
+  - **Step 0, for a recording with several audio tracks or more than two channels (F942, 2026-10-12) — on since
+    F1071 (2026-10-22).** `MeetingStoragePlan.shrinkMixesRecordings`, the switch, was off while a good copy of tracks
+    that share their sound was refused in some runs (F980); F998 ended that, F1072–F1076 hold the mixer's read to a
+    read of its own, three independent reviews followed, and the user chose to turn it on, the originals going to
+    the Trash (F1040). With the switch off, such a recording is refused (*Refusals*). The recording is first mixed into a 16 kHz mono WAV, `.shrink-<uuid>.mix.wav`, by `RecordingMixer`, by a capture's rule: each track's
     channels averaged into its own signal, as a capture averages a microphone's channels (F659), each track placed at
     its own time, and the tracks summed as a capture sums its two (`FloatTrackMixer.limitedSample`: 0.95 of the sum
     while it fits, a smooth limiter above, never full scale). Steps 1 and 2 then run on the mix. Before F942 such a
@@ -234,7 +234,8 @@ verified and the index saved.
      by one rule (F980, 2026-10-14): *the original is deleted only when the audit finds every track's and every channel's
      sound in the copy; what it cannot find is a refusal.* This holds against a lost or fully cancelled track; it does not
      yet hold against a voice cancelled by an opposite-polarity copy of it on another track or channel (review of lane S,
-     X1–X4) or a loss shorter than about half a second inside one window (W) — F998, which keeps mixing Shrink off. In each window: nothing measured is NaN or
+     X1–X4) or a loss shorter than about half a second inside one window (W) — known gaps the user accepted when
+     mixing Shrink was turned on (F1071), the originals going to the Trash. In each window: nothing measured is NaN or
      infinite, in the recording's own decode, the audit's read or the copy (D2); every channel the recording's own
      decode hears was read for the mix; every track that sounds keeps a quarter of its sound when its channels are
      combined, and the tracks a quarter when summed (a track or tracks in opposite polarity are refused); the copy
@@ -584,13 +585,13 @@ follows; the user has not reviewed this yet.
 The user answered the question above on 2026-10-12: keep refusing for now, and mix all tracks into one for both
 transcription and Shrink. Wave 6 built the mixing, for both.
 
-**Shrink's half is held back (F980).** The second review of F942 found Shrink's check of a mixed copy still
+**Shrink's half was held back (F980); it is on since F1071.** The second review of F942 found Shrink's check of a mixed copy still
 deleting originals whose sound was not in the copy (step 4), so the integrator decided on 2026-10-12, following the
 user's "keep refusing for now": Shrink refuses every recording that needs mixing until its check is proven. F980
 rewrote the check to the rule in step 4, and every probe of both reviews now keeps its original; its last runs on
 2026-10-15 still refused good copies of tracks that share their sound in some runs, which was the integrator's
 condition for leaving the switch off. The mixing Shrink described below is in place behind
-`MeetingStoragePlan.shrinkMixesRecordings`, which is off, and its tests run with it on.
+`MeetingStoragePlan.shrinkMixesRecordings`, which is on since F1071; the tests of the refusal run with it off.
 
 - **What is mixed.** A recording with several audio tracks, or one track of more than two channels
   (`RecordingMixPlan`). One track of one or two channels is not: the encode's `--mix` mixes stereo (F796), as the
