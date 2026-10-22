@@ -176,3 +176,158 @@ func askViewPausesAndShowsProgress() throws {
     #expect(source.contains("model.pauseAskIndexing()"))
     #expect(source.contains("model.askIndexingProgress"))
 }
+
+/// A gate that ignores cancellation, as a helper being stopped and reaped does: an embedder call
+/// waiting in it is still there after its job is paused, until the test opens it.
+private actor UncancellableGate {
+    private var isOpen = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        if isOpen { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+    func open() {
+        isOpen = true
+        for continuation in waiting { continuation.resume() }
+        waiting = []
+    }
+}
+
+// F1060 — leaving Ask pauses the job, and the helper takes a moment to stop. A search that came back
+// in that moment joined the dying job and inherited its cancellation: keyword results only, and
+// nothing indexed (the review's probe: 1 passage call, 0 of 3 indexes written).
+@MainActor
+@Test("A search that comes back while a paused job is still stopping indexes for itself (F1060)")
+func aReturningSearchDoesNotInheritThePause() async throws {
+    let (model, root, ids) = try makeLibrary(meetings: 3, lines: 4)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let log = EmbedderLog()
+    let gate = UncancellableGate()
+    model.askEmbedder = { texts, kind in
+        if kind == .passage {
+            await log.record(texts, nil)
+            if await log.passageCalls.count == 1 { await gate.wait() }
+        }
+        try Task.checkCancellation()
+        return (2, texts.flatMap { _ in [Float(1), 0] })
+    }
+    let pass = try #require(await model.askKeywordPass(query: "vendor pricing", scope: MeetingScope()))
+
+    // Ask, then leave: what `AskMeetingsView.onDisappear` does.
+    let left = Task { await model.askMeetingsByMeaning(pass, limit: 10) }
+    try await waitUntil("the search to start embedding") { await log.passageCalls.count == 1 }
+    left.cancel()
+    model.pauseAskIndexing()
+    // Back on Ask before the job has stopped. Nobody cancelled this search.
+    let returned = Task { await model.askMeetingsByMeaning(pass, limit: 10) }
+    try await waitUntil("the returning search to find the stopping job") { model.askIndexJobJoins == 1 }
+    await gate.open()
+    _ = await left.value
+    _ = await returned.value
+
+    #expect(await log.passageCalls.count == 2, "the returning search started no indexing of its own")
+    for id in ids { #expect(await indexWritten(model, id), "the returning search fell back to keywords and indexed nothing") }
+    #expect(!model.isIndexingForAsk)
+}
+
+@MainActor
+@Test("The returning search indexes only what the paused job had not saved, including a group it saved while stopping (F1060)")
+func aReturningSearchResumesAfterThePausedJobsGroups() async throws {
+    let (model, root, ids) = try makeLibrary(meetings: 3, lines: 4)
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.askEmbeddingChunkPassages = 4   // one meeting per helper run
+    let log = EmbedderLog()
+    let gate = UncancellableGate()
+    // The second group is in flight when Ask is left and finishes anyway, so the paused job saves it
+    // after the returning search has looked for saved indexes — then stops before the third group.
+    model.askEmbedder = { texts, kind in
+        if kind == .passage {
+            await log.record(texts, nil)
+            if await log.passageCalls.count == 2 { await gate.wait() }
+        }
+        return (2, texts.flatMap { _ in [Float(1), 0] })
+    }
+    let pass = try #require(await model.askKeywordPass(query: "vendor pricing", scope: MeetingScope()))
+
+    let left = Task { await model.askMeetingsByMeaning(pass, limit: 10) }
+    try await waitUntil("the second group to start") { await log.passageCalls.count == 2 }
+    left.cancel()
+    model.pauseAskIndexing()
+    let returned = Task { await model.askMeetingsByMeaning(pass, limit: 10) }
+    try await waitUntil("the returning search to find the stopping job") { model.askIndexJobJoins == 1 }
+    await gate.open()
+    _ = await left.value
+    _ = await returned.value
+
+    let calls = await log.passageCalls
+    #expect(calls.count == 3, "\(calls.count) helper runs for three meetings")
+    #expect(Set(calls).count == calls.count, "a group the paused job saved was embedded again")
+    for id in ids { #expect(await indexWritten(model, id)) }
+}
+
+@MainActor
+@Test("A search replaced while it waits on another's job starts no indexing of its own when that job ends (F840, F1060)")
+func aReplacedSearchStartsNoJobOfItsOwn() async throws {
+    let (model, root, ids) = try makeLibrary(meetings: 3, lines: 4)
+    defer { try? FileManager.default.removeItem(at: root) }
+    // The first two meetings are tagged, so a search scoped to the tag indexes only them.
+    for id in ids.prefix(2) {
+        var meeting = try #require(model.store.meeting(id: id))
+        meeting.tags = ["vendor"]
+        model.store.upsert(meeting)
+    }
+    let log = EmbedderLog()
+    model.askEmbedder = gatedEmbedder(log, model: model)
+    let tagged = try #require(await model.askKeywordPass(query: "vendor pricing", scope: MeetingScope(tags: ["vendor"])))
+    let everything = try #require(await model.askKeywordPass(query: "vendor pricing", scope: MeetingScope()))
+
+    let first = Task { await model.askMeetingsByMeaning(tagged, limit: 10) }
+    try await waitUntil("the tagged search to start embedding") { await log.passageCalls.count == 1 }
+    let replaced = Task { await model.askMeetingsByMeaning(everything, limit: 10) }
+    try await waitUntil("the wider search to join the running job") { model.askIndexJobJoins == 1 }
+    replaced.cancel()
+    await log.release()
+    _ = await first.value
+    _ = await replaced.value
+
+    #expect(await log.passageCalls.count == 1, "the replaced search indexed the meeting the first job left")
+    #expect(await indexWritten(model, ids[0]))
+    #expect(await indexWritten(model, ids[1]))
+    #expect(!(await indexWritten(model, ids[2])))
+    #expect(!model.isIndexingForAsk)
+}
+
+@MainActor
+@Test("A group that finishes after the pause is kept, and the next group does not start (F840, F1060)")
+func aGroupFinishingAfterThePauseIsTheLast() async throws {
+    let (model, root, ids) = try makeLibrary(meetings: 2, lines: 4)
+    defer { try? FileManager.default.removeItem(at: root) }
+    model.askEmbeddingChunkPassages = 4   // one meeting per helper run
+    let log = EmbedderLog()
+    let gate = UncancellableGate()
+    // Returns normally even when its job was paused meanwhile: the run had already finished. Only the
+    // check between groups can stop the job here.
+    model.askEmbedder = { texts, kind in
+        if kind == .passage {
+            await log.record(texts, nil)
+            await gate.wait()
+        }
+        return (2, texts.flatMap { _ in [Float(1), 0] })
+    }
+    let pass = try #require(await model.askKeywordPass(query: "vendor pricing", scope: MeetingScope()))
+
+    let search = Task { await model.askMeetingsByMeaning(pass, limit: 10) }
+    try await waitUntil("the search to start embedding") { await log.passageCalls.count == 1 }
+    search.cancel()
+    model.pauseAskIndexing()
+    await gate.open()
+    _ = await search.value
+
+    try await waitUntil("the job to stop") { !model.isIndexingForAsk }
+    let calls = await log.passageCalls
+    #expect(calls.count == 1, "a second group started after the pause")
+    // Groups follow the keyword ranking, not the order the meetings were made in.
+    let finished = try #require(ids.first { model.store.meeting(id: $0)?.segments.map(\.text) == calls.first })
+    #expect(await indexWritten(model, finished), "the group that finished was thrown away")
+    for id in ids where id != finished { #expect(!(await indexWritten(model, id))) }
+}

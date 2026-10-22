@@ -7722,38 +7722,55 @@ final class AppModel: ObservableObject {
         // meeting's full transcript text, and an `Array` copy of every vector block — all of which
         // ran on the MainActor, per query, because `AppModel` is `@MainActor`. The texts are
         // gathered there too (F538); only the folder, which the store owns, is looked up here.
-        let directories = meetings.map { store.recordingDirectoryURL(for: $0.id) }
-        let cache = askIndexCache
-        var ready = await Task.detached(priority: .userInitiated) {
-            let requests = zip(meetings, directories).map { meeting, directory in
-                (id: meeting.id, texts: meeting.segments.map(\.text), directory: directory)
+        var ready: [UUID: SegmentEmbeddings] = [:]
+        var unread = meetings
+        while !unread.isEmpty {
+            let requested = unread
+            let directories = requested.map { store.recordingDirectoryURL(for: $0.id) }
+            let cache = askIndexCache
+            let found = await Task.detached(priority: .userInitiated) {
+                let requests = zip(requested, directories).map { meeting, directory in
+                    (id: meeting.id, texts: meeting.segments.map(\.text), directory: directory)
+                }
+                return Self.readAskIndexes(for: requests, cache: cache)
+            }.value
+            // By fingerprint, not by value: `SegmentEmbeddings` is `Equatable` over its whole `vectors`
+            // array, so comparing entries would walk millions of floats per meeting per query — the cost
+            // this cache exists to remove.
+            for (id, index) in found where askIndexCache[id]?.fingerprint != index.fingerprint {
+                cacheAskIndex(index, for: id)
             }
-            return Self.readAskIndexes(for: requests, cache: cache)
-        }.value
-        // By fingerprint, not by value: `SegmentEmbeddings` is `Equatable` over its whole `vectors`
-        // array, so comparing entries would walk millions of floats per meeting per query — the cost
-        // this cache exists to remove.
-        for (id, index) in ready where askIndexCache[id]?.fingerprint != index.fingerprint {
-            cacheAskIndex(index, for: id)
-        }
-        var missing: [SearchableMeeting] = []
-        for meeting in meetings where ready[meeting.id] == nil {
-            missing.append(meeting)
-        }
-        if !missing.isEmpty {
+            ready.merge(found) { _, read in read }
+            let missing = requested.filter { ready[$0.id] == nil }
+            if missing.isEmpty { break }
             for (id, index) in try await embedForAsk(missing) { ready[id] = index }
+            // Short only when this search found the job already paused (F1060): read again what that
+            // job saved before it stopped, and index the rest.
+            unread = missing.filter { ready[$0.id] == nil }
+            if !unread.isEmpty { try Task.checkCancellation() }
         }
         return meetings.compactMap { meeting in ready[meeting.id].map { (meeting, $0) } }
     }
 
     /// Embeds `meetings` through the one indexing job (F840): joins the job already running, if any,
-    /// then starts one for whatever is still missing. Returns every index it waited for.
+    /// then starts one for whatever is still missing. Returns every index it waited for — all of
+    /// `meetings`, unless it found the job already paused, when it returns what it had once that job
+    /// has stopped (F1060).
     private func embedForAsk(_ meetings: [SearchableMeeting]) async throws -> [UUID: SegmentEmbeddings] {
         var built: [UUID: SegmentEmbeddings] = [:]
         var remaining = meetings
         while !remaining.isEmpty {
             if let running = askIndexJob {
                 askIndexJobJoins += 1
+                // Paused before this search arrived (F1060): leaving Ask paused it, and a search back
+                // on Ask before it had stopped joined it and took its cancellation for its own — no
+                // meaning results, and nothing indexed. Nobody paused this search, so it waits for the
+                // job to stop, not to run a second embedder beside it, and hands back to `askIndexes`,
+                // which reads what the job saved and indexes the rest.
+                if running.task.isCancelled {
+                    _ = await running.task.result
+                    return built
+                }
                 built.merge(try await running.task.value) { _, newer in newer }
                 remaining.removeAll { built[$0.id] != nil }
                 continue
