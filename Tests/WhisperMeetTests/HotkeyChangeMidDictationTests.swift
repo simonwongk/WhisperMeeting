@@ -144,6 +144,14 @@ private final class Frontmost {
     func injector() -> TextInjector {
         TextInjector(
             pasteboard: board,
+            // F1069: a clipboard owner that takes a moment to answer, as F692's delivery allows for. The
+            // delivery then lands a fifth of a second after the status reads `.delivering`, so a harness
+            // that asserts on the status instead of awaiting the delivery fails every time, not only on
+            // a loaded runner.
+            readSnapshot: { handle, cap in
+                Thread.sleep(forTimeInterval: 0.2)
+                return PasteboardSnapshot.read(from: handle.pasteboard, maximumBytes: cap)
+            },
             canSynthesizePaste: { true },
             focusedTextField: { [unowned self] in self.probe },
             synthesizePaste: { [unowned self] in
@@ -222,11 +230,14 @@ private struct Harness {
         controller.clipboardNotifier = {}
     }
 
-    /// Waits for the transcription a capture was handed to. The polled status is the subject — the
-    /// dictation was delivered — and an exhausted budget fails as the wait it is.
+    /// Waits for the transcription a capture was handed to, then for its delivery. The polled status
+    /// is the subject of the first wait, and an exhausted budget fails as the wait it is. `.delivering`
+    /// is set before the delivery runs, as its own task (F692), so the second wait awaits that task:
+    /// the tests go on to assert what it pastes and records (F1069).
     func waitForDelivery() async throws {
         try await pollUntil("the transcription to end") { controller.status != .transcribing }
         try #require(controller.status == .delivering, "the dictation was not delivered: \(controller.status)")
+        if let delivery = controller.waitingDeliveryForTesting { await delivery.value }
     }
 }
 
