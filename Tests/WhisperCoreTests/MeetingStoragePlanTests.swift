@@ -531,3 +531,16 @@ func trashNamesSayWhoseOriginalItIs() throws {
     #expect(long.utf8.count <= 255)
     #expect(long.hasPrefix("季度预算评审会议") && long.hasSuffix(" — 2026-10-21 — original meeting.wav"))
 }
+
+// F1074 — a mixed Shrink's mix and kept read (F998) are scratch files of up to gigabytes; a quit or crash
+// mid-Shrink left them until a later Shrink succeeded. The next Shrink of that meeting removes them, whatever it
+// decides. Only those two kinds: never an original Shrink kept for the Trash, nor anything that is not Shrink's.
+@Test("A mix and a kept read left by an earlier Shrink are stale scratch; an original kept for the Trash is not (F1074)")
+func staleMixScratchIsOnlyTheMixAndItsKeptRead() {
+    let names = [".shrink-1F2E.mix.wav", ".shrink-1F2E.mix.wav.lanes", ".SHRINK-AB.MIX.WAV.LANES",
+                 ".shrink-1F2E.replaced.mov", ".shrink-1F2E.m4a", ".shrink-1F2E.wav", "recording.mov", "mix.wav",
+                 "notes.mix.wav", "sub/.shrink-1F2E.mix.wav", ".shrink-.mix.wav.lanes.bak"]
+    let entries = names.map { MeetingStoragePlan.FolderEntry(name: $0, bytes: 1) }
+    #expect(MeetingStoragePlan.staleMixScratch(in: entries).map(\.name)
+            == [".shrink-1F2E.mix.wav", ".shrink-1F2E.mix.wav.lanes", ".SHRINK-AB.MIX.WAV.LANES"])
+}

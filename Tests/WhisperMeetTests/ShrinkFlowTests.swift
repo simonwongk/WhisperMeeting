@@ -590,8 +590,10 @@ func shrinkHasNoDeletionOnItsRemovalPath() throws {
     let code = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/AppModel+Shrink.swift")
     #expect(!code.contains("removeIfUnchanged"), "the delete step unlinks again")
     #expect(!code.contains("unlink("), "an unlink is back on Shrink's path")
-    // Every removeItem left is one of this run's own scratch files, never a file the user had.
-    let scratch: Set<String> = ["tempM4A", "tempWAV", "mixWAV", "lanesFile", "decodedWAV", "readerWAV", "scratch"]
+    // Every removeItem left is one of this run's own scratch files, never a file the user had — or, F1074, an
+    // earlier run's mix or kept read, named by `MeetingStoragePlan.staleMixScratch` (pinned in its own test).
+    let scratch: Set<String> = ["tempM4A", "tempWAV", "mixWAV", "lanesFile", "decodedWAV", "readerWAV", "scratch", "staleScratch"]
+    #expect(code.contains("for entry in MeetingStoragePlan.staleMixScratch(in: disk.entries)"), "staleScratch is named by the rule")
     let removed = code.components(separatedBy: "removeItem(at: ").dropFirst()
         .map { String($0.prefix { $0.isLetter || $0.isNumber }) }
     #expect(!removed.isEmpty && removed.allSatisfy(scratch.contains), "removeItem on something else: \(removed)")

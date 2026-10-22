@@ -748,3 +748,27 @@ func shrinkAuditRefusesAThreeTenthsLossInTheMixersRead() async throws {
             && alert.contains("at about 0:04"), "\(alert)")
     #expect(try Data(contentsOf: f.recording) == original)
 }
+
+// MARK: - Scratch a quit or crash left (F1074)
+
+@Test("A mix and a kept read an earlier Shrink left are removed by the next Shrink, even one that fails (F1074)")
+@MainActor
+func shrinkRemovesTheMixScratchAnEarlierRunLeft() async throws {
+    let f = try await MixFixture(recordingExtension: "wav", duration: 3) { url in
+        try WAVWriter.wavData(from: fixtureTone(frequency: 440, amplitude: 0.3, seconds: 3), sampleRate: 48_000).write(to: url)
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    // What a Shrink that was quit mid-mix left: its mix, and its kept read (64 kB a second for each channel).
+    for name in [".shrink-0LD.mix.wav", ".shrink-0LD.mix.wav.lanes"] {
+        try Data(count: 4_096).write(to: f.folder.appendingPathComponent(name))
+    }
+    f.model.encodeForShrink = { _, _, _ in throw CocoaError(.fileWriteOutOfSpace) }
+    let original = try Data(contentsOf: f.recording)
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(!alert.contains("Shrunk"), "the encode fails: \(alert)")
+    #expect(!f.exists(".shrink-0LD.mix.wav") && !f.exists(".shrink-0LD.mix.wav.lanes"), "the earlier run's scratch is still there")
+    #expect(try Data(contentsOf: f.recording) == original)
+}

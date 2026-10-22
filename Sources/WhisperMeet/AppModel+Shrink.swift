@@ -279,6 +279,12 @@ extension AppModel {
             return .failed(title: meeting.title, message: "It is being deleted.")
         }
         defer { store.folderWriters.end(id) }
+        // F1074: a mix and a kept read an earlier run left when it was quit or crashed (F998: up to gigabytes) go
+        // now, whatever this run decides. The folder is held above, so no other Shrink of it is writing them.
+        for entry in MeetingStoragePlan.staleMixScratch(in: disk.entries) {
+            let staleScratch = folder.appendingPathComponent(entry.name)
+            try? FileManager.default.removeItem(at: staleScratch)
+        }
         shrinkRunningID = id
         // F1028: a transcription asked for meanwhile waits in the queue behind this meeting's Shrink; pumped once it ends.
         defer { shrinkRunningID = nil; resumeTranscriptionQueue() }

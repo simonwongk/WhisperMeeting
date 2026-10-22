@@ -319,6 +319,19 @@ public enum MeetingStoragePlan {
             .map(\.0)
     }
 
+    /// The scratch a mixed Shrink writes that an earlier run left behind (F1074): its mix, `.shrink-<token>.mix.wav`,
+    /// and the mixer's kept read beside it, `.shrink-<token>.mix.wav.lanes` (F998), up to gigabytes for a long
+    /// recording of many channels. A quit or crash mid-Shrink left them until a later Shrink succeeded; the next
+    /// Shrink of the meeting removes them, whatever it decides. Only those two names, at the folder's top level:
+    /// never `.shrink-<token>.replaced.<ext>`, an original Shrink keeps for the Trash (F1040), nor anything else.
+    public static func staleMixScratch(in entries: [FolderEntry]) -> [FolderEntry] {
+        entries.filter { entry in
+            let lower = entry.name.lowercased()
+            guard lower.hasPrefix(".shrink-"), !lower.contains("/") else { return false }
+            return lower.hasSuffix(".mix.wav") || lower.hasSuffix(".mix.wav.lanes")
+        }
+    }
+
     /// What Shrink's delete step removes now (F949): `removableFiles` of a listing taken just before the
     /// removal (`current`), but only the files the checks ran on (`measured`, the listing `DiskFacts`
     /// was read from) and as they were then — the same name, size on disk and logical length, and, where the
