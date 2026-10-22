@@ -713,6 +713,9 @@ final class AppModel: ObservableObject {
     /// the planner can tell whether they can be mixed into the copy (F942). Nil when unreadable.
     var audioTracksForShrink: @Sendable (URL) async -> [RecordingMixPlan.Track]? = { await RecordingMixer.tracks(of: $0) }
     var declaredDurationForShrink: @Sendable (URL) -> TimeInterval? = { DecodedAudio.declaredDuration(of: $0) }
+    /// The length of a recording AVAudioFile opens and counts no frames in — an MP4 holding Opus, which a local import
+    /// keeps as it came (F1062) — from the reader that decodes it, or nil when that cannot read it either.
+    var uncountedDurationForShrink: @Sendable (URL) async -> TimeInterval? = { await DecodedAudio.readerMeasuredDuration(of: $0) }
 
     /// How Shrink measures a link import's download that AVAudioFile cannot open and that carries no
     /// record of recovery's conversion (F962): a WebM in a folder recovered by a build before F947

@@ -203,3 +203,38 @@ func framePositionIsLeftOnlyBehindTheProbe() throws {
     // The one left: `decodedSegmentClip`'s seek, after `opensButCountsNoFrames`.
     #expect(uses.count == 1 && uses.first?.hasPrefix("AppModel.swift:") == true, "\(uses)")
 }
+
+// F1062 — a local file import keeps its file as `recording.<its extension>` (`copyImportedRecording`). F1037 made a
+// recording AVAudioFile opens and counts no frames in measure 0, so Shrink refused such a meeting as unmeasurable.
+// Nothing was deleted, and nothing could shrink. It is measured now by the reader that decodes it.
+@Test("A local import whose own recording is an MP4 holding Opus is measured, shrinks, and its copy is checked (F1062)")
+@MainActor
+func anImportedOpusMP4RecordingShrinks() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("F1062-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let folder = root.appendingPathComponent("Recordings/\(id.uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    try FileManager.default.copyItem(at: fixture, to: folder.appendingPathComponent("recording.mp4"))
+    let model = AppModel(store: MeetingStore(rootDirectory: root), recorder: AudioCaptureEngine(),
+                         defaults: UserDefaults(suiteName: testSuiteName())!)
+    model.trashForShrink = try ShrinkTestTrash(in: root).seam   // F1040: never the real Trash
+    model.store.upsert(MeetingRecord(
+        id: id, title: "Imported talk", duration: 2,
+        recordingPath: "Recordings/\(id.uuidString)/recording.mp4", status: .completed, transcriptText: "Hi.",
+        recoverySource: RecoveredRecording.Source.importedRecording.rawValue))
+    model.availableBytesForShrink = { _ in .max }
+
+    await model.refreshStorage(ids: [id])
+    model.requestShrink(ids: [id])
+    await model.performShrink(confirmed: true)?.value
+
+    let alert = model.alertMessage ?? "nil"
+    #expect(alert.contains("Shrunk"), "\(alert)")
+    let record = try #require(model.store.meeting(id: id))
+    #expect(record.recordingPath.hasSuffix("/recording.m4a"), "\(record.recordingPath) — \(alert)")
+    let copy = folder.appendingPathComponent("recording.m4a")
+    let decoded = try await DecodedAudio.fullyDecodedEveryTrack(of: copy)
+    #expect(abs(decoded.duration - 2) < 0.1, "the copy holds the recording's 2 s: \(decoded.duration)")
+    #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("recording.mp4").path), "\(alert)")
+}

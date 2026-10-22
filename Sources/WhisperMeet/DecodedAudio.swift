@@ -146,6 +146,27 @@ enum DecodedAudio {
         return Double(file.length) / file.processingFormat.sampleRate
     }
 
+    /// The length of a file decoded with the reader that reads what AVAudioFile cannot (F1062), or nil when it cannot.
+    /// A whole decode, so each file is measured once a session: kept by path, size and modification date, which any
+    /// rewrite of it changes.
+    static func readerMeasuredDuration(of url: URL) async -> TimeInterval? {
+        let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let key = "\(url.standardizedFileURL.path)|\(values?.fileSize ?? -1)|\(values?.contentModificationDate?.timeIntervalSinceReferenceDate ?? -1)"
+        if let known = readerMeasured.value(for: key) { return known }
+        guard let seconds = try? await fullyDecodedEveryTrack(of: url).duration, seconds.isFinite, seconds > 0 else { return nil }
+        readerMeasured.set(seconds, for: key)
+        return seconds
+    }
+
+    private static let readerMeasured = ReaderMeasuredLengths()
+
+    private final class ReaderMeasuredLengths: @unchecked Sendable {
+        private let lock = NSLock()
+        private var seconds: [String: TimeInterval] = [:]
+        func value(for key: String) -> TimeInterval? { lock.withLock { seconds[key] } }
+        func set(_ value: TimeInterval, for key: String) { lock.withLock { seconds[key] = value } }
+    }
+
     /// Whether AVAudioFile opens the file and counts no frames in it — the MP4 holding Opus `declaredDuration` declines
     /// to give a length for (F1037). Such a file holds audio nobody has counted, so it is not a file of no length either.
     static func opensButCountsNoFrames(_ url: URL) -> Bool {
@@ -276,6 +297,63 @@ enum DecodedAudio {
             firstChannel += channels
         }
         return sums.decoded
+    }
+
+    /// Writes the first audio track of `url` to `output` as 16-bit PCM at its own rate and channel count, decoded with
+    /// AVAssetReader, and returns its length (F1062): for a file AVAudioFile counts no frames in (an MP4 holding Opus),
+    /// which afconvert cannot decode either, so Shrink's encoder is handed this instead. Nothing is mixed or converted.
+    @discardableResult
+    static func writeReaderDecodedWAV(of url: URL, to output: URL) async throws -> TimeInterval {
+        let asset = AVURLAsset(url: url)
+        guard let track = try? await asset.loadTracks(withMediaType: .audio).first else {
+            throw Failure.unreadable("no audio track to read")
+        }
+        let reader: AVAssetReader
+        do { reader = try AVAssetReader(asset: asset) } catch { throw Failure.unreadable(ErrorPresentation.readable(error)) }
+        let readerOutput = AVAssetReaderTrackOutput(track: track, outputSettings: [
+            AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false,
+        ])
+        guard reader.canAdd(readerOutput) else { throw Failure.unreadable("the track's audio cannot be decoded") }
+        reader.add(readerOutput)
+        guard reader.startReading() else {
+            throw Failure.unreadable(reader.error.map { ErrorPresentation.readable($0) } ?? "the reader did not start")
+        }
+        try? FileManager.default.removeItem(at: output)
+        var file: AVAudioFile?
+        var rate = 0.0, channels = 0, frames = 0
+        while let buffer = readerOutput.copyNextSampleBuffer() {
+            let count = CMSampleBufferGetNumSamples(buffer)
+            guard count > 0, let block = CMSampleBufferGetDataBuffer(buffer),
+                  let description = CMSampleBufferGetFormatDescription(buffer),
+                  let stream = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
+                  stream.mSampleRate > 0, stream.mChannelsPerFrame > 0 else { continue }
+            if file == nil {
+                rate = stream.mSampleRate
+                channels = Int(stream.mChannelsPerFrame)
+                file = try AVAudioFile(forWriting: output, settings: [
+                    AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: rate, AVNumberOfChannelsKey: channels,
+                    AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false,
+                ], commonFormat: .pcmFormatFloat32, interleaved: true)
+            }
+            guard stream.mSampleRate == rate, Int(stream.mChannelsPerFrame) == channels, let file,
+                  let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate,
+                                             channels: AVAudioChannelCount(channels), interleaved: true),
+                  let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(count)),
+                  let destination = pcm.floatChannelData?[0] else {
+                throw Failure.unreadable("the track changes its format partway")
+            }
+            let copied = CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: count * channels * 4, destination: destination)
+            guard copied == kCMBlockBufferNoErr else { throw Failure.unreadable("a buffer could not be read") }
+            pcm.frameLength = AVAudioFrameCount(count)
+            try file.write(from: pcm)
+            frames += count
+        }
+        if reader.status == .failed {
+            throw Failure.unreadable(reader.error.map { ErrorPresentation.readable($0) } ?? "the track could not be decoded")
+        }
+        guard frames > 0, rate > 0 else { throw Failure.unreadable("the track holds no audio") }
+        return Double(frames) / rate
     }
 
     /// How many audio tracks the container holds, or nil when AVFoundation cannot read it (F801).

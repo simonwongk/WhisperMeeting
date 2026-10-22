@@ -303,6 +303,8 @@ extension AppModel {
             let besideRecording = MeetingStoragePlan.twoChannelRecordingsToVerify(disk)
             let unread = MeetingStoragePlan.unreadRecordingsToVerify(disk), decodeUnread = decodeUnreadableForShrink
             let decodedWAV = folder.appendingPathComponent(".shrink-\(token).decoded.wav")
+            // F1062: the recording decoded by the reader that can, for one AVAudioFile counts no frames in.
+            let readerWAV = folder.appendingPathComponent(".shrink-\(token).reader.wav")
             let otherSeconds = disk.otherRecordingSeconds
             let flush = flushForShrink
             let declaredLength = disk.durationSeconds
@@ -330,6 +332,18 @@ extension AppModel {
                         mixedChannels = result.channels
                         try encode(mixWAV, tempM4A, tempWAV)
                         try? FileManager.default.removeItem(at: mixWAV)
+                    } else if DecodedAudio.opensButCountsNoFrames(recordingURL) {
+                        // F1062: an MP4 holding Opus, kept as it came by a local import. afconvert cannot decode
+                        // it ("pck?"), so the reader that can writes it out as PCM — its own rate and channels,
+                        // nothing mixed — and that is encoded, as any recording is. Its full-rate WAV needs
+                        // room beside the rest; the check above counted a 16 kHz mono one.
+                        let extra = Int64(saturating: declaredLength * 48_000 * 2 * 2)
+                        if let available = free(folder), available < needed + extra {
+                            throw ShrinkFailure.insufficientSpace(needed: needed + extra, available: available)
+                        }
+                        try await DecodedAudio.writeReaderDecodedWAV(of: recordingURL, to: readerWAV)
+                        try encode(readerWAV, tempM4A, tempWAV)
+                        try? FileManager.default.removeItem(at: readerWAV)
                     } else {
                         try encode(recordingURL, tempM4A, tempWAV)
                     }
@@ -422,6 +436,7 @@ extension AppModel {
                     try? FileManager.default.removeItem(at: tempWAV)
                     try? FileManager.default.removeItem(at: mixWAV)
                     try? FileManager.default.removeItem(at: decodedWAV)
+                    try? FileManager.default.removeItem(at: readerWAV)
                     return .failure(error)
                 }
             }.value
@@ -903,7 +918,7 @@ extension AppModel {
         let recordingURL = store.recordingURL(for: meeting)
         let folder = store.ownRecordingFolder(of: meeting)
         let descriptor = integrityDescriptorForShrink(meeting)
-        let entries = storageEntries, declared = declaredDurationForShrink
+        let entries = storageEntries, declared = declaredDurationForShrink, uncounted = uncountedDurationForShrink
         let countTracks = audioTrackCountForShrink, readTracks = audioTracksForShrink
         let measureDownload = measureDownloadForShrink, unmeasurable = downloadsShrinkCouldNotMeasure
         let indexDuration = meeting.duration
@@ -921,11 +936,13 @@ extension AppModel {
             let audioTracks = exists && ((tracks ?? 1) > 1 || (channels ?? 0) > 2) ? await readTracks(recordingURL) : nil
             let problem = descriptor.map { MeetingIntegrityChecker.check($0).contains { $0.isProblem } } ?? false
             let directory = folder ?? recordingURL.deletingLastPathComponent()
-            // F1037 round 3: a recording AVAudioFile opens and counts nothing in measures 0, never the index's length — an
-            // index naming a 2 s Opus `recording.m4a` as 6 s would let F911 delete the 6 s `recording.wav` beside it. 0 is
-            // what such a file measured before `declaredDuration` declined it, and what makes F911 keep every other file.
-            let length = declared(recordingURL)
-                ?? (DecodedAudio.opensButCountsNoFrames(recordingURL) ? 0 : (indexDuration > 0 ? indexDuration : 0))
+            // F1037 round 3: a recording AVAudioFile opens and counts nothing in is never measured by the index's length — an
+            // index naming a 2 s Opus `recording.m4a` as 6 s would let F911 delete the 6 s `recording.wav` beside it. F1062: it
+            // is measured by the reader that decodes it, so a local import kept as an Opus MP4 can shrink; 0 when that cannot
+            // read it either, which makes F911 keep every other file and the plan refuse it as unmeasurable, as before.
+            let uncountedLength = declared(recordingURL) == nil && DecodedAudio.opensButCountsNoFrames(recordingURL)
+                ? (await uncounted(recordingURL) ?? 0) : nil
+            let length = declared(recordingURL) ?? uncountedLength ?? (indexDuration > 0 ? indexDuration : 0)
             // Damage only when a rebuild would recover MORE audio than the recording holds, which is
             // F256's truncation. A recovered folder never has a complete meeting.wav, so an offer alone
             // always exists there; a second past the recording allows for track padding (final review).
