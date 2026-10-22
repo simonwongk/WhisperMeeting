@@ -161,6 +161,23 @@ extension AppModel {
         }
     }
 
+    /// What `TestProcess` records when a test's installer or downloader update would have acted on
+    /// the real library (F991).
+    nonisolated static let realLibraryInstallRefusal = "an installer into the real library"
+
+    /// Whether `arguments` name the library this process would install into for real — its root or
+    /// anything under it (F991). In a test that is the user's own `Application Support/WhisperMeet`;
+    /// a test's runtime lives in a temp folder of its own and is not named here.
+    nonisolated static func namesTheRealLibrary(
+        _ arguments: [String], environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        let root = WhisperMeetLibrary.root(environment: environment).standardizedFileURL.path
+        return arguments.contains { argument in
+            let path = URL(fileURLWithPath: argument).standardizedFileURL.path
+            return path == root || path.hasPrefix(root + "/")
+        }
+    }
+
     /// Runs an installer script to completion under `ProcessGroupRunner` (F520), keeping its whole
     /// output in `job.logURL` and throwing an `InstallerError` whose reason is the output's last
     /// line (F567). Cancelling the calling task sends the script's process group SIGTERM. A script
@@ -168,6 +185,10 @@ extension AppModel {
     /// has exited — after its traps have restored. One that exits 0 had passed its switch-over,
     /// where every installer ignores the signal and finishes (F654), and this returns normally.
     nonisolated static func runInstallerScript(_ job: InstallerJob) async throws {
+        // F991: a test may run an installer into a runtime of its own, never into the real library.
+        if namesTheRealLibrary(job.arguments), !TestProcess.allowsRealAccess(to: realLibraryInstallRefusal) {
+            throw InstallerError.couldNotStart(job.component, reason: "A test may not install into the real library.")
+        }
         let log = try InstallerLog(url: job.logURL)
         defer { log.close() }
         let outcome: ProcessGroupRunner.Outcome

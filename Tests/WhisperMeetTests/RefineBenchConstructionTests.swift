@@ -12,7 +12,7 @@ import Testing
 func refineBenchBuildsTheEngineTheAppBuilds() throws {
     let app = try warmRefineEngineArguments(
         in: "Sources/WhisperMeet/Dictation/DictationController.swift",
-        after: "self.refiner = refiner ?? DictationRefiner("
+        after: "static func makeRefiner() -> any DictationTextRefining {"
     )
     let bench = try warmRefineEngineArguments(
         in: "Tests/WhisperCoreTests/ProductionRefineConstruction.swift",

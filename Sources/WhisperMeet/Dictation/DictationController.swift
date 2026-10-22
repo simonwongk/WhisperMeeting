@@ -77,7 +77,9 @@ final class DictationController: ObservableObject {
     /// Injectable so headless tests can simulate runtime presence; the default asks the real
     /// Summarizer runtime. Read directly by the Settings UI on each render.
     var refineRuntimeAvailability: () -> Bool = {
-        SummarizerRuntime.isSupportedOnCurrentMac && SummarizerRuntime.isRefineHelperInstalled()
+        // F991: never the host's runtime in a test, which says what it wants through this seam.
+        guard !TestProcess.isRunning else { return false }
+        return SummarizerRuntime.isSupportedOnCurrentMac && SummarizerRuntime.isRefineHelperInstalled()
     }
     var isRefineRuntimeInstalled: Bool { refineRuntimeAvailability() }
 
@@ -328,16 +330,7 @@ final class DictationController: ObservableObject {
         self.captureSleep = captureSleep
         self.idleEvictSeconds = idleEvictSeconds
         self.activationNotifications = activationNotifications
-        self.refiner = refiner ?? DictationRefiner(
-            engine: WarmRefineEngine(
-                python: SummarizerRuntime.pythonExecutable(),
-                script: SummarizerRuntime.refineHelperScript(),
-                modelDirectory: SummarizerRuntime.modelDirectory(),
-                // F203: prime the helper's prompt cache at warm-up with the real base prompt —
-                // the language-pinned variants extend it, so their common token prefix stays hot.
-                primePrompt: DictationRefinePrompt.system(languageCode: nil)
-            )
-        )
+        self.refiner = refiner ?? Self.makeRefiner()
         let storedEngine = DictationTranscriptionEngine(
             rawValue: defaults.string(forKey: Self.engineKey) ?? ""
         ) ?? .whisperTurbo
@@ -405,7 +398,32 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private static func makeEngine(for selection: DictationTranscriptionEngine) -> DictationEngine {
+    /// What `TestProcess` records when a test's controller would have built a real helper (F991).
+    nonisolated static let realEngineRefusal = "the real dictation engine"
+    nonisolated static let realRefinerRefusal = "the real dictation refiner"
+
+    /// The refiner a controller gets when it is given none: the real one, built from the real
+    /// library's paths — or, in a test process, a stand-in that refines nothing (F991).
+    static func makeRefiner() -> any DictationTextRefining {
+        guard TestProcess.allowsRealAccess(to: realRefinerRefusal) else { return RefusedDictationRefiner() }
+        return DictationRefiner(
+            engine: WarmRefineEngine(
+                python: SummarizerRuntime.pythonExecutable(),
+                script: SummarizerRuntime.refineHelperScript(),
+                modelDirectory: SummarizerRuntime.modelDirectory(),
+                // F203: prime the helper's prompt cache at warm-up with the real base prompt —
+                // the language-pinned variants extend it, so their common token prefix stays hot.
+                primePrompt: DictationRefinePrompt.system(languageCode: nil)
+            )
+        )
+    }
+
+    /// The engine for `selection` when the controller was given no engine or factory of its own —
+    /// at init, and on every engine switch. In a test process it is a stand-in that refuses every
+    /// request (F991): nothing enforced passing `engine:`, and the real helpers are built from the
+    /// real library's paths.
+    static func makeEngine(for selection: DictationTranscriptionEngine) -> DictationEngine {
+        guard TestProcess.allowsRealAccess(to: realEngineRefusal) else { return RefusedDictationEngine() }
         if selection == .qwenBalanced {
             return WarmQwenDictationEngine(
                 python: QwenASRRuntime.pythonExecutable(),

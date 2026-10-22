@@ -1185,13 +1185,7 @@ final class AppModel: ObservableObject {
         isUpdatingDownloader = true
         downloaderUpdateMessage = nil
         Task {
-            let runner = ProcessGroupRunner()
-            let outcome = try? await runner.run(
-                executableURL: URL(fileURLWithPath: "/bin/zsh"),
-                arguments: Self.downloaderUpdateArguments(script: script),
-                environment: MediaDownloadClient.makeEnvironment(),
-                stallTimeout: 600
-            )
+            let outcome = await Self.runDownloaderUpdate(arguments: Self.downloaderUpdateArguments(script: script))
             isUpdatingDownloader = false
             if let outcome, outcome.exitStatus == 0 {
                 downloaderUpdateMessage = "The downloader is up to date."
@@ -1199,6 +1193,20 @@ final class AppModel: ObservableObject {
                 downloaderUpdateMessage = "The downloader could not be updated. \(String((outcome?.output ?? "").suffix(200)))"
             }
         }
+    }
+
+    /// Runs the downloader updater with `arguments` — the script, then the runtime to update — or,
+    /// in a test, refuses when that runtime is in the real library (F991), as an installer does.
+    nonisolated static func runDownloaderUpdate(arguments: [String]) async -> ProcessGroupRunner.Outcome? {
+        if namesTheRealLibrary(Array(arguments.dropFirst())), !TestProcess.allowsRealAccess(to: realLibraryInstallRefusal) {
+            return nil
+        }
+        return try? await ProcessGroupRunner().run(
+            executableURL: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: arguments,
+            environment: MediaDownloadClient.makeEnvironment(),
+            stallTimeout: 600
+        )
     }
 
     /// The updater is told which runtime to update (F184). Its own default is the real Application
