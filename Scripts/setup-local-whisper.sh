@@ -193,6 +193,12 @@ mlx_whisper_version="0.4.3"
 # given both requirements at once. Raise it deliberately: re-run that test with
 # WHISPERMEET_TEST_VENV pointing at a venv holding the new version first.
 huggingface_hub_version="1.24.0"
+# F825: and its Xet downloader, which 1.24.0 requires only as a range (`hf-xet<2.0.0,>=1.5.1` on arm64
+# and x86_64, its METADATA), so a fresh install resolved 1.7.0 on 2026-10-06 while the runtime that
+# dictates every day has 1.5.2 (its `dist-info`, read-only). 1.5.2 with 1.24.0 is the pair the
+# pre-download below was checked with: its snapshot_download of the pinned dictation model into a
+# scratch cache matched both pinned SHA-256s. Raise it with the hub, and re-check the pre-download.
+hf_xet_version="1.5.2"
 
 # Build the new runtime in a STAGING venv; the live venv is untouched until the atomic swap below.
 "$python_executable" -m venv "$staging_venv"
@@ -206,7 +212,7 @@ huggingface_hub_version="1.24.0"
 # mlx-whisper drives quick dictation (Apple-Silicon warm helper). It is arm64-only with a larger
 # dependency tree, so install it best-effort: a failure here must NOT abort the meetings runtime.
 # (Commands in an `if` condition are exempt from `set -e`, so a failure won't kill the script.)
-if ! "$staging_venv/bin/python" -m pip install "mlx-whisper==$mlx_whisper_version" "huggingface_hub==$huggingface_hub_version"; then
+if ! "$staging_venv/bin/python" -m pip install "mlx-whisper==$mlx_whisper_version" "huggingface_hub==$huggingface_hub_version" "hf-xet==$hf_xet_version"; then
   print -u2 "Note: mlx-whisper install failed — Quick Dictation unavailable on this Mac (meetings unaffected)."
 fi
 

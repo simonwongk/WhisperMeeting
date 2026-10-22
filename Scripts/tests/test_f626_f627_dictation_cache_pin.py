@@ -413,6 +413,15 @@ class InstallerPinsHuggingFaceHubTests(unittest.TestCase):
         self.assertIsNotNone(install, "could not find the mlx-whisper install line")
         self.assertIn('"huggingface_hub==$huggingface_hub_version"', install.group(1))
 
+    def test_hf_xet_is_pinned_in_the_same_pip_call(self):
+        """F825: the hub requires its Xet downloader only as a range, so the pre-download ran through
+        whatever pip resolved that day (1.7.0 on 2026-10-06) unless it is pinned beside the hub."""
+        source = _source()
+        self.assertIsNotNone(re.search(r'^hf_xet_version="1\.5\.2"$', source, re.MULTILINE))
+        install = re.search(r'pip install ("mlx-whisper==\$mlx_whisper_version"[^\n]*)', source)
+        self.assertIsNotNone(install, "could not find the mlx-whisper install line")
+        self.assertIn('"hf-xet==$hf_xet_version"', install.group(1))
+
     def test_the_pinned_version_is_named_with_its_evidence(self):
         source = _source()
         self.assertIn("1.24.0", source)
