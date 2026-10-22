@@ -7659,10 +7659,13 @@ final class AppModel: ObservableObject {
     /// The first index of a library was one run over every missing meeting, saved only when the
     /// whole run returned — about 9 minutes for 700,000 segments, extrapolating F316's 2,000
     /// passages in 1.5 s — and any newer search or scope tap cancelled it and kept nothing. Now a
-    /// cancel loses at most the group in flight. 2,000 is that 1.5 s; each extra run costs a helper
-    /// start and model load, ~0.4 s warm by F316's one-process-per-question figure, so smaller
-    /// groups would lose less and spend more on loads. Neither figure is re-measured here: the
-    /// search model is not installed on the Mac this was written on.
+    /// cancel loses at most the group in flight. Each extra run costs a helper start and model load,
+    /// so smaller groups lose less and spend more on loads. Measured with the real model (F841,
+    /// `realModelFirstIndexAtThreeGroupSizes`, 6,000 invented passages, this Mac): a run costs
+    /// 0.42 s plus 0.625 ms a passage — 450 in 0.70 s, 1,950 in 1.64 s, 6,000 in 4.17 s — so a
+    /// first index took 9.6 s in groups of 500, 5.5 s in groups of 2,000 and 4.2 s in one run. At
+    /// 2,000 the loads are nearly a third of the time (4 × 0.42 s of 5.45 s) and a cancel loses under
+    /// 2 s of work.
     /// Settable so a test can make every meeting its own run.
     var askEmbeddingChunkPassages = 2_000
 

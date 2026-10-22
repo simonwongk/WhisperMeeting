@@ -139,6 +139,73 @@ func realModelFindsParaphrases() async throws {
     }
 }
 
+/// What each helper run of a first index cost, for `realModelFirstIndexAtThreeGroupSizes`.
+private actor RunTimes {
+    private(set) var runs: [(passages: Int, seconds: Double)] = []
+    func record(_ passages: Int, _ seconds: Double) { runs.append((passages, seconds)) }
+}
+
+/// F841 — F538 groups a first index into helper runs of about `askEmbeddingChunkPassages` passages,
+/// each saved before the next, and sized the group on two figures nobody had measured with the real
+/// helper: ~1.5 s per 2,000 passages and ~0.4 s to start a helper and load the model. This times a
+/// first index of an invented library (40 meetings × 150 lines, English and Chinese) at three group
+/// sizes, so the start cost falls out of the difference. Off unless asked for, and never beside the
+/// user's dictation (the GPU is shared):
+///     REAL_ASK_EMBEDDINGS=1 swift test --filter realModelFirstIndexAtThreeGroupSizes
+@MainActor
+@Test("A first index with the real search model, timed at three group sizes (F841, real model)",
+      .enabled(if: ProcessInfo.processInfo.environment["REAL_ASK_EMBEDDINGS"] == "1"))
+func realModelFirstIndexAtThreeGroupSizes() async throws {
+    let topics = ["the pricing change", "the hiring plan", "the launch date", "the security review", "the vendor contract",
+                  "the budget for next quarter", "the customer escalation", "the offsite agenda"]
+    let chinese = ["定價調整", "招聘計劃", "上線時間", "資安審查", "供應商合約", "下季度預算", "客戶投訴", "團建安排"]
+    for chunk in [500, 2_000, 6_000] {
+        let model = try makeModel(installed: true)
+        defer { try? FileManager.default.removeItem(at: model.store.rootDirectory) }
+        model.askEmbeddingChunkPassages = chunk
+        var ids: [UUID] = []
+        for meeting in 0..<40 {
+            let id = UUID()
+            let lines = (0..<150).map { line -> TranscriptSegment in
+                let n = meeting * 150 + line
+                let text = n % 3 == 2
+                    ? "第\(meeting + 1)次會議第\(line + 1)句：我們討論了\(chinese[n % chinese.count])，下週再確認細節。"
+                    : "Meeting \(meeting + 1), line \(line + 1): we went over \(topics[n % topics.count]) and agreed to follow up by week \(line % 12 + 1)."
+                return seg(Double(line) * 5, text)
+            }
+            model.store.upsert(transcribed(id: id, title: "Meeting \(meeting + 1)", lines))
+            try FileManager.default.createDirectory(at: model.store.recordingDirectoryURL(for: id), withIntermediateDirectories: true)
+            ids.append(id)
+        }
+        let times = RunTimes()
+        let real = model.askEmbedder
+        model.askEmbedder = { texts, kind in
+            let started = SuspendingClock.now
+            let result = try await real(texts, kind)
+            let elapsed = SuspendingClock.now - started
+            if kind == .passage {
+                await times.record(texts.count, Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18)
+            }
+            return result
+        }
+        let pass = try #require(await model.askKeywordPass(query: "when is the launch", scope: MeetingScope()))
+        let started = SuspendingClock.now
+        _ = await model.askMeetingsByMeaning(pass, limit: 10)
+        let total = SuspendingClock.now - started
+        let runs = await times.runs
+        let totalSeconds = Double(total.components.seconds) + Double(total.components.attoseconds) / 1e18
+        let passages = runs.reduce(0) { $0 + $1.passages }
+        print(String(format: "REAL first index, group %d: %d runs, %d passages, %.2f s total, %.2f s in runs; runs: %@",
+                     chunk, runs.count, passages, totalSeconds, runs.reduce(0) { $0 + $1.seconds },
+                     runs.map { String(format: "%d in %.2f s", $0.passages, $0.seconds) }.joined(separator: ", ")))
+        #expect(passages == 6_000, "the first index did not embed every passage once")
+        for id in ids {
+            #expect(FileManager.default.fileExists(atPath: model.store.recordingDirectoryURL(for: id)
+                .appendingPathComponent(SegmentEmbeddings.metadataFilename).path))
+        }
+    }
+}
+
 // F331 — the index is only written `if !store.isDegraded` and the recording folder exists, so on a
 // degraded or read-only library — a configuration the feature explicitly advertises support for —
 // every query re-embedded every in-scope meeting. `runSearch` fires on `.onAppear` and on every
