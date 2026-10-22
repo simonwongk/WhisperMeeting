@@ -118,6 +118,15 @@ public final class ProcessGroupRunner: @unchecked Sendable {
         return childPID
     }
 
+    /// Sends the group the stop already asked for, if any, again. Called only while the exited leader
+    /// is unreaped, so `pid` is still this child's group (F1068).
+    private func repeatStop(_ pid: pid_t) {
+        lock.lock()
+        let signal = requestedSignal
+        lock.unlock()
+        if signal != 0 { _ = killpg(pid, signal) }
+    }
+
     /// Forgets the reaped child so a later `cancel()` cannot signal a **recycled** pid. Once `waitpid`
     /// has returned, the kernel is free to reuse that pid for an unrelated process, and a stale
     /// `killpg` would then terminate somebody else's process group.
@@ -268,6 +277,13 @@ public final class ProcessGroupRunner: @unchecked Sendable {
         let status: Int32 = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .userInitiated).async {
+                    // Exited, and left unreaped until the stop has been sent again (F1068): a process a
+                    // member forked while `killpg` was being delivered was not in the group yet, missed
+                    // the signal, and holds the output pipe the drain below waits on. While the leader
+                    // is a zombie its pid is still this group's, so the repeat cannot reach a recycled one.
+                    var exited = siginfo_t()
+                    while waitid(P_PID, id_t(pid), &exited, WEXITED | WNOWAIT) == -1, errno == EINTR {}
+                    self.repeatStop(pid)
                     var raw: Int32 = 0
                     waitpid(pid, &raw, 0)
                     continuation.resume(returning: raw)

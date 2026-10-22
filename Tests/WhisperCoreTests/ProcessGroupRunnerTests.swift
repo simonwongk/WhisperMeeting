@@ -325,3 +325,45 @@ func aKillDuringTheSpawnIsDeliveredAsSIGKILL() async throws {
     try #require(FileManager.default.fileExists(atPath: ready.path), "the stand-in never set its trap")
     await #expect(throws: CancellationError.self) { _ = try await run.value }
 }
+
+// F1068 — a process a group member forks while the stop's `killpg` is being delivered is not yet in the
+// group when the kernel walks it, so it misses the signal, and it holds the output pipe the run waits on
+// for EOF. That is how the test above failed 1 run in 15: its kill lands as the stand-in forks `sleep`,
+// and the escaped `sleep 120` was left with parent 1 in the dead shell's group. The race itself cannot be
+// timed from here, so this stand-in makes the same member deterministically: its SIGTERM trap forks a
+// `sleep` into the group after the signal has been delivered, and exits.
+@Test("A process forked into the group after its stop signal is stopped too, and the run returns (F1068)")
+func aMemberForkedAfterTheStopSignalIsStoppedToo() async throws {
+    let (directory, script) = try makeScript("""
+    trap 'sleep 120 & echo $! > "$2.part"; mv "$2.part" "$2"; exit 0' TERM
+    echo ready > "$1"
+    while :; do sleep 1; done
+    """)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let ready = directory.appendingPathComponent("ready")
+    let lateFile = directory.appendingPathComponent("late.pid")
+
+    let runner = ProcessGroupRunner()
+    defer { runner.kill() }
+    let completion = Completion()
+    let run = Task {
+        defer { completion.markFinished() }
+        return try await runner.run(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [script.path, ready.path, lateFile.path],
+            environment: ["PATH": "/usr/bin:/bin"],
+            stallTimeout: 0
+        )
+    }
+    try await waitForFile(ready)
+
+    runner.cancel()
+
+    try await waitForFile(lateFile)
+    let late = try #require(pid_t(String(contentsOf: lateFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)))
+    defer { if isAlive(late) { _ = kill(late, SIGKILL) } }
+    // The late `sleep` sleeps 120 s and the wait is capped at 30 s: only the runner can end it inside it.
+    try await waitUntil("the stopped run to return, though a member forked after the signal holds its output") { completion.isFinished }
+    await #expect(throws: CancellationError.self) { _ = try await run.value }
+    try await waitUntil("the member forked after the signal to be stopped") { !isAlive(late) }
+}
