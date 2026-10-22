@@ -444,7 +444,9 @@ struct PersistedRootDerivedDecodeTests {
                 systemAudioFramesMeasured: 10,
                 systemAudioFramesAtFullScale: 2,
                 microphoneWorstSecond: ClippedSecond(framesMeasured: 4, framesAtFullScale: 1),
-                systemAudioWorstSecond: ClippedSecond(framesMeasured: 4, framesAtFullScale: 2)
+                systemAudioWorstSecond: ClippedSecond(framesMeasured: 4, framesAtFullScale: 2),
+                microphoneWriteLoss: RecordingHealthReport.partSaved,
+                systemAudioWriteLoss: RecordingHealthReport.nothingSaved
             ),
             alignmentWarning: "alignment",
             recoveryWarning: "recovery",

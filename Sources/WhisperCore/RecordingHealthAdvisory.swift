@@ -5,6 +5,29 @@ import Foundation
 /// the recording was healthy. Channel-level only (microphone / system audio), never speaker identity
 /// (F79, delivers F58).
 public enum RecordingHealthAdvisory {
+    /// The note for `.captureWritesFailing` (F386, F1051): per track from the report's write losses,
+    /// or F386's general sentence when it has none — a report from before F1051, or a loss written
+    /// by a newer build, whose word this build does not know.
+    static func writeLossNotes(_ report: RecordingHealthReport) -> [String] {
+        let known: Set<String> = [RecordingHealthReport.nothingSaved, RecordingHealthReport.partSaved]
+        let microphone = report.microphoneWriteLoss.flatMap { known.contains($0) ? $0 : nil }
+        let system = report.systemAudioWriteLoss.flatMap { known.contains($0) ? $0 : nil }
+        if microphone == nil, system == nil {
+            return ["Audio stopped being written to disk partway through, so part of this recording "
+                + "was not saved. What was written before that point is intact."]
+        }
+        if microphone == RecordingHealthReport.nothingSaved, system == RecordingHealthReport.nothingSaved {
+            return ["No audio could be saved at any point during this recording, so none of it was kept."]
+        }
+        return [("Microphone", microphone), ("System", system)].compactMap { track, loss in
+            switch loss {
+            case RecordingHealthReport.nothingSaved?: "\(track) audio could not be saved at any point, so none of it was kept."
+            case RecordingHealthReport.partSaved?: "\(track) audio stopped being saved partway through, so part of it was not kept."
+            default: nil
+            }
+        }
+    }
+
     public static func message(for report: RecordingHealthReport) -> String? {
         guard report.worstStatus != .good else { return nil }
         var notes: [String] = []
@@ -51,12 +74,10 @@ public enum RecordingHealthAdvisory {
         }
         if report.warnings.contains(.captureWritesFailing) {
             // First in severity but placed with the other capture failures for reading order.
-            // Says what was lost rather than what failed: a persistent write failure means the
-            // audio after that point is simply not in the file (F386).
-            notes.append(
-                "Audio stopped being written to disk partway through, so part of this recording "
-                + "was not saved. What was written before that point is intact."
-            )
+            // Says what was lost rather than what failed (F386), per track where the report knows
+            // (F1051): a track that never saved a buffer was not cut short, and had no "point" before
+            // which anything is intact.
+            notes.append(contentsOf: writeLossNotes(report))
         }
         // A flagged report with nothing to say about it (F188). Every note above reads `warnings`,
         // so a report written by a NEWER build — whose status or whose only warning this build does

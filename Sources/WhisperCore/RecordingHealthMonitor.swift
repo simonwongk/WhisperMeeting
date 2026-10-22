@@ -217,6 +217,19 @@ public struct RecordingHealthReport: Sendable, Equatable, Codable {
     /// recording reads 0.09%, which lands in the band that says "a small share".
     public let microphoneWorstSecond: ClippedSecond?
     public let systemAudioWorstSecond: ClippedSecond?
+    /// What each track lost to a persistent write failure (F1051): `nothingSaved` when none of its
+    /// buffers was ever saved — a format failure from the first buffer, say — and `partSaved` when
+    /// some were. Nil for a track whose writes never failed, and in every report written before.
+    ///
+    /// `.captureWritesFailing` alone could not say which, so the after-meeting note told a track
+    /// that never saved a buffer it had stopped "partway through" and that what came "before that
+    /// point" was intact. Plain strings rather than an enum, and `let` with no default, for the
+    /// reasons the counts above give: a value from a newer build decodes as nil (F188), and the
+    /// note then keeps its general sentence.
+    public let microphoneWriteLoss: String?
+    public let systemAudioWriteLoss: String?
+    public static let nothingSaved = "nothingSaved"
+    public static let partSaved = "partSaved"
 
     public init(
         warnings: Set<RecordingHealthWarning>,
@@ -229,8 +242,12 @@ public struct RecordingHealthReport: Sendable, Equatable, Codable {
         systemAudioFramesMeasured: Int? = nil,
         systemAudioFramesAtFullScale: Int? = nil,
         microphoneWorstSecond: ClippedSecond? = nil,
-        systemAudioWorstSecond: ClippedSecond? = nil
+        systemAudioWorstSecond: ClippedSecond? = nil,
+        microphoneWriteLoss: String? = nil,
+        systemAudioWriteLoss: String? = nil
     ) {
+        self.microphoneWriteLoss = microphoneWriteLoss
+        self.systemAudioWriteLoss = systemAudioWriteLoss
         self.microphoneFramesMeasured = microphoneFramesMeasured
         self.microphoneFramesAtFullScale = microphoneFramesAtFullScale
         self.systemAudioFramesMeasured = systemAudioFramesMeasured
@@ -284,6 +301,9 @@ public struct RecordingHealthReport: Sendable, Equatable, Codable {
         // Same leniency, same reason (F379): absent in every report written before today.
         microphoneWorstSecond = try? container.decodeIfPresent(ClippedSecond.self, forKey: .microphoneWorstSecond)
         systemAudioWorstSecond = try? container.decodeIfPresent(ClippedSecond.self, forKey: .systemAudioWorstSecond)
+        // And again (F1051). An unknown value is kept here and ignored by the note.
+        microphoneWriteLoss = try? container.decodeIfPresent(String.self, forKey: .microphoneWriteLoss)
+        systemAudioWriteLoss = try? container.decodeIfPresent(String.self, forKey: .systemAudioWriteLoss)
     }
 }
 
@@ -410,6 +430,10 @@ public final class RecordingHealthMonitor {
     /// the disk advice is dropped only when the disk is known not to be the problem.
     private var microphoneRunHitStorage = false
     private var systemAudioRunHitStorage = false
+    /// Whether each track's writes reached the failure threshold at any point (F1051), for the
+    /// report's per-track loss. The counts above reset on the next success; this does not.
+    private var microphoneWritesFailed = false
+    private var systemAudioWritesFailed = false
     /// Whether any system-audio buffer has arrived, saved or not (F982). Detection only, never
     /// staleness: `receive` runs only after a successful append, so a system track failing from its
     /// first buffer never set `lastReceivedAt` and read as "not detected" as well as not saved, and
@@ -589,8 +613,17 @@ public final class RecordingHealthMonitor {
             // would otherwise drop its last second, and the last second is exactly where a user
             // who stopped because of the noise would have heard it.
             microphoneWorstSecond: microphone.worstSecondIncludingOpenBucket,
-            systemAudioWorstSecond: systemAudio.worstSecondIncludingOpenBucket
+            systemAudioWorstSecond: systemAudio.worstSecondIncludingOpenBucket,
+            // `lastReceivedAt` is set only by a buffer that was saved (F982), so a failing track that
+            // never set it saved nothing.
+            microphoneWriteLoss: Self.writeLoss(failed: microphoneWritesFailed, savedAny: microphone.lastReceivedAt != nil),
+            systemAudioWriteLoss: Self.writeLoss(failed: systemAudioWritesFailed, savedAny: systemAudio.lastReceivedAt != nil)
         )
+    }
+
+    private static func writeLoss(failed: Bool, savedAny: Bool) -> String? {
+        guard failed else { return nil }
+        return savedAny ? RecordingHealthReport.partSaved : RecordingHealthReport.nothingSaved
     }
 
     private func isStale(_ channel: ChannelState, at time: TimeInterval) -> Bool {
@@ -613,11 +646,13 @@ public final class RecordingHealthMonitor {
         case .microphone:
             microphoneWriteFailures = succeeded ? 0 : microphoneWriteFailures + 1
             microphoneRunHitStorage = !succeeded && (microphoneRunHitStorage || storage)
+            if microphoneWriteFailures >= writeFailureThreshold { microphoneWritesFailed = true }
         case .systemAudio:
             // F982: a buffer reached the append, so system audio is there, saved or not.
             systemAudioArrived = true
             systemAudioWriteFailures = succeeded ? 0 : systemAudioWriteFailures + 1
             systemAudioRunHitStorage = !succeeded && (systemAudioRunHitStorage || storage)
+            if systemAudioWriteFailures >= writeFailureThreshold { systemAudioWritesFailed = true }
         }
     }
 
