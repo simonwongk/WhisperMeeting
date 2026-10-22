@@ -146,7 +146,8 @@ enum FocusedTextField {
     /// than F445. Rule 3 is wrong in cases nothing here can see: a second process turning secure
     /// input on while the named one still holds it; an app that turned it on from the background
     /// and was brought to the front afterwards — each with a password prompt Accessibility shows as
-    /// ordinary text; and, suspected, a front app the second look of F656 reads stale (F693).
+    /// ordinary text. (A front app the second look of F656 read stale was a third, until F693 read the
+    /// app in front from the focused element's owner — `frontmost`.)
     static func secureInput(_ reading: Reading, isPasswordField: Bool, isTextField: Bool) -> SecureInput? {
         if isPasswordField { return .passwordField }
         guard reading.secureEventInput else { return nil }
@@ -160,19 +161,49 @@ enum FocusedTextField {
         return nil
     }
 
+    /// The app in front, from what the system says now (F693): the process that owns the focused
+    /// element — the one a paste would reach — else Accessibility's focused application, else
+    /// `NSWorkspace`'s, which is the only one of the three that can be stale. Its answer is an
+    /// `NSRunningApplication`, whose time-varying properties "persist until the next turn of the main
+    /// run loop in a common mode" (NSRunningApplication.h), so F656's second look, taken in the turn
+    /// a blocking clipboard read held, could not see a switch made during it. The focused element was
+    /// already read from the system, so the two were mismatched: a sudo prompt in Terminal, switched
+    /// to during the read, was Terminal's text area paired with the previous app's process, and rule 3
+    /// of `secureInput` let the paste through.
+    static func frontmost(
+        focusedElementOwner: pid_t?, focusedApplication: pid_t?,
+        workspace: (bundleIdentifier: String?, processIdentifier: pid_t)?,
+        bundleIdentifierOf: (pid_t) -> String?
+    ) -> (bundleIdentifier: String?, processIdentifier: pid_t?) {
+        guard let process = focusedElementOwner ?? focusedApplication else {
+            return (workspace?.bundleIdentifier, workspace?.processIdentifier)
+        }
+        if let workspace, workspace.processIdentifier == process { return (workspace.bundleIdentifier, process) }
+        return (bundleIdentifierOf(process), process)
+    }
+
     /// The live reads behind `probe()`.
     static func read() -> Reading {
-        let app = NSWorkspace.shared.frontmostApplication
+        let workspace = NSWorkspace.shared.frontmostApplication
+        let focusedApplication = focusedApplicationProcess()
+        let focused = focusedElement(inProcess: focusedApplication ?? workspace?.processIdentifier)
+        var owner: pid_t = 0
+        let front = frontmost(
+            focusedElementOwner: focused.flatMap { AXUIElementGetPid($0, &owner) == .success ? owner : nil },
+            focusedApplication: focusedApplication,
+            workspace: workspace.map { ($0.bundleIdentifier, $0.processIdentifier) },
+            bundleIdentifierOf: { NSRunningApplication(processIdentifier: $0)?.bundleIdentifier }
+        )
         var reading = Reading(
-            bundleIdentifier: app?.bundleIdentifier,
-            processIdentifier: app?.processIdentifier,
+            bundleIdentifier: front.bundleIdentifier,
+            processIdentifier: front.processIdentifier,
             secureEventInput: IsSecureEventInputEnabled()
         )
         if reading.secureEventInput, let holder = secureInputProcess() {
             reading.secureInputProcessIdentifier = holder
             reading.secureInputAppName = NSRunningApplication(processIdentifier: holder)?.localizedName
         }
-        guard let focused = focusedElement(in: app) else { return reading }
+        guard let focused else { return reading }
         var selection: AnyObject?
         reading.focused = Reading.Element(
             role: string(focused, kAXRoleAttribute),
@@ -212,15 +243,25 @@ enum FocusedTextField {
         return pid > 0 ? pid : nil
     }
 
-    private static func focusedElement(in app: NSRunningApplication?) -> AXUIElement? {
+    /// The process Accessibility says has focus now (F693), or nil when it cannot say — no
+    /// Accessibility trust, which a paste needs anyway, or no answer within the timeout.
+    private static func focusedApplicationProcess() -> pid_t? {
+        let systemWide = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(systemWide, 0.25)
+        guard let application = element(systemWide, kAXFocusedApplicationAttribute) else { return nil }
+        var process: pid_t = 0
+        return AXUIElementGetPid(application, &process) == .success ? process : nil
+    }
+
+    private static func focusedElement(inProcess process: pid_t?) -> AXUIElement? {
         let systemWide = AXUIElementCreateSystemWide()
         // A hung app must not hold up the paste: Accessibility's default wait is six seconds.
         AXUIElementSetMessagingTimeout(systemWide, 0.25)
         if let element = element(systemWide, kAXFocusedUIElementAttribute) { return element }
-        guard let app else { return nil }
+        guard let process else { return nil }
         // Chromium and Electron build their accessibility tree only for a client that asks for it
         // (`AXManualAccessibility`, Chromium's documented switch). Ignored by every other app.
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        let appElement = AXUIElementCreateApplication(process)
         AXUIElementSetMessagingTimeout(appElement, 0.25)
         AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
         return element(appElement, kAXFocusedUIElementAttribute)

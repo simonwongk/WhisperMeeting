@@ -260,3 +260,44 @@ func controllerPastesIntoAnotherAppWhileSecureEntryIsOn() async throws {
     #expect(overlay.phases.last == .done)
     #expect(controller.logStore.log.entries.first?.outcome == .pasted)
 }
+
+// F693 — the app in front came from `NSWorkspace.frontmostApplication`, an `NSRunningApplication` whose
+// time-varying properties persist until the main run loop next turns (NSRunningApplication.h), while the
+// focused element was asked of the system. Switched to Terminal at a sudo prompt during a blocking clipboard
+// read, F656's second look paired Terminal's text area with the previous app's process: the secure-input
+// holder (Terminal) was then "another app", the field vouched, and rule 3 let the paste through. The app in
+// front is now the focused element's owner.
+@Test("The app in front is the focused element's owner, not NSWorkspace's possibly stale answer (F693)")
+func theFrontAppIsTheFocusedElementsOwner() {
+    let stale = (bundleIdentifier: Optional("com.apple.TextEdit"), processIdentifier: textEdit)
+    let names: [pid_t: String] = [terminal: "com.apple.Terminal", textEdit: "com.apple.TextEdit"]
+    let front = FocusedTextField.frontmost(
+        focusedElementOwner: terminal, focusedApplication: terminal, workspace: stale, bundleIdentifierOf: { names[$0] }
+    )
+    #expect(front.processIdentifier == terminal)
+    #expect(front.bundleIdentifier == "com.apple.Terminal")
+    // No element visible: Accessibility's focused application, still not NSWorkspace's.
+    #expect(FocusedTextField.frontmost(focusedElementOwner: nil, focusedApplication: terminal, workspace: stale,
+                                       bundleIdentifierOf: { names[$0] }).processIdentifier == terminal)
+    // Accessibility cannot say: NSWorkspace's, as before.
+    #expect(FocusedTextField.frontmost(focusedElementOwner: nil, focusedApplication: nil, workspace: stale,
+                                       bundleIdentifierOf: { names[$0] }).processIdentifier == textEdit)
+}
+
+@MainActor
+@Test("With the front app read as the field's owner, a sudo prompt in Terminal switched to mid-read is not pasted into (F693)")
+func aSwitchToASecurePromptDuringTheReadIsRefused() throws {
+    // The reading the second look now makes after the switch: Terminal's text area, owned by Terminal, which
+    // holds secure input. Rule 2 — the app in front is the one the session names — refuses it.
+    let names: [pid_t: String] = [terminal: "com.apple.Terminal", textEdit: "com.apple.TextEdit"]
+    let front = FocusedTextField.frontmost(
+        focusedElementOwner: terminal, focusedApplication: nil,
+        workspace: (bundleIdentifier: "com.apple.TextEdit", processIdentifier: textEdit), bundleIdentifierOf: { names[$0] }
+    )
+    let reading = FocusedTextField.Reading(
+        bundleIdentifier: front.bundleIdentifier, processIdentifier: front.processIdentifier,
+        focused: .init(role: kAXTextAreaRole, subrole: nil, hasSelectedTextRange: true),
+        secureEventInput: true, secureInputProcessIdentifier: terminal, secureInputAppName: "Terminal"
+    )
+    #expect(FocusedTextField.probe(reading: reading).secureInput == .keyboardEntry(app: "Terminal"))
+}
