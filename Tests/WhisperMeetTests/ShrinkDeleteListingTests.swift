@@ -32,7 +32,12 @@ private struct ListingFixture {
             id: id, title: "Imported talk", duration: 60,
             recordingPath: "Recordings/\(id.uuidString)/recording.wav",
             status: .completed, transcriptText: "Hi."))
-        model.decodeForShrink = { _ in DecodedAudio.Decoded(duration: 60, level: 0.1) }
+        // A WAV reports its own length — the 60 s recording, and a leftover's one-second decode, which F1058 holds
+        // to the second it measures; the stand-in copy is no WAV and stands for the recording.
+        model.decodeForShrink = { url in
+            let seconds = WAVInspection.header(at: url).map { Double($0.declaredDataBytes) / Double($0.bytesPerSecond) }
+            return DecodedAudio.Decoded(duration: seconds ?? 60, level: 0.1)
+        }
         // The recording runs 60 s; any other `recording.<ext>` measures a second, so F911's rule lets it go.
         model.declaredDurationForShrink = { $0.pathExtension == "wav" ? 60 : 1 }
         model.availableBytesForShrink = { _ in .max }
