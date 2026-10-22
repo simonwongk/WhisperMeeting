@@ -272,14 +272,22 @@ func keptReadAuditRefusesAReadThatIsNotTheMixs() async throws {
 @Test("Two reads of a recording agree on each channel's level per second within 2 %, far inside the 10 % band (F1072)")
 func twoReadsAgreeOnEveryChannelsLevel() async throws {
     let dir = try scratch("F1072-reads"); defer { try? FileManager.default.removeItem(at: dir) }
+    // Plain loops with typed parts: one expression summing these inside a closure was more than the runner's
+    // Swift 6.1 would type-check in time (CI run on e45d69ab), though the developer's newer compiler took it.
     func voice(_ base: Double, from: Double = 0) -> [Float] {
-        (0..<(8 * 48_000)).map { n in
-            let t = Double(n) / 48_000
-            guard t >= from else { return 0 }
-            return Float((0..<8).reduce(0.0) { sum, k in
-                sum + 0.03 * sin(2 * Double.pi * base * Double(k + 1) * 1.37 * t) * (0.55 + 0.45 * sin(2 * Double.pi * (2 + Double(k)) * t))
-            })
+        var samples = [Float](repeating: 0, count: 8 * 48_000)
+        for n in samples.indices {
+            let t: Double = Double(n) / 48_000
+            guard t >= from else { continue }
+            var sum: Double = 0
+            for k in 0..<8 {
+                let tone: Double = sin(2 * Double.pi * base * Double(k + 1) * 1.37 * t)
+                let swell: Double = 0.55 + 0.45 * sin(2 * Double.pi * (2 + Double(k)) * t)
+                sum += 0.03 * tone * swell
+            }
+            samples[n] = Float(sum)
         }
+        return samples
     }
     let a = voice(311), b = voice(353, from: 3)
     let layouts: [(String, [[[Float]]])] = [
