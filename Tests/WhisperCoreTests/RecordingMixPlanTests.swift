@@ -481,3 +481,37 @@ func auditChannelBoundIsPinned() {
     let seventeen = RecordingMixPlan.Audit(trackChannels: [8, 9], sampleRate: 16_000, windows: [])
     #expect(RecordingMixPlan.firstFinding(seventeen, nativeChannelWindows: [], nativeLevel: 0.1) == .tooManyChannels(count: 17))
 }
+
+@Test("The mix's kept read is held to a second read channel by channel, window by window, where the channel sounds (F1072)")
+func readDisagreementJudgesEachChannelsLevel() {
+    func levels(_ channels: [[Double]], frames: [Double]? = nil) -> RecordingMixPlan.ChannelLevels {
+        RecordingMixPlan.ChannelLevels(levels: channels, frames: frames ?? [Double](repeating: 16_000, count: channels.first?.count ?? 0),
+                                       sampleRate: 16_000)
+    }
+    let again = levels([[0.2, 0.2, 0.2, 0.2], [0.1, 0.1, 0.1, 0.1]])
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: again, again: again) == nil)
+    // Within the band: a frame or two of offset moves a level well under 1 %.
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.199, 0.2, 0.201], [0.1, 0.1, 0.0995, 0.1]]), again: again) == nil)
+    // A quarter of a second of steady sound lost from window 2 of channel 2: 0.87 of its level.
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.2, 0.2, 0.2], [0.1, 0.1, 0.1 * 0.75.squareRoot(), 0.1]]), again: again)
+            == .readsDisagree(window: 2, channel: 1))
+    // More in the kept read than in the recording is a disagreement too.
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.25, 0.2, 0.2], [0.1, 0.1, 0.1, 0.1]]), again: again)
+            == .readsDisagree(window: 1, channel: 0))
+    // Where the channel does not sound in either read (under a tenth of its level), nothing is judged.
+    let quietWindow = levels([[0.2, 0.2, 0.2, 0.2], [0.1, 0.005, 0.1, 0.1]])
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.2, 0.2, 0.2], [0.1, 0.001, 0.1, 0.1]]), again: quietWindow) == nil)
+    // A track the kept read ended early: its last windows are silence there and sound here.
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.2, 0.2, 0.2], [0.1, 0.1, 0, 0]]), again: again)
+            == .readsDisagree(window: 2, channel: 1))
+    // A few frames past the last boundary in one read are not a window; a whole window one read lacks is.
+    let longer = levels([[0.2, 0.2, 0.2, 0.2, 0.3], [0.1, 0.1, 0.1, 0.1, 0.3]], frames: [16_000, 16_000, 16_000, 16_000, 3])
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: again, again: longer) == nil)
+    let wholeWindowMore = levels([[0.2, 0.2, 0.2, 0.2, 0.2], [0.1, 0.1, 0.1, 0.1, 0.1]])
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: again, again: wholeWindowMore) == .readsDisagree(window: 4, channel: 0))
+    // A different number of channels, or a level that is not a number.
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.2, 0.2, 0.2]]), again: again) == .readsDisagree(window: 0, channel: 1))
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, .nan, 0.2, 0.2], [0.1, 0.1, 0.1, 0.1]]), again: again)
+            == .notANumber(window: 1, channel: 0))
+    #expect(RecordingMixPlan.readAgreementBand.lowerBound == 0.9)
+}

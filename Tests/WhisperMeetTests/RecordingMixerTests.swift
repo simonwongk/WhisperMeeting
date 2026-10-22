@@ -265,3 +265,42 @@ func keptReadAuditRefusesAReadThatIsNotTheMixs() async throws {
         _ = try RecordingMixer.audit(lanes: lanes, trackChannels: result.trackChannels, frames: result.frames, against: output)
     }
 }
+
+// F1072 — the premise of `RecordingMixPlan.readAgreementBand`: two reads of a file, the mixer's kept one and
+// one of its own, agree on every channel's level per second far inside 10 %, though AVAssetReader lines them
+// up a frame or two apart. Measured on the layouts whose reads F998 found out of step.
+@Test("Two reads of a recording agree on each channel's level per second within 2 %, far inside the 10 % band (F1072)")
+func twoReadsAgreeOnEveryChannelsLevel() async throws {
+    let dir = try scratch("F1072-reads"); defer { try? FileManager.default.removeItem(at: dir) }
+    func voice(_ base: Double, from: Double = 0) -> [Float] {
+        (0..<(8 * 48_000)).map { n in
+            let t = Double(n) / 48_000
+            guard t >= from else { return 0 }
+            return Float((0..<8).reduce(0.0) { sum, k in
+                sum + 0.03 * sin(2 * Double.pi * base * Double(k + 1) * 1.37 * t) * (0.55 + 0.45 * sin(2 * Double.pi * (2 + Double(k)) * t))
+            })
+        }
+    }
+    let a = voice(311), b = voice(353, from: 3)
+    let layouts: [(String, [[[Float]]])] = [
+        ("identical tracks", [[a], [a]]),
+        ("dual-mono track + mono track", [[a, a], [b]]),
+        ("OBS: master + microphone + desktop", [[zip(a, b).map { $0 + $1 }], [a], [b]]),
+    ]
+    for (label, tracks) in layouts {
+        let input = dir.appendingPathComponent("\(UUID().uuidString).mov")
+        try await writeFixtureRawTracks(to: input, tracks)
+        let output = dir.appendingPathComponent("\(UUID().uuidString).wav")
+        let lanes = RecordingMixer.lanes(beside: output)
+        let result = try await RecordingMixer.mixEveryChannel(of: input, to: output, lanes: lanes)
+        let kept = try RecordingMixer.channelWindowLevels(lanes: lanes, trackChannels: result.trackChannels)
+        let again = try await RecordingMixer.channelWindowLevels(of: input)
+        #expect(kept.levels.count == again.levels.count, "\(label)")
+        var worst = 0.0
+        for (k, g) in zip(kept.levels, again.levels) {
+            for (kv, gv) in zip(k, g) where gv > 0.005 { worst = max(worst, abs(kv / gv - 1)) }
+        }
+        #expect(worst < 0.02, "\(label): the reads' levels differ by up to \(worst)")
+        #expect(RecordingMixPlan.firstReadDisagreement(kept: kept, again: again) == nil, "\(label)")
+    }
+}

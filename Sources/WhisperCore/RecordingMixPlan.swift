@@ -298,6 +298,10 @@ public enum RecordingMixPlan {
         /// from one timed wrongly, so it stopped following the track there. With `track` nil, every track
         /// together: the copy drifted from the mix's own read (F998).
         case trackOutOfStep(window: Int, track: Int?)
+        /// The mix's own read and a second read of the recording disagree on a channel's level in this
+        /// window (F1072): the copy was made from a read that may have lost sound a second read has, so
+        /// fitting the copy against that read cannot show the recording is in it.
+        case readsDisagree(window: Int, channel: Int)
         /// A track's channels cancel when combined into its own signal: one channel in opposite polarity
         /// to another (the review's R2). The mix cannot hold that track's sound.
         case trackCancels(window: Int, track: Int)
@@ -386,6 +390,67 @@ public enum RecordingMixPlan {
     /// each its channels combined by `channelWeight`, so each channel is expected in it at `gain ×
     /// channelWeight`. `nativeLevel` is the recording's level over every channel from its own decode;
     /// not a number, it refuses.
+    /// Each channel's level — its RMS — per `auditWindowSeconds` window of the timeline, and the frames in each
+    /// window, which are every channel's, at `sampleRate` (F1072).
+    public struct ChannelLevels: Sendable, Equatable {
+        public var levels: [[Double]]
+        public var frames: [Double]
+        public var sampleRate: Double
+
+        public init(levels: [[Double]], frames: [Double], sampleRate: Double) {
+            self.levels = levels
+            self.frames = frames
+            self.sampleRate = sampleRate
+        }
+    }
+
+    /// How far the mix's kept read may stand from a second read of the recording, as the ratio of one
+    /// channel's level in one window, before the copy is refused (F1072): within 10 %, 0.9 dB. Two reads
+    /// differ by a frame or two and drift about 0.4 frames a second (F980's log); over a one-second window
+    /// that moves well under 1 % of a level, while a quarter of a second of steady sound lost moves it 13 %.
+    public static let readAgreementBand: ClosedRange<Double> = 0.9...(1 / 0.9)
+
+    /// The first window and channel where the mix's kept read (`kept`) and a second, independent read of
+    /// the recording (`again`) disagree on a channel's level beyond `readAgreementBand` (F1072), or nil.
+    ///
+    /// The copy is fitted against the kept read (F998), so a fault in that read which a second read does not
+    /// repeat — a stretch zero-filled, a track ending early — is in the read, the mix and the copy alike,
+    /// and the fit cannot see it. Levels do not notice a frame or two of offset, so this cannot bring back
+    /// F998's false refusals. Judged only where the channel sounds in either read (`audibleShare` of its
+    /// level in the second read, above `MeetingStoragePlan.silenceLevel`); a window either read holds less
+    /// than half of is not judged, so a few frames past the last boundary are not a window. A read with a
+    /// different number of channels disagrees at once.
+    public static func firstReadDisagreement(kept: ChannelLevels, again: ChannelLevels) -> Finding? {
+        guard kept.levels.count == again.levels.count else {
+            return .readsDisagree(window: 0, channel: Swift.min(kept.levels.count, again.levels.count))
+        }
+        let full = auditWindowSeconds * again.sampleRate
+        let windows = Swift.max(kept.frames.count, again.frames.count)
+        func frames(_ side: ChannelLevels, _ window: Int) -> Double { window < side.frames.count ? side.frames[window] : 0 }
+        for channel in again.levels.indices {
+            let a = again.levels[channel], k = kept.levels[channel]
+            func level(_ values: [Double], _ window: Int) -> Double { window < values.count ? values[window] : 0 }
+            var squares = 0.0, total = 0.0
+            for window in a.indices where a[window].isFinite {
+                squares += a[window] * a[window] * frames(again, window)
+                total += frames(again, window)
+            }
+            let floor = Swift.max(MeetingStoragePlan.silenceLevel, (total > 0 ? (squares / total).squareRoot() : 0) * audibleShare)
+            for window in 0..<windows {
+                let av = level(a, window), kv = level(k, window)
+                guard av.isFinite, kv.isFinite else { return .notANumber(window: window, channel: channel) }
+                let keptFrames = frames(kept, window), againFrames = frames(again, window)
+                // A window either read holds less than half of, at the end, is not judged; one a read lacks
+                // altogether, where the other holds at least half of it, reads as silence there and is.
+                if Swift.max(keptFrames, againFrames) < full / 2 { continue }
+                if Swift.min(keptFrames, againFrames) < full / 2 && Swift.min(keptFrames, againFrames) > 0 { continue }
+                guard Swift.max(av, kv) >= floor else { continue }
+                guard av > 0, readAgreementBand.contains(kv / av) else { return .readsDisagree(window: window, channel: channel) }
+            }
+        }
+        return nil
+    }
+
     public static func firstFinding(_ audit: Audit, nativeChannelWindows: [[Double]], nativeLevel: Double) -> Finding? {
         let channels = audit.trackChannels.reduce(0, +)
         if channels > mostCheckedChannels { return .tooManyChannels(count: channels) }

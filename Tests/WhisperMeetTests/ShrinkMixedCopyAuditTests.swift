@@ -658,3 +658,39 @@ func copyDriftNamesTheCopy() {
     #expect(together.contains("the compressed copy drifted too far out of step") && !together.contains("audio track"), "\(together)")
     #expect(one.contains("audio track 2") && one.contains("drifted too far out of step"), "\(one)")
 }
+
+// MARK: - A fault in the mixer's own read (F1072)
+
+@Test("A mix whose own read lost two seconds of one track, with the copy made from that read, is refused (F1072)")
+@MainActor
+func shrinkAuditRefusesAMixWhoseOwnReadLostAStretch() async throws {
+    // Review 1 of F998, finding 1: the audit fits the copy against the mixer's kept read, so a fault in that
+    // read which a second read would not repeat — here track 2 zero-filled from 2 s to 4 s — is in the read,
+    // the mix and the copy alike, and the fit agrees with itself. `channelNotRead` compares five-second
+    // stretches at a quarter of the level, which two seconds of five lost passes (0.77 of it).
+    let a = fixtureVoice(voiceA, seconds: 8), b = fixtureVoice(voiceB, seconds: 8)
+    let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
+        try await writeFixtureRawTracks(to: url, [[a], [b]])
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    var lost = b
+    for n in 96_000..<192_000 { lost[n] = 0 }
+    let standIn = f.root.appendingPathComponent("lost-stretch.mov")
+    try await writeFixtureRawTracks(to: standIn, [[a], [lost]])
+    // The mixer's read is the stand-in's, kept beside the mix as the real mixer keeps its own.
+    f.model.mixForShrink = { _, output in
+        try await RecordingMixer.mixEveryChannel(of: standIn, to: output, lanes: RecordingMixer.lanes(beside: output))
+    }
+    let audits = KeptReadAudits()
+    audits.install(on: f.model)
+    let original = try Data(contentsOf: f.recording)
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(audits.count == 1, "judged against the kept read")
+    #expect(alert.contains("nothing was removed") && alert.lowercased().contains("channel 2") && alert.contains("at about 0:02"),
+            "\(alert)")
+    #expect(try Data(contentsOf: f.recording) == original)
+    #expect(!f.exists("recording.m4a"))
+}

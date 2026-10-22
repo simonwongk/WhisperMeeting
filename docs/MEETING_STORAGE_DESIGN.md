@@ -251,11 +251,13 @@ verified and the index saved.
      copy within ±16 frames of where it stood a window before, widening while it is not found, to 0.3 s in all (past
      that, refused as out of step), and that one alignment serves every track (F998). A sum that lost a track, or
      placed one 24 frames or a quarter second late, is refused against it, and a kept read short of the mix is
-     refused rather than measured as far as it goes. What it cannot show is a fault in the mixer's own read that
-     a second read would not repeat — a buffer dropped, a track taken to end early: the copy holds what that read
-     held, so only the recording's own decode, compared channel by channel in five-second stretches, stands
-     outside it (`channelNotRead`, which passes a channel down to a quarter of its level). F1071 weighs that
-     before mixing Shrink is switched on.
+     refused rather than measured as far as it goes. The fit cannot show a fault in the mixer's own read that a
+     second read would not repeat — a stretch zero-filled, a track taken to end early — since the copy holds what
+     that read held; so the kept read is held to a read of the recording of its own, each channel's level per
+     second within 10 % wherever the channel sounds (`RecordingMixPlan.firstReadDisagreement`, F1072). Two reads
+     of the shared-sound layouts agree within 0.03 %; a quarter of a second of steady sound lost moves a level
+     13 %, and two seconds of one track lost, which `channelNotRead`'s five-second quarter-level band passes, is
+     refused.
      Until F998 the audit read the recording a second time. AVAssetReader does not read an ffmpeg-made file the same
      way twice — its reads drift along a file, each track on its own, about 0.4 frames a second without bound — so
      each track was aligned on its own and re-aligned against the copy less the other tracks' fitted contributions;

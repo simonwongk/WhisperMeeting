@@ -306,6 +306,62 @@ enum RecordingMixer {
         try await open(input).3
     }
 
+    /// Each channel's level per `RecordingMixPlan.auditWindowSeconds` window, from a read of `input` of its
+    /// own, the way the mixer reads it (F1072): what `RecordingMixPlan.firstReadDisagreement` holds the mix's
+    /// kept read to, so a fault in the mixer's read that this read does not repeat is seen. The recording is
+    /// only read.
+    static func channelWindowLevels(of input: URL) async throws -> RecordingMixPlan.ChannelLevels {
+        let (asset, tracks, facts, end) = try await open(input)
+        return try windowLevels(channelCount: facts.reduce(0) { $0 + $1.channels }) { body in
+            try readInStep(asset: asset, tracks: tracks, channels: facts.map(\.channels), audioEnd: end, body: body)
+        }
+    }
+
+    /// The same, of the read `mixEveryChannel` kept at `lanes` (F1072).
+    static func channelWindowLevels(lanes: URL, trackChannels: [Int]) throws -> RecordingMixPlan.ChannelLevels {
+        try windowLevels(channelCount: trackChannels.reduce(0, +)) { body in
+            try replay(lanes: lanes, trackChannels: trackChannels, body: body)
+        }
+    }
+
+    /// Sums each channel's squares per window over what `read` hands on, stretch by stretch.
+    private static func windowLevels(
+        channelCount: Int,
+        read: ((_ start: Int, _ count: Int, _ lanes: [[[Float]]]) throws -> Void) throws -> Int
+    ) throws -> RecordingMixPlan.ChannelLevels {
+        let perWindow = Swift.max(1, Int(saturating: RecordingMixPlan.auditWindowSeconds * Double(sampleRate)))
+        var squares = [[Double]](repeating: [], count: channelCount)
+        var frames: [Double] = []
+        _ = try read { start, count, stretch in
+            var offset = 0
+            while offset < count {
+                let window = (start + offset) / perWindow
+                let length = Swift.min(count - offset, (window + 1) * perWindow - (start + offset))
+                while frames.count <= window {
+                    frames.append(0)
+                    for channel in squares.indices { squares[channel].append(0) }
+                }
+                frames[window] += Double(length)
+                var channel = 0
+                for track in stretch {
+                    for samples in track where channel < channelCount {
+                        var sum: Float = 0
+                        samples.withUnsafeBufferPointer { pointer in
+                            vDSP_svesq(pointer.baseAddress! + offset, 1, &sum, vDSP_Length(length))
+                        }
+                        squares[channel][window] += Double(sum)
+                        channel += 1
+                    }
+                }
+                offset += length
+            }
+        }
+        let levels = squares.map { windows in
+            zip(windows, frames).map { $1 > 0 ? (Swift.max(0, $0) / $1).squareRoot() : 0 }
+        }
+        return RecordingMixPlan.ChannelLevels(levels: levels, frames: frames, sampleRate: Double(sampleRate))
+    }
+
     /// Hands `body` the channels `mixEveryChannel` kept at `lanes`, in the shape `readInStep` hands them, at
     /// most `longestStretch` frames at a time. Returns the frames handed on.
     static func replay(lanes: URL, trackChannels: [Int], body: (_ start: Int, _ count: Int, _ lanes: [[[Float]]]) throws -> Void) throws -> Int {

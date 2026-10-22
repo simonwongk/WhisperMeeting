@@ -300,7 +300,8 @@ extension AppModel {
             let lanesFile = RecordingMixer.lanes(beside: mixWAV)
             let mixed = MeetingStoragePlan.needsMix(disk)
             let encode = encodeForShrink, decode = decodeForShrink, mix = mixForShrink, free = availableBytesForShrink
-            let audit = auditForShrink, auditLanes = auditLanesForShrink, presence = channelPresenceForShrink
+            let audit = auditForShrink, auditLanes = auditLanesForShrink, readLevels = readLevelsForShrink
+            let presence = channelPresenceForShrink
             let twoChannels = disk.channelCount == 2
             let besideRecording = MeetingStoragePlan.twoChannelRecordingsToVerify(disk)
             let unread = MeetingStoragePlan.unreadRecordingsToVerify(disk), decodeUnread = decodeUnreadableForShrink
@@ -394,11 +395,14 @@ extension AppModel {
                         }
                         let measured: RecordingMixPlan.Audit
                         // F998: against the mix's own read where it kept one — the samples the copy was made
-                        // from — else a read of the recording, as before.
+                        // from — else a read of the recording, as before. F1072: and that read's levels, held
+                        // to a read of the recording of its own below.
+                        var keptLevels: RecordingMixPlan.ChannelLevels?
                         do {
                             defer { try? FileManager.default.removeItem(at: lanesFile) }
                             if let keptRead {
                                 measured = try auditLanes(keptRead.lanes, keptRead.trackChannels, keptRead.frames, tempM4A)
+                                keptLevels = try RecordingMixer.channelWindowLevels(lanes: keptRead.lanes, trackChannels: keptRead.trackChannels)
                             } else {
                                 measured = try await audit(recordingURL, tempM4A)
                             }
@@ -407,6 +411,16 @@ extension AppModel {
                             measured, nativeChannelWindows: original.channelWindowLevels, nativeLevel: original.level
                         ) {
                             throw ShrinkFailure.mixNotShown(finding)
+                        }
+                        // F1072: the copy agrees with the read it was made from; that read must agree with a
+                        // read of the recording of its own, or a fault in it that this read does not repeat —
+                        // a stretch zero-filled, a track ended early — is in the copy unseen.
+                        if let keptLevels {
+                            let again: RecordingMixPlan.ChannelLevels
+                            do { again = try await readLevels(recordingURL) } catch { throw ShrinkFailure.unreadableOriginal }
+                            if let disagreement = RecordingMixPlan.firstReadDisagreement(kept: keptLevels, again: again) {
+                                throw ShrinkFailure.mixNotShown(disagreement)
+                            }
                         }
                     } else {
                         guard MeetingStoragePlan.levelsAgree(original: original.level, compressed: copy.level) else {
@@ -855,6 +869,8 @@ extension AppModel {
                 return "audio track \(track + 1) of \(subject) drifted too far out of step with the compressed copy to check it, at about \(at(window))"
             case let .trackOutOfStep(window, nil):
                 return "the compressed copy drifted too far out of step with \(subject) to check it, at about \(at(window))"
+            case let .readsDisagree(window, channel):
+                return "channel \(channel + 1) of \(subject) read differently a second time at about \(at(window)), so the copy can't be checked against it"
             case let .trackCancels(window, track):
                 return "audio track \(track + 1) of \(subject) cancels itself when its channels are mixed into one, at about \(at(window))"
             case let .tracksCancel(window):
