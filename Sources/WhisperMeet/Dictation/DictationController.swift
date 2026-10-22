@@ -856,16 +856,28 @@ final class DictationController: ObservableObject {
     /// front (F547) — from the tap actually armed (F684). It used to say an F-key was kept from that
     /// app whenever the key was an F-key, so on the listen-only fallback it promised what the tap
     /// was not doing, and only the log and the Accessibility row said otherwise.
+    ///
+    /// `tapFailed` (F926): no tap could be made at all — neither Accessibility nor Input Monitoring —
+    /// so the key is neither heard nor held back, and the caption says that instead of describing a
+    /// tap that does not exist. And a modifier's promise that an F-key would be kept from the app holds
+    /// only with Accessibility, which holding a key back needs.
     nonisolated static func triggerKeyCaption(
         for hotkey: DictationHotkey,
         isListenOnly: Bool,
-        accessibilityGranted: Bool
+        accessibilityGranted: Bool,
+        tapFailed: Bool = false
     ) -> String {
         let use = hotkey.mode == .hold
             ? "Hold this key to talk."
             : "Press this key to start dictating, and again to stop."
+        guard !tapFailed else {
+            return use + " WhisperMeet cannot hear this key yet, so it reaches every app as usual. Allow WhisperMeet under Accessibility (and, if needed, Input Monitoring) in System Settings → Privacy & Security."
+        }
         guard DictationKeyName.functionKeyCodes.contains(hotkey.keyCode) else {
-            return use + " A modifier key still reaches the app you are typing in; using it in a shortcut cancels the dictation. An F-key is kept from that app instead."
+            return use + " A modifier key still reaches the app you are typing in; using it in a shortcut cancels the dictation."
+                + (accessibilityGranted
+                    ? " An F-key is kept from that app instead."
+                    : " With Accessibility allowed, an F-key would be kept from that app instead.")
         }
         guard isListenOnly else {
             return use + " While Quick Dictation is on, the app you are typing in does not receive it, unless ⌘ ⌃ ⌥ or ⇧ is held with it."
@@ -881,7 +893,8 @@ final class DictationController: ObservableObject {
     /// The caption for the trigger as it is armed now.
     var triggerKeyCaption: String {
         Self.triggerKeyCaption(
-            for: hotkey, isListenOnly: isTriggerListenOnly, accessibilityGranted: isAccessibilityTrusted
+            for: hotkey, isListenOnly: isTriggerListenOnly, accessibilityGranted: isAccessibilityTrusted,
+            tapFailed: enabled && hotkeyTapFailed
         )
     }
 
