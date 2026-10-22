@@ -296,9 +296,11 @@ extension AppModel {
             // only with `shrinkMixesRecordings` on: while it is off (F980), `unavailability` refuses such a
             // recording above, and a resume keeps a leftover that would need it.
             let mixWAV = folder.appendingPathComponent(".shrink-\(token).mix.wav")
+            // F998: where the mixer keeps its read, beside the mix (`mixForShrink`'s default).
+            let lanesFile = RecordingMixer.lanes(beside: mixWAV)
             let mixed = MeetingStoragePlan.needsMix(disk)
             let encode = encodeForShrink, decode = decodeForShrink, mix = mixForShrink, free = availableBytesForShrink
-            let audit = auditForShrink, presence = channelPresenceForShrink
+            let audit = auditForShrink, auditLanes = auditLanesForShrink, presence = channelPresenceForShrink
             let twoChannels = disk.channelCount == 2
             let besideRecording = MeetingStoragePlan.twoChannelRecordingsToVerify(disk)
             let unread = MeetingStoragePlan.unreadRecordingsToVerify(disk), decodeUnread = decodeUnreadableForShrink
@@ -308,14 +310,21 @@ extension AppModel {
             let otherSeconds = disk.otherRecordingSeconds
             let flush = flushForShrink
             let declaredLength = disk.durationSeconds
-            let needed = MeetingStoragePlan.totalBytes([
-                .init(name: "", bytes: Int64(saturating: declaredLength * 32_000)),
-                .init(name: "", bytes: mixed ? Int64(saturating: declaredLength * 32_000) : 0),
-                .init(name: "", bytes: MeetingStoragePlan.predictedOutputBytes(durationSeconds: declaredLength)),
-                // F1004: a download AVFoundation cannot read is decoded, one at a time, to 16 kHz 16-bit stereo.
-                .init(name: "", bytes: unread.isEmpty ? 0 : Int64(saturating: declaredLength * 64_000)),
-                .init(name: "", bytes: 100_000_000),
-            ])
+            let keptChannels = Double(disk.audioTracks?.reduce(0) { $0 + $1.channels } ?? Swift.max(disk.channelCount ?? 2, 2))
+            let decodesUnread = !unread.isEmpty
+            let neededBytes: @Sendable (_ seconds: Double) -> Int64 = { seconds in
+                MeetingStoragePlan.totalBytes([
+                    .init(name: "", bytes: Int64(saturating: seconds * 32_000)),
+                    .init(name: "", bytes: mixed ? Int64(saturating: seconds * 32_000) : 0),
+                    // F998: the mix keeps its read, every channel as 16 kHz Float32, until the audit has read it.
+                    .init(name: "", bytes: mixed ? Int64(saturating: seconds * 64_000 * keptChannels) : 0),
+                    .init(name: "", bytes: MeetingStoragePlan.predictedOutputBytes(durationSeconds: seconds)),
+                    // F1004: a download AVFoundation cannot read is decoded, one at a time, to 16 kHz 16-bit stereo.
+                    .init(name: "", bytes: decodesUnread ? Int64(saturating: seconds * 64_000) : 0),
+                    .init(name: "", bytes: 100_000_000),
+                ])
+            }
+            let needed = neededBytes(declaredLength)
             let encoded: Result<Int64, Error> = await Task.detached(priority: .userInitiated) {
                 do {
                     if let available = free(folder), available < needed {
@@ -323,13 +332,28 @@ extension AppModel {
                     }
                     var expected = declaredLength
                     var mixedChannels: Int?
+                    var keptRead: (lanes: URL, trackChannels: [Int], frames: Int)?
                     if mixed {
                         // The mix's own length is the recording's, every track's end included: the header
                         // read for `declaredLength` measures the first track alone. The mixer refuses a
                         // decode that stops short of where the audio tracks end (not a video track, R1).
+                        // Sized by the mix's own length before it is written (review of F998): the kept
+                        // read is twice the mix's size for every channel, and the first track's length
+                        // above can understate the mix's by hours.
+                        if let available = free(folder),
+                           let seconds = try? await RecordingMixer.mixedSeconds(of: recordingURL), seconds > declaredLength,
+                           available < neededBytes(seconds) {
+                            throw ShrinkFailure.insufficientSpace(needed: neededBytes(seconds), available: available)
+                        }
                         let result = try await mix(recordingURL, mixWAV)
                         expected = result.duration
                         mixedChannels = result.channels
+                        // Only the read this mix kept beside it, for every channel it mixed: anything else
+                        // is not the read the copy was made from, and the recording is read again instead.
+                        if let lanes = result.lanes, lanes == lanesFile, result.frames > 0,
+                           result.trackChannels.reduce(0, +) == result.channels {
+                            keptRead = (lanes, result.trackChannels, result.frames)
+                        }
                         try encode(mixWAV, tempM4A, tempWAV)
                         try? FileManager.default.removeItem(at: mixWAV)
                     } else if DecodedAudio.opensButCountsNoFrames(recordingURL) {
@@ -369,7 +393,16 @@ extension AppModel {
                             throw ShrinkFailure.unreadableOriginal
                         }
                         let measured: RecordingMixPlan.Audit
-                        do { measured = try await audit(recordingURL, tempM4A) } catch { throw ShrinkFailure.unreadableOriginal }
+                        // F998: against the mix's own read where it kept one — the samples the copy was made
+                        // from — else a read of the recording, as before.
+                        do {
+                            defer { try? FileManager.default.removeItem(at: lanesFile) }
+                            if let keptRead {
+                                measured = try auditLanes(keptRead.lanes, keptRead.trackChannels, keptRead.frames, tempM4A)
+                            } else {
+                                measured = try await audit(recordingURL, tempM4A)
+                            }
+                        } catch { throw ShrinkFailure.unreadableOriginal }
                         if let finding = RecordingMixPlan.firstFinding(
                             measured, nativeChannelWindows: original.channelWindowLevels, nativeLevel: original.level
                         ) {
@@ -435,6 +468,7 @@ extension AppModel {
                     try? FileManager.default.removeItem(at: tempM4A)
                     try? FileManager.default.removeItem(at: tempWAV)
                     try? FileManager.default.removeItem(at: mixWAV)
+                    try? FileManager.default.removeItem(at: lanesFile)
                     try? FileManager.default.removeItem(at: decodedWAV)
                     try? FileManager.default.removeItem(at: readerWAV)
                     return .failure(error)
@@ -817,8 +851,10 @@ extension AppModel {
                 return "the compressed copy holds values that are not numbers at about \(at(window)), so it can't be checked against \(subject)"
             case let .unreadableWindow(window):
                 return "\(subject) could not be measured at about \(at(window)) to check the copy"
-            case let .trackOutOfStep(window, track):
+            case let .trackOutOfStep(window, track?):
                 return "audio track \(track + 1) of \(subject) drifted too far out of step with the compressed copy to check it, at about \(at(window))"
+            case let .trackOutOfStep(window, nil):
+                return "the compressed copy drifted too far out of step with \(subject) to check it, at about \(at(window))"
             case let .trackCancels(window, track):
                 return "audio track \(track + 1) of \(subject) cancels itself when its channels are mixed into one, at about \(at(window))"
             case let .tracksCancel(window):

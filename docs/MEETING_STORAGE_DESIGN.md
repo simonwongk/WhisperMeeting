@@ -228,8 +228,9 @@ verified and the index saved.
      (recovery's record, or ffprobe) or keeps it, instead of taking its 0 s as holding nothing.
    - For a mixed recording (F942) the level checks above are replaced, because levels cannot show a track lost while
      another sounds over it, nor a track whose channels cancel when combined: the review deleted an original both ways
-     (review of F942, R2 and M8). Instead `RecordingMixer.audit` reads every channel of every track again, the way the
-     mixer reads them, in step with the copy, and `RecordingMixPlan.firstFinding` judges each **one-second** window
+     (review of F942, R2 and M8). Instead the mixer keeps its own read beside the mix — every channel of every track,
+     as it summed them, 16 kHz Float32 (F998) — `RecordingMixer.audit(lanes:trackChannels:frames:against:)` measures the copy
+     against that read, in step with the copy, and `RecordingMixPlan.firstFinding` judges each **one-second** window
      by one rule (F980, 2026-10-14): *the original is deleted only when the audit finds every track's and every channel's
      sound in the copy; what it cannot find is a refusal.* This holds against a lost or fully cancelled track; it does not
      yet hold against a voice cancelled by an opposite-polarity copy of it on another track or channel (review of lane S,
@@ -245,18 +246,28 @@ verified and the index saved.
      under a tenth of the recording's). Sound two tracks share (identical tracks; OBS's master beside its stems) is
      proven as the sum it is heard in, by the whole mix's fit. Every window is judged, the last partial one and a
      recording shorter than a window included.
-     Before anything is summed, each track is aligned to the copy: AVAssetReader does not read an ffmpeg-made file
-     the same way twice, and its reads drift along a file, each track on its own, about 0.4 frames a second without
-     bound. The audit follows each track within ±16 frames of where it stood a window before, widening while it is
-     not found, to 0.3 s in all (past that, refused as out of step), and re-aligns each track against the copy less
-     the other tracks' fitted contributions, where only its own image remains, keeping the result only where it
-     explains the copy better. Measured through the real mix and a 32 kbps encode at one-second windows (F980's
-     log): a present track 24 dB under another fits at 0.95 to 1.03 and a dropped one within 0.30 of 0; at 30 dB a
-     dropped one once fitted at 0.46, which is why 24 dB is the line. Ten Shrinks in a row of each ffmpeg two-track
-     file, and of an ffmpeg-made OBS three-track layout, all succeed, and a three-minute drifting file shrinks; but
-     AVAssetWriter-made fixtures whose tracks share their sound are refused in some runs — the OBS layout and a
-     dual-mono track beside a mono one about one run in three, identical tracks about one in eight — because the
-     audit's read lines such tracks up a frame or two apart from the mixer's. More than 16
+     Before anything is summed, the read is aligned to the copy. The copy is an encode of the read's own sum, so its
+     tracks cannot be out of step with one another: the mix — each channel at its track's weight — is aligned to the
+     copy within ±16 frames of where it stood a window before, widening while it is not found, to 0.3 s in all (past
+     that, refused as out of step), and that one alignment serves every track (F998). A sum that lost a track, or
+     placed one 24 frames or a quarter second late, is refused against it, and a kept read short of the mix is
+     refused rather than measured as far as it goes. What it cannot show is a fault in the mixer's own read that
+     a second read would not repeat — a buffer dropped, a track taken to end early: the copy holds what that read
+     held, so only the recording's own decode, compared channel by channel in five-second stretches, stands
+     outside it (`channelNotRead`, which passes a channel down to a quarter of its level). F1071 weighs that
+     before mixing Shrink is switched on.
+     Until F998 the audit read the recording a second time. AVAssetReader does not read an ffmpeg-made file the same
+     way twice — its reads drift along a file, each track on its own, about 0.4 frames a second without bound — so
+     each track was aligned on its own and re-aligned against the copy less the other tracks' fitted contributions;
+     and AVAssetWriter-made fixtures whose tracks share their sound were refused in some runs — the OBS layout and a
+     dual-mono track beside a mono one about one run in three, identical tracks about one in eight — because that
+     read lined such tracks up a frame or two apart from the mixer's. Against the kept read, 50 runs of those three
+     layouts refused none (F998's log). A Shrink with no kept read — a resume's leftover, or a stand-in mixer in a
+     test — still reads the recording again and aligns each track on its own.
+     Measured with the second read, through the real mix and a 32 kbps encode at one-second windows (F980's log): a
+     present track 24 dB under another fits at 0.95 to 1.03 and a dropped one within 0.30 of 0; at 30 dB a dropped
+     one once fitted at 0.46, which is why 24 dB is the line. Ten Shrinks in a row of each ffmpeg two-track file, and
+     of an ffmpeg-made OBS three-track layout, all succeeded, and a three-minute drifting file shrank. More than 16
      channels are not fitted one by one, and are refused up front.
      For a mix, the expected length is the mix's own, every track's end included; the mixer refuses a decode that
      stops more than 0.5 s short of where the audio tracks end — not the movie's length, which counts its picture

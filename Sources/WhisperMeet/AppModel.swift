@@ -694,10 +694,17 @@ final class AppModel: ObservableObject {
     /// Mixes every channel of every track of a recording with several tracks or more than two channels
     /// into the 16 kHz mono WAV Shrink then encodes (F942).
     var mixForShrink: @Sendable (_ input: URL, _ output: URL) async throws -> RecordingMixer.Result = {
-        try await RecordingMixer.mixEveryChannel(of: $0, to: $1)
+        // F998: keeping its read beside the mix, for the audit to fit the copy against.
+        try await RecordingMixer.mixEveryChannel(of: $0, to: $1, lanes: RecordingMixer.lanes(beside: $1))
+    }
+    /// Measures a mono copy against the channels a mix kept of its own read (F998,
+    /// `RecordingMixer.audit(lanes:trackChannels:frames:against:)`), for `RecordingMixPlan.firstFinding` to judge.
+    var auditLanesForShrink: @Sendable (_ lanes: URL, _ trackChannels: [Int], _ frames: Int, _ copy: URL) throws -> RecordingMixPlan.Audit = {
+        try RecordingMixer.audit(lanes: $0, trackChannels: $1, frames: $2, against: $3)
     }
     /// Measures a mono copy against every channel of every track of the recording it was made from, for
-    /// `RecordingMixPlan.firstFinding` to judge before Shrink deletes anything (review of F942, R2).
+    /// `RecordingMixPlan.firstFinding` to judge before Shrink deletes anything (review of F942, R2). Where
+    /// the mix kept no read of its own, or one that does not add up (F998).
     var auditForShrink: @Sendable (_ original: URL, _ copy: URL) async throws -> RecordingMixPlan.Audit = {
         try await RecordingMixer.audit(of: $0, against: $1)
     }

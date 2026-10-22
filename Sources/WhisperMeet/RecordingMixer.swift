@@ -42,7 +42,17 @@ enum RecordingMixer {
         var duration: TimeInterval
         /// Samples that were NaN or infinite, mixed as silence (second review of F942, D2).
         var silencedSamples = 0
+        /// Where this mix kept every channel exactly as it read them (F998), for Shrink's audit to fit the copy
+        /// against the very samples the copy was made from — nil when it kept none. And each track's channels,
+        /// and the frames the mix holds, which the kept read holds too.
+        var lanes: URL? = nil
+        var trackChannels: [Int] = []
+        var frames = 0
     }
+
+    /// Where a mix written to `mix` keeps its read (F998): beside it, a `.shrink-` scratch name as the mix's
+    /// is, which Shrink removes once its audit has read it.
+    static func lanes(beside mix: URL) -> URL { mix.appendingPathExtension("lanes") }
 
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.whispermeet.app",
                                        category: "RecordingMixer")
@@ -170,15 +180,41 @@ enum RecordingMixer {
     /// one bad channel silenced every other channel the engines should hear. Silencing it rather than
     /// failing the mix: transcription deletes nothing, the bad samples hold no sound to keep, and a failed mix
     /// would fail the same way on every retry, since the file does not change.
-    static func mixEveryChannel(of input: URL, to output: URL) async throws -> Result {
+    ///
+    /// `lanes` (F998): where to keep every channel as it was read, Float32 interleaved over all the tracks'
+    /// channels in order, at 16 kHz — what the mix was summed from, sample for sample. Shrink's audit then
+    /// fits the copy against that, not against a second read of the file, which AVAssetReader does not
+    /// line up the same way twice.
+    static func mixEveryChannel(of input: URL, to output: URL, lanes lanesURL: URL? = nil) async throws -> Result {
         let (asset, tracks, facts, end) = try await open(input)
         let weights = facts.map { RecordingMixPlan.channelWeight(channels: $0.channels) }
         do {
             let handle = try writer(at: output, expectedSeconds: end)
             defer { try? handle.close() }
+            var laneHandle: FileHandle?
+            if let lanesURL {
+                try? FileManager.default.removeItem(at: lanesURL)
+                guard FileManager.default.createFile(atPath: lanesURL.path, contents: nil) else {
+                    throw Failure.unreadable("the mix's read could not be kept")
+                }
+                laneHandle = try FileHandle(forWritingTo: lanesURL)
+            }
+            defer { try? laneHandle?.close() }
             var silenced = 0
             var silencedChannels = Set<Int>()
+            let channelCount = facts.reduce(0) { $0 + $1.channels }
             let frames = try readInStep(asset: asset, tracks: tracks, channels: facts.map(\.channels), audioEnd: end) { _, count, lanes in
+                if let laneHandle {
+                    var interleaved = [Float](repeating: 0, count: count * channelCount)
+                    var column = 0
+                    for channels in lanes {
+                        for channel in channels {
+                            for frame in 0..<count { interleaved[frame * channelCount + column] = channel[frame] }
+                            column += 1
+                        }
+                    }
+                    try interleaved.withUnsafeBytes { try laneHandle.write(contentsOf: Data($0)) }
+                }
                 var block = Data(count: count * 2)
                 block.withUnsafeMutableBytes { raw in
                     let samples = raw.bindMemory(to: Int16.self)
@@ -212,9 +248,10 @@ enum RecordingMixer {
                 logger.warning("Mixed \(input.lastPathComponent, privacy: .private) with \(silenced) NaN or infinite samples silenced, in channel(s) \(list, privacy: .public) counted over every track; every other sample was mixed as it is.")
             }
             return Result(tracks: tracks.count, channels: facts.reduce(0) { $0 + $1.channels }, duration: duration,
-                          silencedSamples: silenced)
+                          silencedSamples: silenced, lanes: lanesURL, trackChannels: facts.map(\.channels), frames: frames)
         } catch {
             try? FileManager.default.removeItem(at: output)
+            if let lanesURL { try? FileManager.default.removeItem(at: lanesURL) }
             throw error
         }
     }
@@ -234,15 +271,84 @@ enum RecordingMixer {
     /// from the channels shifted by their track's place. A track that drifts past `alignmentReach` is
     /// marked in `Audit.outOfStep` and no longer followed. The copy is never shifted, so a channel the copy
     /// lacks cannot pick itself a lag.
+    ///
+    /// Shrink uses this only where the mix kept no read of its own, or one that does not add up — a resume's
+    /// leftover, or a stand-in mixer; otherwise `audit(lanes:trackChannels:frames:against:)` (F998).
     static func audit(of original: URL, against copy: URL) async throws -> RecordingMixPlan.Audit {
         let (asset, tracks, facts, end) = try await open(original)
+        return try measure(trackChannels: facts.map(\.channels), against: copy, inOneStep: false) { body in
+            try readInStep(asset: asset, tracks: tracks, channels: facts.map(\.channels), audioEnd: end, body: body)
+        }
+    }
+
+    /// The same measurement against `lanes`, the channels the mix was summed from as `mixEveryChannel` kept
+    /// them (F998). The copy is an encode of that very sum, so its tracks cannot be out of step with one
+    /// another: one alignment serves every track, the mix's own against the copy (`inOneStep`), followed
+    /// along the file as `audit` follows each track. A second read of the file lined each track up a frame
+    /// or two apart from the mixer's, so a sound two tracks share — identical tracks, OBS's master beside
+    /// its stems — read as partly distinct and a good copy was refused, intermittently.
+    ///
+    /// `frames` is how many the mix holds: a kept read that hands on any other number, or no channels at
+    /// all, is not the read the copy was made from, and is refused rather than measured as far as it goes —
+    /// a copy's unmeasured end, or an audit of no windows, would otherwise pass (review of F998).
+    static func audit(lanes: URL, trackChannels: [Int], frames: Int, against copy: URL) throws -> RecordingMixPlan.Audit {
+        guard trackChannels.reduce(0, +) > 0, frames > 0 else { throw Failure.unreadable("the mix kept no read to check the copy against") }
+        return try measure(trackChannels: trackChannels, against: copy, inOneStep: true) { body in
+            let handed = try replay(lanes: lanes, trackChannels: trackChannels, body: body)
+            guard handed == frames else { throw Failure.unreadable("the mix's kept read holds \(handed) of its \(frames) frames") }
+            return handed
+        }
+    }
+
+    /// How long a mix of `input` runs, every track's end included: what `mixEveryChannel` would write, for
+    /// Shrink to size its scratch files by before it mixes (review of F998). The recording is only read.
+    static func mixedSeconds(of input: URL) async throws -> TimeInterval {
+        try await open(input).3
+    }
+
+    /// Hands `body` the channels `mixEveryChannel` kept at `lanes`, in the shape `readInStep` hands them, at
+    /// most `longestStretch` frames at a time. Returns the frames handed on.
+    static func replay(lanes: URL, trackChannels: [Int], body: (_ start: Int, _ count: Int, _ lanes: [[[Float]]]) throws -> Void) throws -> Int {
+        let channelCount = trackChannels.reduce(0, +)
+        guard channelCount > 0 else { return 0 }
+        let handle: FileHandle
+        do { handle = try FileHandle(forReadingFrom: lanes) } catch { throw Failure.unreadable(ErrorPresentation.readable(error)) }
+        defer { try? handle.close() }
+        let frameBytes = channelCount * MemoryLayout<Float>.size
+        var handed = 0
+        while true {
+            guard let data = try handle.read(upToCount: longestStretch * frameBytes), !data.isEmpty else { break }
+            guard data.count % frameBytes == 0 else { throw Failure.unreadable("the mix's kept read ends mid-frame") }
+            let count = data.count / frameBytes
+            let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+            var column = 0
+            var stretch: [[[Float]]] = []
+            for channels in trackChannels {
+                var track: [[Float]] = []
+                for _ in 0..<channels {
+                    track.append((0..<count).map { samples[$0 * channelCount + column] })
+                    column += 1
+                }
+                stretch.append(track)
+            }
+            try body(handed, count, stretch)
+            handed += count
+        }
+        return handed
+    }
+
+    /// `audit`'s measurement over channels `read` hands on — a read of the file, or the mix's kept read. With
+    /// `inOneStep`, every track takes one alignment, the mix's against the copy (F998).
+    private static func measure(
+        trackChannels channels: [Int], against copy: URL, inOneStep: Bool,
+        read: ((_ start: Int, _ count: Int, _ lanes: [[[Float]]]) throws -> Void) throws -> Int
+    ) throws -> RecordingMixPlan.Audit {
         let copyFile: AVAudioFile
         do { copyFile = try AVAudioFile(forReading: copy) } catch { throw Failure.unreadable(ErrorPresentation.readable(error)) }
         guard copyFile.processingFormat.sampleRate == Double(sampleRate), copyFile.processingFormat.channelCount == 1 else {
             throw Failure.unreadable("the copy is not 16 kHz mono")
         }
         let copyReader = MonoReader(file: copyFile)
-        let channels = facts.map(\.channels)
         let channelCount = channels.reduce(0, +)
         // More channels than the check fits one by one are not measured at all: the plan refuses them.
         guard channelCount <= RecordingMixPlan.mostCheckedChannels else {
@@ -253,7 +359,7 @@ enum RecordingMixer {
         // How far a window's alignment can look either side of the window: a track's place and its search.
         let lookaround = reach + widest
         var windows: [RecordingMixPlan.Audit.Window] = []
-        var outOfStep: (window: Int, track: Int)?
+        var outOfStep: (window: Int, track: Int?)?
         // Where each track stands against the copy, and how many windows since it was last found there.
         var place = [Int](repeating: 0, count: channels.count)
         var unfound = [Int](repeating: 0, count: channels.count)
@@ -326,7 +432,30 @@ enum RecordingMixer {
                 RecordingMixPlan.alignment(projectionsByLag: projections, energiesByLag: energies, copySquares: Double(copySquares),
                                            trackChannels: tracks)
             }
-            var steps = align(projectionsByLag, energiesByLag, channels)
+            var steps: [Int?]
+            if inOneStep {
+                // F998: the mix — these very samples at the mixer's weights, before its 0.95 and limiter,
+                // which a fit does not notice — against the copy; its step is every track's. Spans are
+                // equal: every track is found, or not, together.
+                let s = span.first ?? 0, count = 2 * s + 1
+                var mix = [Float](repeating: 0, count: n + 2 * s)
+                for channel in 0..<channelCount {
+                    var weight = Float(RecordingMixPlan.channelWeight(channels: channels[trackOf[channel]]))
+                    var summed = [Float](repeating: 0, count: mix.count)
+                    vDSP_vsma(padded[channel], 1, &weight, mix, 1, &summed, 1, vDSP_Length(mix.count))
+                    mix = summed
+                }
+                var out = [Float](repeating: 0, count: count)
+                vDSP_conv(mix, 1, c, 1, &out, 1, vDSP_Length(count), vDSP_Length(n))
+                var running = 0.0
+                var prefix = [Double](repeating: 0, count: mix.count + 1)
+                for (k, value) in mix.enumerated() { running += Double(value) * Double(value); prefix[k + 1] = running }
+                let energies = (0..<count).map { prefix[$0 + n] - prefix[$0] }
+                let found = align([out.map(Double.init)], [energies], [1])[0]
+                steps = [Int?](repeating: found, count: channels.count)
+            } else {
+                steps = align(projectionsByLag, energiesByLag, channels)
+            }
             /// The window's sums with each channel shifted by its track's step: `padded[i]` from `span + step`.
             func sums(_ steps: [Int?]) -> (gram: [Double], projection: [Double], offset: [Int]) {
                 let offset = (0..<channelCount).map { span[trackOf[$0]] + (steps[trackOf[$0]] ?? 0) }
@@ -356,7 +485,7 @@ enum RecordingMixer {
             // — a pure tone's image half a period on would otherwise pass for it. A track the copy lost finds
             // nothing there, keeps its place, and fails its fit, which is right.
             // Twice: the second pass takes the others out at their improved places.
-            for _ in 0..<2 where channels.count > 1 {
+            for _ in 0..<2 where channels.count > 1 && !inOneStep {
                 let first = sums(steps)
                 let fit = RecordingMixPlan.trackFit(gram: first.gram, projection: first.projection, trackChannels: channels)
                 var again = steps
@@ -398,7 +527,8 @@ enum RecordingMixer {
                 if let found = steps[track] {
                     place[track] += found
                     unfound[track] = 0
-                    if abs(place[track]) > reach, outOfStep == nil { outOfStep = (index, track) }
+                    // In one step, the whole copy drifted, not one track (review of F998).
+                    if abs(place[track]) > reach, outOfStep == nil { outOfStep = (index, inOneStep ? nil : track) }
                 } else {
                     unfound[track] += 1
                 }
@@ -408,7 +538,7 @@ enum RecordingMixer {
             windows.append(.init(frames: Double(n), gram: final.gram, projection: final.projection, copySquares: Double(copySquares), lags: lags))
         }
 
-        _ = try readInStep(asset: asset, tracks: tracks, channels: channels, audioEnd: end) { start, count, stretch in
+        _ = try read { start, count, stretch in
             var channel = 0
             for samples in stretch {
                 for values in samples { lanes[channel].append(contentsOf: values); channel += 1 }

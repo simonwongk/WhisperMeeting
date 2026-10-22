@@ -194,10 +194,11 @@ public enum RecordingMixPlan {
         public var sampleRate: Double
         public var windows: [Window]
         /// The first track that drifted past `alignmentReach` from the copy, and the window where: the
-        /// audit stops following it there, and `firstFinding` refuses with `trackOutOfStep`.
-        public var outOfStep: (window: Int, track: Int)?
+        /// audit stops following it there, and `firstFinding` refuses with `trackOutOfStep`. No track when
+        /// the tracks were followed together, against the mix's own read (F998): the copy drifted.
+        public var outOfStep: (window: Int, track: Int?)?
 
-        public init(trackChannels: [Int], sampleRate: Double, windows: [Window], outOfStep: (window: Int, track: Int)? = nil) {
+        public init(trackChannels: [Int], sampleRate: Double, windows: [Window], outOfStep: (window: Int, track: Int?)? = nil) {
             self.trackChannels = trackChannels
             self.sampleRate = sampleRate
             self.windows = windows
@@ -294,8 +295,9 @@ public enum RecordingMixPlan {
         /// A window whose sums do not match the recording's channel count: not measured, so not judged.
         case unreadableWindow(window: Int)
         /// A track drifted further from the copy than `alignmentReach`: the audit cannot tell the copy
-        /// from one timed wrongly, so it stopped following the track there.
-        case trackOutOfStep(window: Int, track: Int)
+        /// from one timed wrongly, so it stopped following the track there. With `track` nil, every track
+        /// together: the copy drifted from the mix's own read (F998).
+        case trackOutOfStep(window: Int, track: Int?)
         /// A track's channels cancel when combined into its own signal: one channel in opposite polarity
         /// to another (the review's R2). The mix cannot hold that track's sound.
         case trackCancels(window: Int, track: Int)

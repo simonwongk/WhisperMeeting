@@ -333,6 +333,10 @@ func alignmentPicksEachTracksStep() {
     // A track that drifted past the reach is refused before anything else is judged.
     let drifted = RecordingMixPlan.Audit(trackChannels: [1, 1], sampleRate: 16_000, windows: [], outOfStep: (window: 7, track: 1))
     #expect(RecordingMixPlan.firstFinding(drifted, nativeChannelWindows: [], nativeLevel: 0.1) == .trackOutOfStep(window: 7, track: 1))
+    // Tracks followed together, against the mix's own read (F998): the copy drifted, not one track.
+    let copyDrifted = RecordingMixPlan.Audit(trackChannels: [1, 1], sampleRate: 16_000, windows: [], outOfStep: (window: 7, track: nil))
+    #expect(RecordingMixPlan.firstFinding(copyDrifted, nativeChannelWindows: [], nativeLevel: 0.1) == .trackOutOfStep(window: 7, track: nil))
+    #expect(copyDrifted != drifted)
 }
 
 @Test("The per-track fit the app re-aligns against gives each track the copy's coefficient for it (F980)")

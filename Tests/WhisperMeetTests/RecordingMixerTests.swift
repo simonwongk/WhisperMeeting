@@ -195,3 +195,73 @@ func mixerDecidesFromTheFile() async throws {
     #expect(!FileManager.default.fileExists(atPath: output.path))
     #expect(try await RecordingMixer.mixIfNeeded(languages, into: dir) == nil, "the engines keep the default track")
 }
+
+// F998 — the mix keeps its own read for Shrink's audit: every channel as it was summed, so the audit fits the
+// copy against the samples the copy was made from, not a second read AVAssetReader lines up differently.
+@Test("The mix keeps the very samples it summed: its kept read, weighted and summed, is the mix (F998)")
+func mixerKeepsTheReadItSummed() async throws {
+    let dir = try scratch("F998-lanes"); defer { try? FileManager.default.removeItem(at: dir) }
+    let input = dir.appendingPathComponent("call.mov")
+    try await writeFixtureTracks(to: input, [FixtureTrack(channels: [(300, 0.2), (500, 0.1)], seconds: 9),
+                                             FixtureTrack(channels: [(800, 0.2)], seconds: 8.5, startSeconds: 0.5)])
+    let output = dir.appendingPathComponent("mix.wav")
+    let lanes = RecordingMixer.lanes(beside: output)
+
+    let result = try await RecordingMixer.mixEveryChannel(of: input, to: output, lanes: lanes)
+
+    #expect(result.lanes == lanes && result.trackChannels == [2, 1] && result.frames > 0)
+    let mix = try #require(try fixtureDecode(output).channels.first)
+    var kept = [[Float]](repeating: [], count: 3)
+    var stretches = 0
+    let frames = try RecordingMixer.replay(lanes: lanes, trackChannels: result.trackChannels) { start, count, stretch in
+        #expect(start == kept[0].count && stretch.map(\.count) == [2, 1] && stretch.joined().allSatisfy { $0.count == count })
+        for (channel, samples) in stretch.joined().enumerated() { kept[channel] += samples }
+        stretches += 1
+    }
+    #expect(frames == mix.count && frames == result.frames && abs(frames - 144_000) < 1_600,
+            "every frame of the mix, and no more: \(frames), \(mix.count), \(result.frames)")
+    #expect(stretches == 3, "replayed at most four seconds at a time: \(stretches)")
+    // The capture's rule over the kept channels: 0.95 of the stereo track's average plus the mono track,
+    // each frame within the 16-bit step of the mix. Nowhere near the limiter at these levels.
+    var worst: Float = 0
+    for t in 0..<frames {
+        let summed: Float = 0.95 * ((kept[0][t] + kept[1][t]) / 2 + kept[2][t])
+        worst = max(worst, abs(summed - mix[t]))
+    }
+    #expect(worst < 2 / 32_768, "the kept read is what was summed: \(worst)")
+    // Kept where the mixer placed it: the late track is silent for its first half second.
+    #expect(kept[2][..<7_900].allSatisfy { abs($0) < 1e-6 } && kept[2][8_100...].contains { abs($0) > 0.1 })
+}
+
+// Review of F998, finding 2: a kept read that is not the whole read — no channels, or fewer frames than the
+// mix holds — measured an audit of no windows, or none past where it stopped, and an audit of no windows
+// finds nothing wrong. Now it is refused, and Shrink keeps the original.
+@Test("An audit against a kept read short of the mix, or of no channels, is refused, not measured as far as it goes (F998 review)")
+func keptReadAuditRefusesAReadThatIsNotTheMixs() async throws {
+    let dir = try scratch("F998-short"); defer { try? FileManager.default.removeItem(at: dir) }
+    let input = dir.appendingPathComponent("call.mov")
+    try await writeFixtureTracks(to: input, [FixtureTrack(channels: [(300, 0.2)], seconds: 3),
+                                             FixtureTrack(channels: [(800, 0.2)], seconds: 3)])
+    let output = dir.appendingPathComponent("mix.wav")
+    let lanes = RecordingMixer.lanes(beside: output)
+    let result = try await RecordingMixer.mixEveryChannel(of: input, to: output, lanes: lanes)
+
+    // The whole read, against the mix itself (16 kHz mono, as a copy is): measured, window by window.
+    let whole = try RecordingMixer.audit(lanes: lanes, trackChannels: result.trackChannels, frames: result.frames, against: output)
+    #expect(whole.windows.count == 3)
+    #expect(RecordingMixPlan.firstFinding(whole, nativeChannelWindows: [], nativeLevel: 0.1) == nil)
+    // No channels, or no frames: nothing to measure against.
+    #expect(throws: RecordingMixer.Failure.self) {
+        _ = try RecordingMixer.audit(lanes: lanes, trackChannels: [], frames: result.frames, against: output)
+    }
+    #expect(throws: RecordingMixer.Failure.self) {
+        _ = try RecordingMixer.audit(lanes: lanes, trackChannels: result.trackChannels, frames: 0, against: output)
+    }
+    // A read cut short of the mix, a whole second off its end.
+    let handle = try FileHandle(forWritingTo: lanes)
+    try handle.truncate(atOffset: UInt64((result.frames - 16_000) * 2 * MemoryLayout<Float>.size))
+    try handle.close()
+    #expect(throws: RecordingMixer.Failure.self) {
+        _ = try RecordingMixer.audit(lanes: lanes, trackChannels: result.trackChannels, frames: result.frames, against: output)
+    }
+}

@@ -23,11 +23,37 @@ private func expectTone(_ copy: [Float], _ frequency: Double, from: Double, to: 
 
 /// A mixer with the review's M8 fault, standing in for `mixForShrink`: it mixes `standIn` — the recording with
 /// some of its sound taken out — and reports the real recording's track and channel counts.
+///
+/// `keepingItsRead` (F998): it reads the recording as the real mixer does and keeps that read beside the mix,
+/// as the real one does, then writes `standIn`'s mix over its own — a read that was right and a sum that was
+/// not, which Shrink's audit then judges against that read. Without it nothing is kept, and the audit reads
+/// the recording again, as it does for a stub or a resume.
 @MainActor
-private func mixerLosing(_ standIn: URL, tracks: Int, channels: Int) -> @Sendable (URL, URL) async throws -> RecordingMixer.Result {
-    { _, output in
+private func mixerLosing(_ standIn: URL, tracks: Int, channels: Int,
+                         keepingItsRead: Bool = true) -> @Sendable (URL, URL) async throws -> RecordingMixer.Result {
+    { input, output in
+        if keepingItsRead {
+            let read = try await RecordingMixer.mixEveryChannel(of: input, to: output, lanes: RecordingMixer.lanes(beside: output))
+            _ = try await RecordingMixer.mixEveryChannel(of: standIn, to: output)
+            return read
+        }
         let result = try await RecordingMixer.mixEveryChannel(of: standIn, to: output)
         return RecordingMixer.Result(tracks: tracks, channels: channels, duration: result.duration)
+    }
+}
+
+/// Counts Shrink's audits against a mix's kept read (F998), so a test shows which read judged its copy.
+private final class KeptReadAudits: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+
+    @MainActor
+    func install(on model: AppModel) {
+        model.auditLanesForShrink = { [self] lanes, trackChannels, frames, copy in
+            lock.withLock { value += 1 }
+            return try RecordingMixer.audit(lanes: lanes, trackChannels: trackChannels, frames: frames, against: copy)
+        }
     }
 }
 
@@ -203,14 +229,12 @@ func shrinkAuditAcceptsTracksThatShareTheirSound() async throws {
     // (the review's "0.98 one sample late"), whose only distinct part is a high-frequency phase difference a
     // 32 kbps copy cannot carry (`gates/20-voice-run.log`).
     //
-    // What is pinned is the rule: every case either keeps its original untouched, saying nothing was removed,
-    // or is shrunk with each voice in the copy. That a good copy of these shapes is *shrunk* is not yet true
-    // every time: AVAssetReader lines the audit's read of AVAssetWriter tracks up a frame or two apart from the
-    // mixer's, so a shared sound can read as a quarter distinct, or the last window as unlike the mix, and the
-    // copy is refused — the OBS and dual-mono layouts in about one run of three, identical tracks in about one
-    // of eight (`gates/22-final-targeted.log`, `23-acceptance-run.log`, `26-final-targeted.log`). That false
-    // refusal is why Shrink of a recording that needs mixing stays off (`MeetingStoragePlan.shrinkMixesRecordings`);
-    // it is recorded as an intermittent known issue here, so it is seen on every run without failing one.
+    // Each is shrunk, every run, with each voice in the copy (F998). The audit used to read the recording a
+    // second time, and AVAssetReader lined that read of AVAssetWriter tracks up a frame or two apart from the
+    // mixer's, so a shared sound could read as a quarter distinct, or the last window as unlike the mix, and
+    // a good copy was refused — the OBS and dual-mono layouts in about one run of three, identical tracks in
+    // about one of eight (`gates/22-final-targeted.log`, `23-acceptance-run.log`, `26-final-targeted.log`).
+    // It now fits the copy against the mixer's own read, kept beside the mix, in one step for every track.
     let voice = fixtureVoice(voiceA, seconds: 12)
     let other = fixtureVoice(voiceB, amplitude: 0.02, seconds: 12, from: 5)
     let master: [Float] = zip(voice, other).map { $0 + $1 }
@@ -225,11 +249,15 @@ func shrinkAuditAcceptsTracksThatShareTheirSound() async throws {
             try await writeFixtureRawTracks(to: url, c.tracks)
         }
         defer { try? FileManager.default.removeItem(at: f.root) }
+        let audits = KeptReadAudits()
+        audits.install(on: f.model)
         let original = try Data(contentsOf: f.recording)
 
         await f.shrink()
 
         let alert = f.model.alertMessage ?? "nil"
+        #expect(audits.count == 1, "\(c.label): judged against the mixer's own read")
+        #expect(alert.contains("Shrunk"), "\(c.label): \(alert)")
         if alert.contains("Shrunk") {
             let copy = try f.copy()
             for (frequency, from, to, least) in c.tones {
@@ -237,12 +265,49 @@ func shrinkAuditAcceptsTracksThatShareTheirSound() async throws {
                 #expect(measured >= least, "\(c.label) \(Int(frequency)) Hz [\(from), \(to)): \(measured), at least \(least)")
             }
         } else {
-            #expect(alert.contains("nothing was removed"), "\(c.label): \(alert)")
             #expect(try Data(contentsOf: f.recording) == original, "\(c.label): \(alert)")
-            withKnownIssue("F980: a good copy of tracks that share their sound is refused in some runs", isIntermittent: true) {
-                Issue.record("\(c.label) refused: \(alert)")
-            }
         }
+        #expect(try f.hiddenTemps().isEmpty, "\(c.label): the kept read is removed with the mix")
+    }
+}
+
+@Test("A mix that read every track right but summed one out, or late, is refused against its own read (F998)")
+@MainActor
+func shrinkAuditJudgesTheSumAgainstTheMixersOwnRead() async throws {
+    // The audit fits the copy against the mixer's kept read in one step — the mix's own alignment for every
+    // track — where it aligned each track on its own against a second read. What the copy must hold is still
+    // each track where it was read: a sum that lost a track, or placed one a quarter second late, is refused.
+    let a = fixtureVoice(voiceA, seconds: 8), b = fixtureVoice(voiceB, seconds: 8)
+    // And by 24 frames at 16 kHz, inside the ±16…256 frames a track could once pick its own lag in: in one
+    // step it cannot, so a track summed out of its place is not found there (review of F998).
+    let faults: [(label: String, standIn: [[[Float]]])] = [
+        ("track 2 summed out", [[a], [[Float](repeating: 0, count: b.count)]]),
+        ("track 2 summed a quarter second late", [[a], [shifted(b, by: 12_000)]]),
+        ("track 2 summed 24 frames late", [[a], [shifted(b, by: 72)]]),
+    ]
+    for fault in faults {
+        let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
+            try await writeFixtureRawTracks(to: url, [[a], [b]])
+        }
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let standIn = f.root.appendingPathComponent("stand-in.mov")
+        try await writeFixtureRawTracks(to: standIn, fault.standIn)
+        f.model.mixForShrink = mixerLosing(standIn, tracks: 2, channels: 2)
+        let audits = KeptReadAudits()
+        audits.install(on: f.model)
+        let original = try Data(contentsOf: f.recording)
+
+        await f.shrink()
+
+        let alert = f.model.alertMessage ?? "nil"
+        #expect(audits.count == 1, "\(fault.label): judged against the kept read")
+        // Refused by the fit, before any one track is judged: the copy does not follow the mix of the
+        // kept read at the gain it should (measured, all three: "does not follow … at about 0:00").
+        #expect(alert.contains("nothing was removed") && alert.contains("does not follow the sound of the recording"),
+                "\(fault.label): \(alert)")
+        #expect(try Data(contentsOf: f.recording) == original, "\(fault.label)")
+        #expect(!f.exists("recording.m4a"), "\(fault.label)")
+        #expect(try f.hiddenTemps().isEmpty, "\(fault.label): the kept read is removed with the mix")
     }
 }
 
@@ -259,21 +324,24 @@ func shrinkAuditRefusesWhatItCannotShowUnderAnotherTrack() async throws {
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.5)], seconds: 20, audibleTo: 10),
                                                FixtureTrack(channels: [(800, 0.0158)], seconds: 20)])
     }
-    for lossy in [true, false] {
+    for (lossy, keepsRead) in [(true, true), (true, false), (false, true)] {
         let f = try await MixFixture(recordingExtension: "mov", duration: 20, mixing: true, write: masked)
         defer { try? FileManager.default.removeItem(at: f.root) }
         if lossy {
             let standIn = f.root.appendingPathComponent("lost-where-masked.mov")
             try await writeFixtureTracks(to: standIn, [FixtureTrack(channels: [(300, 0.5)], seconds: 20, audibleTo: 10),
                                                        FixtureTrack(channels: [(800, 0.0158)], seconds: 20, audibleFrom: 10)])
-            f.model.mixForShrink = mixerLosing(standIn, tracks: 2, channels: 2)
+            f.model.mixForShrink = mixerLosing(standIn, tracks: 2, channels: 2, keepingItsRead: keepsRead)
         }
+        let audits = KeptReadAudits()
+        audits.install(on: f.model)
         let original = try Data(contentsOf: f.recording)
 
         await f.shrink()
 
         let alert = f.model.alertMessage ?? "nil"
-        let label = lossy ? "mixer lost track 2 where masked" : "real mixer"
+        let label = lossy ? "mixer lost track 2 where masked\(keepsRead ? "" : ", recording read again")" : "real mixer"
+        #expect(audits.count == (keepsRead ? 1 : 0), "\(label): judged against the read it names")
         #expect(alert.contains("nothing was removed"), "\(label): \(alert)")
         #expect(alert.lowercased().contains("audio track 2") && alert.contains("too quiet beside") && alert.contains("at about 0:00"), "\(label): \(alert)")
         #expect(try Data(contentsOf: f.recording) == original, "\(label)")
@@ -301,7 +369,8 @@ func shrinkAuditRefusesWhatItCannotShowUnderAnotherTrack() async throws {
 @MainActor
 func shrinkAuditJudgesARecordingShorterThanAWindow() async throws {
     // 0.4 s: under the half second the audit used to skip. The review deleted both of the first two.
-    for (label, cancels, lossy) in [("antiphase track", true, false), ("mixer drops track 2", false, true), ("good", false, false)] {
+    for (label, cancels, lossy, keepsRead) in [("antiphase track", true, false, true), ("mixer drops track 2", false, true, true),
+                                               ("mixer drops track 2, recording read again", false, true, false), ("good", false, false, true)] {
         let f = try await MixFixture(recordingExtension: "mov", duration: 0.4, mixing: true) { url in
             try await writeFixtureTracks(to: url, [FixtureTrack(channels: cancels ? [(300, 0.3), (300, -0.3)] : [(300, 0.3)], seconds: 0.4),
                                                    FixtureTrack(channels: [(800, 0.3)], seconds: 0.4)])
@@ -310,7 +379,7 @@ func shrinkAuditJudgesARecordingShorterThanAWindow() async throws {
         if lossy {
             let standIn = f.root.appendingPathComponent("first-only.mov")
             try await writeFixtureTracks(to: standIn, [FixtureTrack(channels: [(300, 0.3)], seconds: 0.4)])
-            f.model.mixForShrink = mixerLosing(standIn, tracks: 2, channels: 2)
+            f.model.mixForShrink = mixerLosing(standIn, tracks: 2, channels: 2, keepingItsRead: keepsRead)
         }
         let original = try Data(contentsOf: f.recording)
         #expect(try await f.reason() == nil, "\(label): offered")
@@ -337,7 +406,7 @@ func shrinkAuditJudgesARecordingShorterThanAWindow() async throws {
 func shrinkAuditJudgesTheLastPartialWindow() async throws {
     // Track 2 sounds only from 10.0 s to 10.4 s of a 10.4 s recording: a 0.4 s last window after two whole
     // ones, which the audit used to skip. The review deleted the original under a mixer that dropped it.
-    for lossy in [true, false] {
+    for (lossy, keepsRead) in [(true, true), (true, false), (false, true)] {
         let f = try await MixFixture(recordingExtension: "mov", duration: 10.4, mixing: true) { url in
             try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 10.4, audibleTo: 9),
                                                    FixtureTrack(channels: [(800, 0.3)], seconds: 0.4, startSeconds: 10)])
@@ -347,7 +416,7 @@ func shrinkAuditJudgesTheLastPartialWindow() async throws {
             let standIn = f.root.appendingPathComponent("last-silent.mov")
             try await writeFixtureTracks(to: standIn, [FixtureTrack(channels: [(300, 0.2)], seconds: 10.4, audibleTo: 9),
                                                        FixtureTrack(channels: [(800, 0.0)], seconds: 0.4, startSeconds: 10)])
-            f.model.mixForShrink = mixerLosing(standIn, tracks: 2, channels: 2)
+            f.model.mixForShrink = mixerLosing(standIn, tracks: 2, channels: 2, keepingItsRead: keepsRead)
         }
         let original = try Data(contentsOf: f.recording)
 
@@ -355,7 +424,7 @@ func shrinkAuditJudgesTheLastPartialWindow() async throws {
 
         let alert = f.model.alertMessage ?? "nil"
         if lossy {
-            #expect(alert.contains("nothing was removed") && alert.contains("0:10"), "\(alert)")
+            #expect(alert.contains("nothing was removed") && alert.contains("0:10"), "kept read \(keepsRead): \(alert)")
             #expect(try Data(contentsOf: f.recording) == original)
         } else {
             #expect(alert.contains("Shrunk"), "\(alert)")
@@ -456,7 +525,7 @@ func shrinkAuditJudgesTracksOfDifferentLengthsAndOffsets() async throws {
     let layout = [FixtureTrack(channels: [(300, 0.2)], seconds: 12),
                   FixtureTrack(channels: [(800, 0.1)], seconds: 3.8, startSeconds: 3.3),
                   FixtureTrack(channels: [(1_200, 0.05)], seconds: 2.1, startSeconds: 9.9)]
-    for lossy in [false, true] {
+    for (lossy, keepsRead) in [(false, true), (true, true), (true, false)] {
         let f = try await MixFixture(recordingExtension: "mov", duration: 12, mixing: true) { url in
             try await writeFixtureTracks(to: url, layout)
         }
@@ -466,7 +535,7 @@ func shrinkAuditJudgesTracksOfDifferentLengthsAndOffsets() async throws {
             standIn[2].channels = [(1_200, 0.0)]
             let kept = f.root.appendingPathComponent("last-silent.mov")
             try await writeFixtureTracks(to: kept, standIn)
-            f.model.mixForShrink = mixerLosing(kept, tracks: 3, channels: 3)
+            f.model.mixForShrink = mixerLosing(kept, tracks: 3, channels: 3, keepingItsRead: keepsRead)
         }
         let original = try Data(contentsOf: f.recording)
 
@@ -474,7 +543,7 @@ func shrinkAuditJudgesTracksOfDifferentLengthsAndOffsets() async throws {
 
         let alert = f.model.alertMessage ?? "nil"
         if lossy {
-            #expect(alert.contains("nothing was removed") && alert.lowercased().contains("audio track 3"), "\(alert)")
+            #expect(alert.contains("nothing was removed") && alert.lowercased().contains("audio track 3"), "kept read \(keepsRead): \(alert)")
             #expect(try Data(contentsOf: f.recording) == original)
         } else {
             #expect(alert.contains("Shrunk"), "\(alert)")
@@ -532,4 +601,60 @@ func shrinkAuditKeepsACopyThatIsNoiseAtTheRightLevel() async throws {
     #expect(alert.contains("nothing was removed"), "\(alert)")
     #expect(try Data(contentsOf: f.recording) == original)
     #expect(!f.exists("recording.m4a"))
+}
+
+@Test("A mixer whose kept read does not add up is audited against a second read, and its read is removed (F998 review)")
+@MainActor
+func shrinkAuditReadsTheRecordingAgainWhenTheKeptReadDoesNotAddUp() async throws {
+    // A Result naming a kept read but no channels for it (the struct allows it, and tests build Results by
+    // hand) measured an audit of no windows, which finds nothing wrong. Such a read is not the one the copy
+    // was made from: the recording is read again, and the file is removed all the same.
+    let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
+        try await writeFixtureRawTracks(to: url, [[fixtureVoice(voiceA, seconds: 8)], [fixtureVoice(voiceB, seconds: 8)]])
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    f.model.mixForShrink = { input, output in
+        var result = try await RecordingMixer.mixEveryChannel(of: input, to: output, lanes: RecordingMixer.lanes(beside: output))
+        result.trackChannels = []
+        return result
+    }
+    let audits = KeptReadAudits()
+    audits.install(on: f.model)
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(audits.count == 0, "a kept read with no channels is not audited against")
+    #expect(alert.contains("Shrunk"), "the second read proves the good copy: \(alert)")
+    #expect(try f.hiddenTemps().isEmpty, "the kept read is removed even when it was not used")
+}
+
+@Test("Shrink sizes the mix's scratch files by the mix's own length, not its first track's (F998 review)")
+@MainActor
+func shrinkSizesAMixByItsOwnLength() async throws {
+    // A one-second first track beside a thirty-second second one: the header length Shrink reads is the
+    // first track's, so the kept read (64 kB a second for each channel) was sized for one second.
+    let f = try await MixFixture(recordingExtension: "mov", duration: 1, mixing: true) { url in
+        try await writeFixtureRawTracks(to: url, [[fixtureVoice(voiceA, seconds: 1)], [fixtureVoice(voiceB, seconds: 30)]])
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    // Room for what one second needs (about 100.2 MB with the fixed 100 MB margin), not thirty (about 105.9 MB).
+    f.model.availableBytesForShrink = { _ in 102_000_000 }
+    let original = try Data(contentsOf: f.recording)
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("nothing was removed") && alert.contains("Shrinking needs about"), "\(alert)")
+    #expect(try Data(contentsOf: f.recording) == original)
+    let temps = try f.hiddenTemps()
+    #expect(temps.isEmpty, "nothing was written: \(temps)")
+}
+
+@Test("A copy that drifted from the mix's own read says the copy drifted, not audio track 1 (F998 review)")
+func copyDriftNamesTheCopy() {
+    let together = AppModel.ShrinkFailure.sentence(.trackOutOfStep(window: 2, track: nil), subject: "the recording")
+    let one = AppModel.ShrinkFailure.sentence(.trackOutOfStep(window: 2, track: 1), subject: "the recording")
+    #expect(together.contains("the compressed copy drifted too far out of step") && !together.contains("audio track"), "\(together)")
+    #expect(one.contains("audio track 2") && one.contains("drifted too far out of step"), "\(one)")
 }
