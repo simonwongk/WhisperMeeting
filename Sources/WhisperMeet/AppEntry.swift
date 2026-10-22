@@ -48,7 +48,9 @@ enum WhisperMeetLauncher {
 
 struct WhisperMeetApp: App {
     @StateObject private var model: AppModel
-    @StateObject private var dictation = DictationController()
+    /// Made in `init`, as the model is, so the quit can be wired to its dictation history (F1034). It was
+    /// made by SwiftUI on the first evaluation of `body`, which also happens at launch.
+    @StateObject private var dictation: DictationController
     /// App-level, not window-level (F257). The two `onReceive` modifiers that used to carry the
     /// F138 flush, and the `.task` that ran startup recovery, were both on `ContentView` inside the
     /// `WindowGroup` — so with the window closed, quitting from the menu bar lost the last
@@ -74,8 +76,10 @@ struct WhisperMeetApp: App {
     init() {
         let model = AppModel()
         let lifecycle = AppLifecycle()
+        let dictation = DictationController()
         _model = StateObject(wrappedValue: model)
         _lifecycle = StateObject(wrappedValue: lifecycle)
+        _dictation = StateObject(wrappedValue: dictation)
 
         lifecycle.onFlush = { [weak model] in model?.flushPendingWrites() }
         // F520: Quit stops a running model install; its script restores what it was replacing.
@@ -95,9 +99,10 @@ struct WhisperMeetApp: App {
         // F529, F672: what a quit does about a recording, through the one function the quit tests
         // call too (F810).
         lifecycle.wireQuitDuringRecording(to: model) { QuitDuringRecordingAlert.ask() }
-        // F620: a quit whose save is refused asks before the changes are lost.
-        lifecycle.wireQuitWithUnsavedChanges(to: model) { count, reason in
-            QuitWithUnsavedChangesAlert.ask(count: count, reason: reason)
+        // F620: a quit whose save is refused asks before the changes are lost — and, since F1034, the
+        // dictations whose history entry is still unsaved.
+        lifecycle.wireQuitWithUnsavedChanges(to: model, dictationLog: dictation.logStore) { count, information in
+            QuitWithUnsavedChangesAlert.ask(count: count, information: information)
         }
         AppLifecycleDelegate.lifecycle = lifecycle
         AppLifecycleDelegate.flushFilesOpenedBeforeLaunchFinished()
@@ -220,14 +225,36 @@ extension AppLifecycle {
     /// Those tests used to build their own copy of these closures, so setting the app's
     /// `isRecordingFinishing` back to the predicate F672 replaced left every one of them green: the
     /// round-2 review's mutation M6 (F810). Calling this, they test the app's own wiring.
-    /// F620: a quit saves first and, only when a save refused changes, asks before they are lost.
-    func wireQuitWithUnsavedChanges(to model: AppModel, ask: @escaping (Int, String?) -> Bool) {
-        changesUnsavedAfterSavingForQuit = { [weak model] in
+    /// F620: a quit saves first and, only when changes are still unsaved, asks before they are lost.
+    /// F1054: a save refused earlier is tried once more, and changes awaiting the conflict banner's
+    /// answer are counted and said as kept aside; F1034: so are dictations whose history entry did not
+    /// reach disk, from `dictationLog`.
+    func wireQuitWithUnsavedChanges(
+        to model: AppModel, dictationLog: DictationLogStore? = nil, ask: @escaping (Int, String) -> Bool
+    ) {
+        changesUnsavedAfterSavingForQuit = { [weak model, weak dictationLog] in
             guard let model else { return 0 }
             model.flushPendingWrites()
-            return model.store.unsavedMeetingChangeCount
+            model.store.retryRefusedSaveForQuit()
+            dictationLog?.retryUnsavedForQuit()
+            return Self.quitUnsavedFacts(model.store, dictationLog).count
         }
-        confirmQuitWithUnsavedChanges = { [weak model] count in ask(count, model?.store.storageErrorMessage) }
+        confirmQuitWithUnsavedChanges = { [weak model, weak dictationLog] count in
+            guard let model else { return true }
+            return ask(count, QuitWithUnsavedChangesAlert.information(Self.quitUnsavedFacts(model.store, dictationLog)))
+        }
+    }
+
+    static func quitUnsavedFacts(_ store: MeetingStore, _ dictationLog: DictationLogStore?) -> QuitUnsavedFacts {
+        let unsavedDictations = dictationLog?.unsavedEntryCount ?? 0
+        return QuitUnsavedFacts(
+            refusedMeetingChanges: store.unsavedMeetingChangeCount,
+            refusalReason: store.refusedSaveReason,
+            meetingChangesAwaitingAnswer: store.changesAwaitingConflictAnswer,
+            conflictReport: store.changesAwaitingConflictAnswer > 0 ? store.conflictOffer?.report : nil,
+            unsavedDictations: unsavedDictations,
+            dictationReason: unsavedDictations > 0 ? dictationLog?.saveErrorMessage : nil
+        )
     }
 
     func wireQuitDuringRecording(

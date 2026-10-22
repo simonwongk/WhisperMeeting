@@ -143,6 +143,16 @@ import WhisperCore
     /// Clear All.
     private var unsavedEntryIDs: Set<UUID> = []
 
+    /// How many dictations this copy recorded whose history entry has not reached disk (F1034), for the
+    /// quit question: a quit used to drop them without asking.
+    var unsavedEntryCount: Int { unsavedEntryIDs.count }
+
+    /// One more try at saving them, for a quit (F1034): a refused save whose cause has cleared lands now.
+    func retryUnsavedForQuit() {
+        guard !unsavedEntryIDs.isEmpty, health.allowsMutation else { return }
+        persist({ $0 }, afterALostRace: .makeAgain)
+    }
+
     /// Erases the whole history — not just the primary file (F456).
     ///
     /// A plain single save of the cleared value is not an erase: `BackupJSONStore.save` rotates

@@ -264,8 +264,25 @@ enum QuitDuringRecordingAlert {
     }
 }
 
+/// What a quit would leave unsaved, by kind (F620, F1034, F1054): the parts of the question.
+struct QuitUnsavedFacts: Equatable {
+    /// Meeting changes a save refused for an ordinary reason (a full disk, a folder it cannot write),
+    /// and that reason in its own words.
+    var refusedMeetingChanges = 0
+    var refusalReason: String?
+    /// Meeting changes waiting in the conflict banner since another copy saved first, and the lost race's
+    /// own sentence, which says whether they were saved aside and as what.
+    var meetingChangesAwaitingAnswer = 0
+    var conflictReport: String?
+    /// Dictations whose history entry did not reach disk, and why (F1034).
+    var unsavedDictations = 0
+    var dictationReason: String?
+
+    var count: Int { refusedMeetingChanges + meetingChangesAwaitingAnswer + unsavedDictations }
+}
+
 /// The question F620 asks before a quit loses changes a save refused. AppKit, like
-/// `QuitDuringRecordingAlert`: the count it is given and the answer it returns are the seam.
+/// `QuitDuringRecordingAlert`: the count and text it is given and the answer it returns are the seam.
 @MainActor
 enum QuitWithUnsavedChangesAlert {
     static func message(count: Int) -> String {
@@ -274,18 +291,40 @@ enum QuitWithUnsavedChangesAlert {
     static let quitAnywayTitle = "Quit Anyway"
     static let cancelTitle = "Cancel"
 
-    static func information(reason: String?) -> String {
-        let why = reason.map { " \($0)" } ?? ""
-        return "WhisperMeet tried to save your meeting changes before quitting and could not.\(why) If you quit now, those changes are lost. Cancel keeps WhisperMeet open."
+    /// Says, for each kind, what quitting does to it (F1054): lost for a refused save, with that save's own
+    /// reason; the other copy's version kept for changes awaiting the banner's answer, whose own sentence
+    /// says where they were saved aside — "lost" there was false; and lost, the text already delivered,
+    /// for a dictation's history entry (F1034).
+    static func information(_ facts: QuitUnsavedFacts) -> String {
+        var parts: [String] = []
+        if facts.refusedMeetingChanges > 0 {
+            parts.append("WhisperMeet tried again to save your meeting changes before quitting and could not."
+                + (facts.refusalReason.map { " \($0)" } ?? "") + " If you quit now, those changes are lost.")
+        }
+        if facts.meetingChangesAwaitingAnswer > 0 {
+            let count = facts.meetingChangesAwaitingAnswer
+            parts.append((count == 1 ? "1 meeting change is" : "\(count) meeting changes are")
+                + " still waiting for your answer in the banner." + (facts.conflictReport.map { " \($0)" } ?? "")
+                + " If you quit now, the meeting list keeps the other copy's version.")
+        }
+        if facts.unsavedDictations > 0 {
+            let count = facts.unsavedDictations
+            parts.append((count == 1 ? "1 dictation" : "\(count) dictations") + " could not be added to your dictation history."
+                + (facts.dictationReason.map { " \($0)" } ?? "")
+                + " If you quit now, " + (count == 1 ? "its entry is" : "their entries are")
+                + " lost; the dictated text itself was already delivered.")
+        }
+        parts.append("Cancel keeps WhisperMeet open.")
+        return parts.joined(separator: " ")
     }
 
     /// Asks, modally. Cancel is the default: losing changes takes a deliberate click.
-    static func ask(count: Int, reason: String?) -> Bool {
+    static func ask(count: Int, information: String) -> Bool {
         NSApp.activate()
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = message(count: count)
-        alert.informativeText = information(reason: reason)
+        alert.informativeText = information
         alert.addButton(withTitle: cancelTitle)
         alert.addButton(withTitle: quitAnywayTitle)
         return alert.runModal() == .alertSecondButtonReturn

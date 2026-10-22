@@ -1485,6 +1485,32 @@ final class MeetingStore: ObservableObject {
         return max(1, changed.count)
     }
 
+    /// One more try, at a quit, at a save refused earlier (F1054). A quit's flush saves only a pending
+    /// debounced write, so an `upsert` or `update` whose own save was refused — a full disk since freed,
+    /// a folder made writable again — was never tried again, and the quit asked about changes it could
+    /// now save. Not after a lost race, whose recovery already re-read and holds the edits in the banner,
+    /// nor while the library refuses changes, which this must not announce on the way out.
+    func retryRefusedSaveForQuit() {
+        guard unsavedChanges, pendingIndexFlush == nil, writeConflict?.isRace != true, mutationRefusal == nil else { return }
+        _ = persistMeetingsOrRecover()
+    }
+
+    /// Why the save behind `unsavedMeetingChangeCount` was refused, in its own words (F1054): the
+    /// failure, never `storageErrorMessage`, which repeats "could not be saved" around it and may by then
+    /// hold an unrelated notice. Nil when nothing is unsaved or the refusal was a lost race.
+    var refusedSaveReason: String? {
+        guard unsavedChanges, let report = writeConflict, !report.isRace else { return nil }
+        return report.message
+    }
+
+    /// The person's changes waiting in the conflict banner (F1054): edits to keep or drop, meetings still
+    /// to save, results held for the answer. Recovery from a lost race clears `unsavedChanges`, so a quit
+    /// counted none of these and left without asking; they survive only where the banner says.
+    var changesAwaitingConflictAnswer: Int {
+        guard let offer = conflictOffer else { return 0 }
+        return offer.delta.count + offer.unsavedNew.count + offer.heldResults.count
+    }
+
     /// Why Back Up Library must wait for a read-only list, or nil when both loaded cleanly (F611).
     func backupRefusalForReadOnlyList() -> String? {
         for list in [EditableList.vocabulary, .replacementRules] where isListReadOnly(list) {
@@ -1877,6 +1903,9 @@ final class MeetingStore: ObservableObject {
         let heldResults: [String]
         /// The banner's text: the conflict, then which meetings each answer decides (F667).
         let message: String
+        /// The lost race's own sentence, the first of `message`: whether the losing body was saved aside, and
+        /// as what. Kept for the quit question (F1054), which must say the same without repeating the banner.
+        let report: String
 
         /// - Parameter libraryWritable: false when the reload left the library refusing changes, so
         ///   neither answer can save `unsavedNew` now and the banner must not say it will.
@@ -1891,6 +1920,7 @@ final class MeetingStore: ObservableObject {
             self.deletedByOther = deletedByOther
             self.notes = notes
             self.heldResults = heldResults
+            self.report = report
             message = Self.message(
                 report: report, delta: delta, unsavedNew: unsavedNew, keptNew: keptNew.map(\.title),
                 deletedByOther: deletedByOther, notes: notes, heldResults: heldResults,
@@ -1906,6 +1936,7 @@ final class MeetingStore: ObservableObject {
             notes = offer.notes
             heldResults = offer.heldResults
             message = offer.message
+            report = offer.report
         }
 
         /// Whether there is anything for the person to answer: an edit to keep or drop, a meeting
