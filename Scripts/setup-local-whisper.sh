@@ -25,10 +25,6 @@ lock_acquired=0
 # here because the reclaim needs it before that block runs (a script test pins the two together).
 hub_directory="${runtime_directory:h}/Models/hf/hub"
 dictation_model_directory_name="models--mlx-community--whisper-large-v3-turbo"
-# Set by the Quick Dictation model's own staged swap below; empty until it starts (cleanup_and_restore).
-dictation_staging=""
-dictation_backup=""
-dictation_target=""
 
 mkdir -p "$runtime_directory"
 
@@ -66,16 +62,8 @@ cleanup_and_restore() {
     mv "$backup_venv" "$venv_target"
   fi
   [[ -d "$staging_venv" ]] && rm -rf "$staging_venv"
-  # F520 (review): the Quick Dictation model is staged and swapped under Models/hf/hub, outside
-  # Runtime/, and this trap used to know nothing of it: a Cancel or Quit during its ~1.5 GB download
-  # left the partial download there for good, and one between moving the old model aside and moving
-  # the new one in left the model only in its backup. Put a displaced model back if its place is
-  # empty, then drop the backup and the staging directory.
-  if [[ -n "$dictation_backup" && -e "$dictation_backup" ]]; then
-    [[ -e "$dictation_target" ]] || mv "$dictation_backup" "$dictation_target"
-    rm -rf "$dictation_backup"
-  fi
-  [[ -n "$dictation_staging" ]] && rm -rf "$dictation_staging"
+  # The Quick Dictation model needs nothing here (F824): it is downloaded in place, under its own
+  # lock, and a Cancel leaves its partial file in the model's cache for the next download to resume.
   [[ "$lock_acquired" -eq 1 ]] && rm -f "$lock_file"
   exit "$exit_status"
 }
@@ -111,10 +99,11 @@ else
   done
 fi
 for abandoned_staging in "$runtime_directory"/.venv-install-*(N); do rm -rf "$abandoned_staging"; done
-# The same for the Quick Dictation model, left by an install whose trap never ran (a power loss): put
-# a displaced model back if its place is empty, and drop partial downloads. Such an install also left
-# its `.venv-install-*` behind — the model is fetched while the staging venv exists — so this runs at
-# launch whenever it is needed, not only at the next install.
+# The same for the Quick Dictation model, left by an install from before F824 whose trap never ran (a
+# power loss): put a displaced model back if its place is empty, and drop its staged download. Such an
+# install also left its `.venv-install-*` behind — the model was fetched while the staging venv
+# existed — so this runs at launch whenever it is needed, not only at the next install. Since F824
+# the model is downloaded in place and leaves neither.
 for orphaned_model in "$hub_directory"/.dictation-model-backup-*(N); do
   if [[ ! -e "$hub_directory/$dictation_model_directory_name" ]]; then
     mv "$orphaned_model" "$hub_directory/$dictation_model_directory_name"
@@ -223,8 +212,9 @@ fi
 # and recorded no revision. Best-effort, like the mlx-whisper package install just above: Quick
 # Dictation must never block the meetings runtime, and the helper's own warm-up downloads the model
 # itself if this step did not run or did not finish (no network at install time, a build predating
-# this fix, or a failure here) — since F830 at this same revision, checked against these same
-# hashes (`PINNED_DICTATION_MODELS` in whisper_dictate_server.py; a test keeps the two equal).
+# this fix, or a failure here), resuming what this step fetched (F824) — since F830 at this same
+# revision, checked against these same hashes (`PINNED_DICTATION_MODELS` in
+# whisper_dictate_server.py; a test keeps the two equal).
 dictation_repository="mlx-community/whisper-large-v3-turbo"
 dictation_revision="a4aaeec0636e6fef84abdcbe3544cb2bf7e9f6fb"
 dictation_config_sha256="b34fc29e4e11e0a25e812775dd67f4dd16fc2c8eb43d28ae25ff7d660ecb6379"
@@ -255,31 +245,53 @@ dictation_cache_matches_pin() {
   return 0
 }
 
+# F824: after a download into a cache that held another model — a snapshot resolved from main at
+# another commit, or files that did not hash to the pin — what that model left beside the pinned one
+# goes, as the swap that replaced the whole directory before F824 removed it: every other snapshot,
+# every ref but `main`, and every blob neither pinned file resolves to. Run only once
+# `dictation_cache_matches_pin` has passed, and a blob either pinned file resolves to is never
+# removed, whatever its name.
+dictation_prune_to_pin() {
+  local repo_dir="$1"
+  local snapshot="$repo_dir/snapshots/$dictation_revision"
+  local keep_config="${snapshot}/config.json"
+  local keep_weights="${snapshot}/weights.safetensors"
+  keep_config="${keep_config:A}"
+  keep_weights="${keep_weights:A}"
+  local entry
+  for entry in "$repo_dir"/snapshots/*(DN); do
+    [[ "${entry:t}" == "$dictation_revision" ]] || rm -rf "$entry"
+  done
+  for entry in "$repo_dir"/refs/*(DN); do
+    [[ "${entry:t}" == main ]] || rm -rf "$entry"
+  done
+  for entry in "$repo_dir"/blobs/*(DN); do
+    [[ "${entry:A}" == "$keep_config" || "${entry:A}" == "$keep_weights" ]] || rm -rf "$entry"
+  done
+}
+
 if "$staging_venv/bin/python" -c "import mlx_whisper" >/dev/null 2>&1; then
   # Models/ is a SIBLING of Runtime/ (LocalWhisperRuntime.modelDirectory vs .managedDirectory) —
   # both openai-whisper's --model_dir and the dictation helper's HF cache live there.
   models_directory="${runtime_directory:h}/Models"
   hub_directory="$models_directory/hf/hub"
   dictation_repo_directory_name="models--${dictation_repository//\//--}"
-  dictation_staging="$hub_directory/.dictation-model-staging-$$"
   mkdir -p "$hub_directory"
-  rm -rf "$dictation_staging"
 
   # F826: while the dictation helper downloads the model it holds a flock(2) lock on this file
   # (`download_lock` in whisper_dictate_server.py, which names the same path). A Repair during that
-  # download used to move the helper's partial file into the backup below and delete it. lockf -t 0
-  # takes the lock only if it is free: 0 means no download is running; 75 (EX_TEMPFAIL) means one
-  # is; anything else means it cannot be told, and the model is left alone then too — the helper
-  # downloads it on first use, at this same pin (F830).
+  # download used to move the helper's partial file aside and delete it. lockf -t 0 takes the lock
+  # only if it is free: 0 means no download is running; 75 (EX_TEMPFAIL) means one is; anything else
+  # means it cannot be told, and the model is left alone then too — the helper downloads it on first
+  # use, at this same pin (F830).
   #
-  # F898: and the lock is HELD from here until after the swap, not given straight back. The
+  # F898: and the lock is HELD from here until the download is done, not given straight back. The
   # installer used to probe it and then download for minutes without it, so a helper that started
   # meanwhile downloaded the same 1.6 GB beside this one. Now that helper waits for the lock and
-  # then says another process is downloading; and nothing can start between the last check and the
-  # `mv`. The holder is a coprocess — lockf runs `cat`, which keeps the lock until its input closes —
-  # so the swap stays in this shell, where cleanup_and_restore can undo it; it echoes "held" once it
-  # has the lock, and lockf exits 75 at once, saying nothing, if it is held elsewhere. Exiting this
-  # script by any path closes the input, so a Cancel never leaves the lock held.
+  # then says another process is downloading. The holder is a coprocess — lockf runs `cat`, which
+  # keeps the lock until its input closes; it echoes "held" once it has the lock, and lockf exits 75
+  # at once, saying nothing, if it is held elsewhere. Exiting this script by any path closes the
+  # input, so a Cancel never leaves the lock held.
   dictation_download_lock="$hub_directory/.locks/$dictation_repo_directory_name/whispermeet-dictation-download.lock"
   mkdir -p "${dictation_download_lock:h}" 2>/dev/null || true
   dictation_lock_status=0
@@ -295,58 +307,52 @@ if "$staging_venv/bin/python" -c "import mlx_whisper" >/dev/null 2>&1; then
   fi
 
   # F626: an intact pinned model is kept; anything else falls through to the verified download.
+  #
+  # F824: the download is the helper's own, `ensure_dictation_model`, into the model's cache where it
+  # lies — not the library's `snapshot_download` into `.dictation-model-staging-$$`, which could not
+  # resume across processes (`file_download.py:1908` in huggingface_hub 1.24.0) and whose directory,
+  # named for this run, was deleted by every Cancel and every launch, so a Repair on a slow link
+  # fetched all 1.6 GB again. The helper's download writes `blobs/<etag>.part` with HTTP Range and
+  # resumes it — here at the next Repair, or in the helper at first use, under the same lock — and
+  # checks each file against the pin before it becomes the model; `refs/main` is written last. The
+  # pin it is given is this script's (`PINNED_DICTATION_MODELS` holds the same values, and a test
+  # keeps the two equal). A cache that held another model is changed in place: a file under a pinned
+  # name that does not hash to the pin is removed and fetched, and `dictation_prune_to_pin` clears
+  # what is left of the other model once the pinned one verifies.
   if (( dictation_lock_status == 75 )); then
     print "Quick Dictation is downloading its model right now; it is left to finish there."
   elif (( dictation_lock_status != 0 )); then
     print -u2 "Note: could not check whether Quick Dictation is downloading its model (lockf $dictation_lock_status); left it alone — it downloads on first use (meetings unaffected)."
   elif dictation_cache_matches_pin "$hub_directory/$dictation_repo_directory_name"; then
     print "The Quick Dictation model already matches the pinned revision; kept."
-  elif DICTATION_STAGE="$dictation_staging" DICTATION_REPOSITORY="$dictation_repository" \
-     DICTATION_REVISION="$dictation_revision" \
+  elif DICTATION_HELPER="$dictation_helper_source" DICTATION_HUB="$hub_directory" \
+     DICTATION_REPOSITORY="$dictation_repository" DICTATION_REVISION="$dictation_revision" \
+     DICTATION_CONFIG_SHA256="$dictation_config_sha256" DICTATION_WEIGHTS_SHA256="$dictation_weights_sha256" \
      "$staging_venv/bin/python" - <<'PY' >/dev/null 2>&1
+import importlib.util
 import os
-from huggingface_hub import snapshot_download
 
-snapshot_download(
-    repo_id=os.environ["DICTATION_REPOSITORY"],
-    revision=os.environ["DICTATION_REVISION"],
-    cache_dir=os.environ["DICTATION_STAGE"],
-    allow_patterns=["config.json", "weights.safetensors"],
-)
+spec = importlib.util.spec_from_file_location("whisper_dictate_server", os.environ["DICTATION_HELPER"])
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+repository = os.environ["DICTATION_REPOSITORY"]
+helper.PINNED_DICTATION_MODELS[repository] = {
+    "revision": os.environ["DICTATION_REVISION"],
+    "sha256": {
+        "config.json": os.environ["DICTATION_CONFIG_SHA256"],
+        "weights.safetensors": os.environ["DICTATION_WEIGHTS_SHA256"],
+    },
+}
+helper.ensure_dictation_model(repository, os.environ["DICTATION_HUB"])
 PY
   then
-    dictation_snapshot="$dictation_staging/$dictation_repo_directory_name/snapshots/$dictation_revision"
-    actual_config_sha="$(shasum -a 256 "$dictation_snapshot/config.json" 2>/dev/null | awk '{ print $1 }')"
-    actual_weights_sha="$(shasum -a 256 "$dictation_snapshot/weights.safetensors" 2>/dev/null | awk '{ print $1 }')"
-    if [[ "$actual_config_sha" == "$dictation_config_sha256"
-          && "$actual_weights_sha" == "$dictation_weights_sha256" ]]; then
-      # `mlx_whisper.load_model` always resolves the bare repo id through huggingface_hub with no
-      # revision argument at all — i.e. always "main" — so an offline load needs a local "main"
-      # ref to read; huggingface_hub only writes one when IT resolved "main" itself, which a
-      # pinned-commit `snapshot_download` (above) does not do. Write it here, pointing at the
-      # commit we just verified, so the helper's `HF_HUB_OFFLINE=1` fast path (once fully cached)
-      # keeps resolving to this exact pin rather than failing to resolve "main" at all.
-      mkdir -p "$dictation_staging/$dictation_repo_directory_name/refs"
-      print -n "$dictation_revision" > "$dictation_staging/$dictation_repo_directory_name/refs/main"
-
-      # The lock has been held since the first check (F898), so no helper can have started a
-      # download since — the second probe F826 made here is no longer needed.
-      dictation_target="$hub_directory/$dictation_repo_directory_name"
-      dictation_backup="$hub_directory/.dictation-model-backup-$$"
-      rm -rf "$dictation_backup"
-      if [[ -e "$dictation_target" ]]; then
-        mv "$dictation_target" "$dictation_backup"
-      fi
-      if mv "$dictation_staging/$dictation_repo_directory_name" "$dictation_target"; then
-        rm -rf "$dictation_backup"
-      elif [[ -e "$dictation_backup" ]]; then
-        mv "$dictation_backup" "$dictation_target"
-      fi
+    if dictation_cache_matches_pin "$hub_directory/$dictation_repo_directory_name"; then
+      dictation_prune_to_pin "$hub_directory/$dictation_repo_directory_name"
     else
       print -u2 "Note: the Quick Dictation model failed verification; it will download on first use (meetings unaffected)."
     fi
   else
-    print -u2 "Note: could not pre-download the Quick Dictation model; it will download on first use (meetings unaffected)."
+    print -u2 "Note: could not pre-download the Quick Dictation model; it will download on first use, resuming what was fetched here (meetings unaffected)."
   fi
   # F898: let the lock go now, not when the install ends — a helper that starts during the rest of
   # the install must be able to download. Starting another coprocess closes the holder's input; the
@@ -356,7 +362,6 @@ PY
     wait "$dictation_lock_holder" 2>/dev/null || true
     dictation_lock_holder=""
   fi
-  rm -rf "$dictation_staging"
 fi
 
 # yt-dlp powers "import from a link" (F183). Three constraints fix exactly where and how it goes:

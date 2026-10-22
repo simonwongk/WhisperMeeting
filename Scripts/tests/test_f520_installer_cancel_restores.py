@@ -129,11 +129,14 @@ class WhisperCancelTests(unittest.TestCase):
 
 
 class WhisperDictationModelCancelTests(unittest.TestCase):
-    """Review probe P1 and the swap after it: the Quick Dictation model is the install's largest
-    single download (~1.5 GB), staged under `Models/hf/hub/.dictation-model-staging-<pid>` — outside
-    `Runtime/`, and unknown to the EXIT trap, so a Cancel or Quit during it leaked the partial
-    download for good; and a kill between moving the old model aside and moving the new one in
-    left the model only in `.dictation-model-backup-<pid>`."""
+    """Review probe P1, then F824: the Quick Dictation model is the install's largest single download
+    (~1.5 GB). It used to be staged under `Models/hf/hub/.dictation-model-staging-<pid>` and swapped in,
+    which a Cancel leaked (P1) or, between the swap's two moves, left only in a backup; and since every
+    Cancel and launch then deleted the staging directory, a Repair on a slow link fetched it all again.
+    Since F824 it is the helper's resumable download into the model's own cache: a Cancel leaves the
+    partial file there for the next download to resume, and there is no staging or backup to leak."""
+
+    OLD_REVISION = "c" * 40
 
     def setUp(self):
         self.sandbox = harness.InstallerSandbox("setup-local-whisper.sh")
@@ -144,10 +147,17 @@ class WhisperDictationModelCancelTests(unittest.TestCase):
         self.model = os.path.join(self.hub, "models--mlx-community--whisper-large-v3-turbo")
         harness.fake_whisper_venv(self.venv, "old", with_mlx_whisper=True, with_yt_dlp=True)
         _write(os.path.join(self.model, "MARKER"), "old model")
+        # The model an older install left, in the hub's layout: a snapshot at another commit linking a blob.
+        _write(os.path.join(self.model, "blobs", "old-weights"), "old weights")
+        old_snapshot = os.path.join(self.model, "snapshots", self.OLD_REVISION)
+        os.makedirs(old_snapshot)
+        os.symlink(os.path.join("..", "..", "blobs", "old-weights"), os.path.join(old_snapshot, "weights.safetensors"))
+        _write(os.path.join(self.model, "refs", "main"), self.OLD_REVISION)
         # The pinned hashes are what the script checks; `shasum` answers with them.
         pins = dict(re.findall(r'^(dictation_(?:config|weights)_sha256)="([0-9a-f]{64})"$',
                                self.sandbox.source, re.MULTILINE))
         self.assertEqual(len(pins), 2, "the script's pinned hashes moved; update this test")
+        self.weights_sha = pins["dictation_weights_sha256"]
         harness.write_executable(
             os.path.join(self.sandbox.shims, "shasum"),
             "#!/bin/sh\n"
@@ -162,11 +172,18 @@ class WhisperDictationModelCancelTests(unittest.TestCase):
         self.assertEqual(harness.hidden_entries(self.hub, ".dictation-model-"), [],
                          "a dictation-model staging or backup directory was left behind\n" + stderr)
 
-    def test_a_cancel_during_the_model_download_leaves_no_partial_download(self):
+    def assert_old_model_kept(self):
+        self.assertEqual(harness.read(os.path.join(self.model, "snapshots", self.OLD_REVISION, "weights.safetensors")),
+                         "old weights")
+        self.assertEqual(harness.read(os.path.join(self.model, "refs", "main")), self.OLD_REVISION)
+
+    def test_a_cancel_during_the_model_download_keeps_its_partial_file_for_the_next_download(self):
         returncode, stderr = self.sandbox.run_and_terminate_group(self.runtime, "download")
         self.assertEqual(returncode, 130, stderr)
+        self.assertTrue(os.path.isfile(os.path.join(self.model, "blobs", self.weights_sha + ".part")),
+                        "the partial file the next download resumes from was not kept\n" + stderr)
+        self.assert_old_model_kept()
         self.assert_nothing_leaked(stderr)
-        self.assertEqual(harness.read(os.path.join(self.model, "MARKER")), "old model")
         self.assertEqual(harness.read(os.path.join(self.venv, "MARKER")), "old")
 
     def test_a_cancel_during_the_model_download_leaves_the_download_lock_free(self):
@@ -184,28 +201,17 @@ class WhisperDictationModelCancelTests(unittest.TestCase):
 
         harness.wait_until(free, 30, "the cancelled install's hold on the dictation download lock to end")
 
-    def test_a_cancel_between_the_model_swaps_puts_the_old_model_back(self):
-        # Hang the move of the NEW model into place: the old one has just been moved aside.
-        harness.write_executable(
-            os.path.join(self.sandbox.shims, "mv"),
-            "#!/bin/sh\n"
-            'case "$1" in */.dictation-model-staging-*) if [ ! -e "$FAKE_BLOCK_MARKER" ]; then\n'
-            '  echo mv > "$FAKE_BLOCK_MARKER"; sleep 60; fi ;; esac\n'
-            'exec /bin/mv "$@"\n',
-        )
-        returncode, stderr = self.sandbox.run_and_terminate_group(
-            self.runtime, "model-swap", FAKE_DOWNLOAD_SUCCEEDS=1)
-        self.assertEqual(returncode, 130, stderr)
-        self.assertEqual(harness.read(os.path.join(self.model, "MARKER")), "old model",
-                         "the working dictation model was left only in its backup")
-        self.assert_nothing_leaked(stderr)
-
     def test_a_verified_model_download_replaces_the_old_one(self):
-        """The same shims on the happy path: the pinned model lands and nothing is left over."""
+        """The same shims on the happy path: the pinned model lands in place, refs/main names it, and what
+        the old model left — its snapshot, its blob — goes, as the old swap removed it (F824)."""
         result = self.sandbox.run(self.runtime, FAKE_DOWNLOAD_SUCCEEDS="1")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertFalse(os.path.exists(os.path.join(self.model, "MARKER")))
-        self.assertTrue(os.path.isfile(os.path.join(self.model, "refs", "main")))
+        revision = re.search(r'^dictation_revision="([0-9a-f]{40})"$', self.sandbox.source, re.MULTILINE).group(1)
+        self.assertEqual(harness.read(os.path.join(self.model, "refs", "main")), revision)
+        self.assertEqual(sorted(os.listdir(os.path.join(self.model, "snapshots"))), [revision])
+        self.assertEqual(harness.read(os.path.join(self.model, "snapshots", revision, "weights.safetensors")), "new model")
+        self.assertNotIn("old-weights", os.listdir(os.path.join(self.model, "blobs")))
+        self.assertFalse(any(name.endswith(".part") for name in os.listdir(os.path.join(self.model, "blobs"))))
         self.assert_nothing_leaked(result.stderr)
 
     def test_the_reclaims_model_directory_is_the_one_the_download_block_derives(self):

@@ -47,7 +47,7 @@ FAKE_CONFIG_SHA = hashlib.sha256(FAKE_CONFIG).hexdigest()
 FAKE_WEIGHTS_SHA = hashlib.sha256(FAKE_WEIGHTS).hexdigest()
 
 _BLOCK_PATTERN = re.compile(
-    r'dictation_repository="mlx-community/whisper-large-v3-turbo".*?\n  rm -rf "\$dictation_staging"\nfi\n',
+    r'dictation_repository="mlx-community/whisper-large-v3-turbo".*?\n    dictation_lock_holder=""\n  fi\nfi\n',
     re.DOTALL,
 )
 _FUNCTION_PATTERN = re.compile(r"^dictation_cache_matches_pin\(\) \{\n.*?^\}\n", re.DOTALL | re.MULTILINE)
@@ -101,10 +101,15 @@ class InstallerBlockCase(unittest.TestCase):
                 "#!/bin/sh\n"
                 'if [ "$1" = "-c" ]; then exit 0; fi\n'  # the `import mlx_whisper` probe
                 'echo downloaded >> "%s"\n' % self.log +
-                'snapshot="$DICTATION_STAGE/%s/snapshots/$DICTATION_REVISION"\n' % REPOSITORY_FOLDER +
-                'mkdir -p "$snapshot"\n'
+                # F824: the helper's download, into the model's cache where it lies: the pinned files
+                # under the pinned revision (replacing links, never writing through them) and refs/main.
+                'cache="$DICTATION_HUB/%s"\n' % REPOSITORY_FOLDER +
+                'snapshot="$cache/snapshots/$DICTATION_REVISION"\n'
+                'mkdir -p "$snapshot" "$cache/refs"\n'
+                'rm -f "$snapshot/config.json" "$snapshot/weights.safetensors"\n'
                 "printf '%s' \"$FAKE_CONFIG\" > \"$snapshot/config.json\"\n"
                 "printf '%s' \"$FAKE_WEIGHTS\" > \"$snapshot/weights.safetensors\"\n"
+                "printf '%s' \"$DICTATION_REVISION\" > \"$cache/refs/main\"\n"
                 "cat > /dev/null\n"
             )
         os.chmod(python, os.stat(python).st_mode | stat.S_IXUSR)
@@ -135,6 +140,7 @@ class InstallerBlockCase(unittest.TestCase):
             "set -euo pipefail",
             'runtime_directory="%s"' % self.runtime,
             'staging_venv="%s"' % self.venv,
+            'dictation_helper_source="%s"' % os.path.abspath(os.path.join(_HERE, "..", "whisper_dictate_server.py")),
             _function(required=False),
             _block(),
             *after,
@@ -193,7 +199,7 @@ class RepairReverifiesTheCacheTests(InstallerBlockCase):
         self.assertEqual(self.snapshot_file("weights.safetensors"), FAKE_WEIGHTS)
         self.assertEqual(self.snapshot_file("config.json"), FAKE_CONFIG)
         self.assertEqual(self.ref(), FAKE_REVISION)
-        self.assertEqual(self.leftovers(), [], "the displaced model's backup and the staging copy must be gone")
+        self.assertEqual(self.leftovers(), [], "no staging or backup directory: the model is downloaded in place (F824)")
 
     def test_a_cache_with_a_wrong_config_is_replaced_too(self):
         self.write_cache(config=b'{"n_mels": 80}\n')
@@ -208,12 +214,21 @@ class RepairReverifiesTheCacheTests(InstallerBlockCase):
         day, and refs/main naming it. Neither is the pinned revision."""
         other = "c" * 40
         self.write_cache(weights=b"a later main " * 8, revision=other)
+        os.makedirs(os.path.join(self.target, "refs"), exist_ok=True)
+        with open(os.path.join(self.target, "refs", "pr-1"), "w") as handle:
+            handle.write(other)
 
         self.run_block()
 
         self.assertEqual(self.downloads(), 1)
         self.assertEqual(self.ref(), FAKE_REVISION)
         self.assertEqual(self.snapshot_file("weights.safetensors"), FAKE_WEIGHTS)
+        # F824: downloaded in place, and what the other model left goes once the pinned one verifies, as
+        # the swap of the whole directory removed it: its snapshot, its refs, and its blobs.
+        self.assertEqual(os.listdir(os.path.join(self.target, "snapshots")), [FAKE_REVISION])
+        self.assertEqual(os.listdir(os.path.join(self.target, "refs")), ["main"])
+        self.assertEqual(os.listdir(os.path.join(self.target, "blobs")), [],
+                         "the other model's blobs are kept, and nothing pinned points at them")
 
     def test_a_pinned_snapshot_whose_ref_names_another_commit_has_only_the_ref_rewritten(self):
         """F627's case: `mlx_whisper.load_model` asks for revision-less `main`, so offline it follows
@@ -248,7 +263,7 @@ class HelperDownloadLockTests(InstallerBlockCase):
     `.dictation-model-backup-$$` and deleted it. The helper now holds a `flock(2)` lock while it
     downloads (`download_lock` in `whisper_dictate_server.py`; `LockTests` there pins the path to
     this one), and the block leaves the model alone while it is held. Since F898 the block holds the
-    lock itself from its first check until after the swap, so a helper that starts during the
+    lock itself from its first check until its download is done, so a helper that starts during the
     install's download waits for it instead of downloading beside it."""
 
     LOCK = os.path.join(".locks", REPOSITORY_FOLDER, "whispermeet-dictation-download.lock")
@@ -301,7 +316,7 @@ class HelperDownloadLockTests(InstallerBlockCase):
     def test_a_helper_that_starts_during_the_installs_download_waits_for_the_lock_instead_of_downloading(self):
         """F898 — the installer used to probe the lock and then download for minutes without holding
         it, so a helper that started meanwhile downloaded the same 1.6 GB beside it. The block now
-        holds the lock from its first check to after the swap. Two processes: while the stand-in
+        holds the lock from its first check until its download is done. Two processes: while the stand-in
         download runs, the REAL helper's `download_lock` — the gate its download passes first — is
         tried from a second python, without waiting, and says what it got."""
         import sys
@@ -339,7 +354,7 @@ class HelperDownloadLockTests(InstallerBlockCase):
                         "have downloaded the model beside the installer" % attempted)
         self.assertIn("another WhisperMeet process is downloading", attempted)
         self.assertEqual(self.downloads(), 1)
-        self.assertEqual(self.snapshot_file("weights.safetensors"), FAKE_WEIGHTS, "the install's own model was not swapped in")
+        self.assertEqual(self.snapshot_file("weights.safetensors"), FAKE_WEIGHTS, "the install's own download did not land")
         self.assertEqual(self.ref(), FAKE_REVISION)
         self.assertEqual(self.leftovers(), [])
         self.assertNotIn("left to finish there", result.stdout)

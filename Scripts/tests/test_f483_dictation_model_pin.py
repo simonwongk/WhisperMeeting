@@ -38,7 +38,7 @@ _SCRIPTS = os.path.normpath(os.path.join(_HERE, ".."))
 _SOURCE = os.path.join(_SCRIPTS, "setup-local-whisper.sh")
 
 _BLOCK_PATTERN = re.compile(
-    r'dictation_repository="mlx-community/whisper-large-v3-turbo".*?\n  rm -rf "\$dictation_staging"\nfi\n',
+    r'dictation_repository="mlx-community/whisper-large-v3-turbo".*?\n    dictation_lock_holder=""\n  fi\nfi\n',
     re.DOTALL,
 )
 
@@ -141,6 +141,7 @@ class DictationModelPinRealDownloadTests(unittest.TestCase):
             "set -euo pipefail",
             'runtime_directory="{}"'.format(runtime_directory),
             'staging_venv="{}"'.format(staging_venv),
+            'dictation_helper_source="{}"'.format(os.path.join(_SCRIPTS, "whisper_dictate_server.py")),
             _extract_block(),
             'print "pin step finished"',
         ])

@@ -127,13 +127,17 @@ if args[:1] == ["-"]:
     if len(args) > 1:
         # setup-local-whisper.sh's shebang rewrite: run the script's own code for real.
         os.execv(REAL_PYTHON, [REAL_PYTHON, "-"] + args[1:])
-    # A Hugging Face download heredoc. Like the real `snapshot_download`, it writes into its cache
-    # directory as it goes — partial blobs first — so a signal mid-download leaves what a real one
-    # would (huggingface_hub's file_download.py writes `blobs/<etag>.incomplete`).
-    stage = os.environ.get("DICTATION_STAGE")
-    if stage:
-        os.makedirs(os.path.join(stage, "blobs"), exist_ok=True)
-        with open(os.path.join(stage, "blobs", "weights.incomplete"), "w", encoding="utf-8") as handle:
+    # A download heredoc. The Quick Dictation model's (F824) is the helper's `ensure_dictation_model`
+    # into the model's cache where it lies: like it, this writes the partial file it resumes from,
+    # `blobs/<etag>.part`, before anything else, so a signal mid-download leaves what a real one would.
+    # (Qwen's and the summarizer's are the library's `snapshot_download`, into their own staging.)
+    hub = os.environ.get("DICTATION_HUB")
+    repo_cache = None
+    if hub:
+        repo_cache = os.path.join(hub, "models--" + os.environ["DICTATION_REPOSITORY"].replace("/", "--"))
+        os.makedirs(os.path.join(repo_cache, "blobs"), exist_ok=True)
+        with open(os.path.join(repo_cache, "blobs", os.environ["DICTATION_WEIGHTS_SHA256"] + ".part"), "a",
+                  encoding="utf-8") as handle:
             handle.write("partial download")
     maybe_block("download")
     if os.environ.get("FAKE_DOWNLOAD_SUCCEEDS") == "1":
@@ -146,16 +150,27 @@ if args[:1] == ["-"]:
                     with open(os.path.join(os.environ[key], part, "model.safetensors"), "w", encoding="utf-8") as handle:
                         handle.write("new model")
                 sys.exit(0)
-    if stage and os.environ.get("FAKE_DOWNLOAD_SUCCEEDS") == "1":
-        # A finished pinned snapshot at the layout the script verifies; `shasum` is shimmed.
-        snapshot = os.path.join(
-            stage, "models--" + os.environ["DICTATION_REPOSITORY"].replace("/", "--"),
-            "snapshots", os.environ["DICTATION_REVISION"],
-        )
+    if repo_cache and os.environ.get("FAKE_DOWNLOAD_SUCCEEDS") == "1":
+        # A finished pinned snapshot in the hub's layout, as the helper leaves it: each file a blob
+        # named for its pinned hash, linked from `snapshots/<revision>/`, the partial gone, and
+        # `refs/main` written last. `shasum` is shimmed.
+        blobs = os.path.join(repo_cache, "blobs")
+        snapshot = os.path.join(repo_cache, "snapshots", os.environ["DICTATION_REVISION"])
         os.makedirs(snapshot, exist_ok=True)
-        for name in ("config.json", "weights.safetensors"):
-            with open(os.path.join(snapshot, name), "w", encoding="utf-8") as handle:
+        for name, key in (("config.json", "DICTATION_CONFIG_SHA256"), ("weights.safetensors", "DICTATION_WEIGHTS_SHA256")):
+            blob = os.path.join(blobs, os.environ[key])
+            with open(blob, "w", encoding="utf-8") as handle:
                 handle.write("new model")
+            link = os.path.join(snapshot, name)
+            if os.path.lexists(link):
+                os.remove(link)
+            os.symlink(os.path.relpath(blob, snapshot), link)
+        part = os.path.join(blobs, os.environ["DICTATION_WEIGHTS_SHA256"] + ".part")
+        if os.path.exists(part):
+            os.remove(part)
+        os.makedirs(os.path.join(repo_cache, "refs"), exist_ok=True)
+        with open(os.path.join(repo_cache, "refs", "main"), "w", encoding="utf-8") as handle:
+            handle.write(os.environ["DICTATION_REVISION"])
         sys.exit(0)
     # No network in a test: fail like a dead connection.
     print("huggingface_hub.errors.LocalEntryNotFoundError: no network in this test", file=sys.stderr)
