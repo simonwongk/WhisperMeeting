@@ -1863,6 +1863,19 @@ struct SettingsView: View {
                         triggerChooser.toggle(in: NSApp.keyWindow ?? NSApp.mainWindow, for: dictation)
                     }
                 }
+                // F925: ⌘ or ⌃ alone is asked about before it is saved.
+                .alert(
+                    triggerChooser.pendingConfirmation.map { DictationTriggerCapture.confirmationQuestion(for: $0) } ?? "",
+                    isPresented: Binding(
+                        get: { triggerChooser.pendingConfirmation != nil },
+                        set: { if !$0, triggerChooser.pendingConfirmation != nil { triggerChooser.tryAgain() } }
+                    )
+                ) {
+                    Button("Keep") { triggerChooser.keepPendingTrigger() }
+                    Button("Try Again", role: .cancel) { triggerChooser.tryAgain() }
+                } message: {
+                    Text("macOS shortcuts begin with this key, and switching apps or Spaces while choosing can pick it by itself. Keep it if you meant it.")
+                }
                 // F547's caption, from the tap actually armed (F684).
                 Text(dictation.triggerKeyCaption)
                     .font(.caption)

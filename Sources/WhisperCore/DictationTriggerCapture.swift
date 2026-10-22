@@ -74,6 +74,23 @@ public struct DictationTriggerCapture: Sendable, Equatable {
         }
     }
 
+    /// The keys a choice asks about before saving (F925): ⌘ and ⌃ on their own, either side. A system
+    /// shortcut's second key never reaches the app — ⌘-Tab, ⌘-Space, and ⌃-← → ↑ for Spaces and Mission
+    /// Control — so its first key's release reads here as a lone press, and a user who switched apps
+    /// or Spaces mid-choice was given ⌘ or ⌃ as the trigger. ⌥ and ⇧ begin no system shortcut.
+    public static let keysConfirmedBeforeChoosing: Set<UInt16> = [54, 55, 59, 62]
+
+    /// Whether choosing `keyCode` asks first (F925, the user's decision of 2026-10-17): ⌘ or ⌃ alone,
+    /// unless it is the trigger already, which is never asked about.
+    public static func asksBeforeChoosing(_ keyCode: UInt16, current: UInt16?) -> Bool {
+        keysConfirmedBeforeChoosing.contains(keyCode) && keyCode != current
+    }
+
+    /// The question (F925), in the user's words: "Use ⌘ as your dictation key?" — with the side named.
+    public static func confirmationQuestion(for keyCode: UInt16) -> String {
+        "Use \(DictationKeyName.display(for: keyCode)) as your dictation key?"
+    }
+
     /// Whether this side's modifier is down after the event. The side's own bit decides; an event
     /// that carries no side bits for the family at all (one a program made, say) is read by the
     /// family's device-independent bit instead, so a lone modifier can still be chosen.

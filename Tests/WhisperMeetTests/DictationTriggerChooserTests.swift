@@ -354,3 +354,95 @@ func choosingWithDictationOffArmsNothing() throws {
     #expect(harness.monitor.startCount == 0)
     #expect(harness.monitor.stopCount == 0)
 }
+
+// MARK: - F925: ⌘ or ⌃ alone is asked about before it is saved
+
+// F925 — a system shortcut's second key never reaches the app: ⌘-Tab, ⌘-Space, ⌃-← → and ⌃-↑ (Spaces, Mission
+// Control). So while choosing, its first key came back up with nothing seen while it was down, and was chosen as
+// a lone modifier: a user who switched apps or Spaces mid-choice could end up dictating on ⌘ or ⌃. The user's
+// decision of 2026-10-17: "If the new key is ⌘ or ⌃ on its own, the app asks 'Use ⌘ as your dictation key?' with
+// Keep / Try Again." Any other key saves as before, and a key already saved is never asked about.
+private let leftCommand: UInt16 = 55
+private let leftControl: UInt16 = 59
+
+@MainActor
+private func choosingWithModifier(_ key: UInt16, _ harness: Harness) -> DictationTriggerChooser {
+    let chooser = DictationTriggerChooser(monitors: MonitorLedger().monitors, notifications: NotificationCenter())
+    chooser.toggle(in: NSObject(), for: harness.controller)
+    let mask = DictationKeyName.modifierDeviceMask(for: key)
+    // Down, then — its shortcut's second key taken by the system — straight back up.
+    chooser.receive(.modifiersChanged(keyCode: key, flags: mask))
+    chooser.receive(.modifiersChanged(keyCode: key, flags: 0))
+    return chooser
+}
+
+@MainActor
+@Test("⌘-Tab or ⌃-→ while choosing asks before ⌘ or ⌃ alone becomes the trigger, and saves nothing yet (F925)")
+func aLoneCommandOrControlIsAskedAbout() throws {
+    for key in [leftCommand, leftControl] {
+        let harness = try Harness()
+        defer { harness.cleanUp() }
+        let chooser = choosingWithModifier(key, harness)
+        #expect(chooser.pendingConfirmation == key, "\(DictationKeyName.display(for: key)) was saved without asking")
+        #expect(harness.controller.hotkey == DictationHotkey(keyCode: f5, mode: .hold), "the trigger changed before the answer")
+        #expect(chooser.isChoosing, "the choice ended before the answer")
+    }
+    #expect(DictationTriggerCapture.confirmationQuestion(for: leftCommand) == "Use Left ⌘ as your dictation key?")
+}
+
+@MainActor
+@Test("Keep saves the asked-about key and ends the choice; Try Again saves nothing and goes on choosing (F925)")
+func keepSavesAndTryAgainChoosesAgain() throws {
+    let kept = try Harness()
+    defer { kept.cleanUp() }
+    let keeping = choosingWithModifier(leftCommand, kept)
+    keeping.keepPendingTrigger()
+    #expect(kept.controller.hotkey == DictationHotkey(keyCode: leftCommand, mode: .hold))
+    #expect(!keeping.isChoosing)
+    #expect(keeping.pendingConfirmation == nil)
+
+    let retried = try Harness()
+    defer { retried.cleanUp() }
+    let retrying = choosingWithModifier(leftControl, retried)
+    retrying.tryAgain()
+    #expect(retrying.pendingConfirmation == nil)
+    #expect(retrying.isChoosing, "Try Again ended the choice")
+    #expect(retried.controller.hotkey == DictationHotkey(keyCode: f5, mode: .hold))
+    // Choosing goes on as if just begun: an F-key is chosen at once.
+    retrying.receive(.keyDown(keyCode: f6, isShortcut: false))
+    #expect(retried.controller.hotkey == DictationHotkey(keyCode: f6, mode: .hold))
+    #expect(!retrying.isChoosing)
+}
+
+@MainActor
+@Test("An F-key, ⌥ alone, and ⌘ already saved are chosen without asking (F925 control)")
+func otherKeysAreNotAskedAbout() throws {
+    let fKey = try Harness()
+    defer { fKey.cleanUp() }
+    let byFKey = DictationTriggerChooser(monitors: MonitorLedger().monitors, notifications: NotificationCenter())
+    byFKey.toggle(in: NSObject(), for: fKey.controller)
+    byFKey.receive(.keyDown(keyCode: f6, isShortcut: false))
+    #expect(byFKey.pendingConfirmation == nil)
+    #expect(fKey.controller.hotkey.keyCode == f6)
+
+    let option = try Harness()
+    defer { option.cleanUp() }
+    let byOption = choosingWithModifier(rightOption, option)
+    #expect(byOption.pendingConfirmation == nil)
+    #expect(option.controller.hotkey.keyCode == rightOption)
+
+    let saved = try Harness(hotkey: DictationHotkey(keyCode: leftCommand, mode: .hold))
+    defer { saved.cleanUp() }
+    let again = choosingWithModifier(leftCommand, saved)
+    #expect(again.pendingConfirmation == nil, "a key already saved was asked about")
+    #expect(!again.isChoosing)
+}
+
+@Test("Settings asks the chooser's question with Keep and Try Again (F925)")
+func settingsAsksTheChoosersQuestion() throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    #expect(source.contains("triggerChooser.pendingConfirmation"), "Settings does not show the question")
+    #expect(source.contains("triggerChooser.keepPendingTrigger()"), "Keep does not save the key")
+    #expect(source.contains("triggerChooser.tryAgain()"), "Try Again does not go back to choosing")
+    #expect(source.contains("DictationTriggerCapture.confirmationQuestion(for:"), "the question is not the chooser's")
+}

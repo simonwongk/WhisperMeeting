@@ -30,6 +30,9 @@ final class DictationTriggerChooser: ObservableObject {
     @Published private(set) var isChoosing = false
     /// Why the last key pressed cannot be a trigger (F521), shown under the trigger row.
     @Published private(set) var hint: String?
+    /// ⌘ or ⌃ alone, chosen and waiting for Keep or Try Again before it is saved (F925). The choice
+    /// stays open meanwhile, and no event decides anything until it is answered.
+    @Published private(set) var pendingConfirmation: UInt16?
 
     /// How the chooser hears events. The defaults are `NSEvent`'s; a test counts monitors instead,
     /// with no window and no keyboard.
@@ -130,10 +133,16 @@ final class DictationTriggerChooser: ObservableObject {
     /// any other repeat is held back, as a refused key's repeats always were.
     @discardableResult
     func receive(_ input: DictationTriggerCapture.Input, isRepeat: Bool = false) -> Bool {
-        guard isChoosing else { return true }
+        guard isChoosing, pendingConfirmation == nil else { return true }
         if isRepeat, case let .keyDown(_, isShortcut) = input { return isShortcut }
         switch capture.handle(input) {
         case let .choose(code):
+            if let dictation, DictationTriggerCapture.asksBeforeChoosing(code, current: dictation.hotkey.keyCode) {
+                // F925: asked first. Its release still reaches the window, as any modifier's does.
+                pendingConfirmation = code
+                if case .modifiersChanged = input { return true }
+                return false
+            }
             if let dictation {
                 dictation.hotkey = DictationHotkey(keyCode: code, mode: dictation.hotkey.mode)
             }
@@ -152,9 +161,28 @@ final class DictationTriggerChooser: ObservableObject {
         }
     }
 
+    /// Keep (F925): the asked-about key becomes the trigger, and the choice ends.
+    func keepPendingTrigger() {
+        guard let code = pendingConfirmation else { return }
+        pendingConfirmation = nil
+        if let dictation {
+            dictation.hotkey = DictationHotkey(keyCode: code, mode: dictation.hotkey.mode)
+        }
+        end()
+    }
+
+    /// Try Again (F925): nothing is saved, and choosing goes on as if just begun.
+    func tryAgain() {
+        guard pendingConfirmation != nil else { return }
+        pendingConfirmation = nil
+        capture = DictationTriggerCapture()
+        hint = nil
+    }
+
     /// Stops choosing: both monitors go, and the observers that would end it. Safe to call when not
-    /// choosing.
+    /// choosing. An unanswered question goes with it: a choice the user left saves nothing (F691).
     func end() {
+        if pendingConfirmation != nil { pendingConfirmation = nil }
         for observer in endObservers { notifications.removeObserver(observer) }
         endObservers = []
         if let keyMonitor {
