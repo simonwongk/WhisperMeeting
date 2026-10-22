@@ -540,3 +540,65 @@ func longFFmpegFileReadsAgreeLinedUp() async throws {
     print("F1073 ffmpeg \(minutes) min: lined up worst \(linedWorst), finding \(String(describing: RecordingMixPlan.firstReadDisagreement(kept: lined.kept, again: lined.again))); same edges worst \(edgeWorst), finding \(String(describing: RecordingMixPlan.firstReadDisagreement(kept: a, again: b)))")
     #expect(RecordingMixPlan.firstReadDisagreement(kept: lined.kept, again: lined.again) == nil)
 }
+
+// F1080 — what the read comparison costs on a long recording of many channels. Opt in (minutes, and a 300 MB
+// scratch file): F1080_MEASURE=1, optionally F1080_MINUTES (5) and F1080_TRACKS (16, one channel each). Half
+// the tracks sound throughout; the other half are silent for their first half and then sound, so their search
+// widens to its widest while silent and then searches wide once. A debug build: vDSP is optimised either way,
+// the Swift loops around it are not, so this is an upper bound on the shipped cost.
+@Test("What the read comparison costs on minutes of many channels (F1080, measurement)",
+      .enabled(if: ProcessInfo.processInfo.environment["F1080_MEASURE"] == "1"))
+func readsComparedCostAtScale() throws {
+    let dir = try scratch("F1080-cost"); defer { try? FileManager.default.removeItem(at: dir) }
+    let rate = 16_000
+    let minutes = Int(ProcessInfo.processInfo.environment["F1080_MINUTES"] ?? "") ?? 5
+    let tracks = Int(ProcessInfo.processInfo.environment["F1080_TRACKS"] ?? "") ?? 16
+    let total = minutes * 60 * rate
+    func sample(_ track: Int, _ n: Int) -> Float {
+        if track % 2 == 1 && n < total / 2 { return 0 }
+        var x = UInt32(truncatingIfNeeded: n &* 2_654_435_761 &+ track &* 40_503)
+        x ^= x >> 13; x = x &* 1_274_126_177; x ^= x >> 16
+        return 0.05 * (Float(x % 20_001) / 10_000 - 1)
+    }
+    // The kept read, written a stretch at a time.
+    let lanes = dir.appendingPathComponent("kept.lanes")
+    FileManager.default.createFile(atPath: lanes.path, contents: nil)
+    let writer = try FileHandle(forWritingTo: lanes)
+    var start = 0
+    while start < total {
+        let count = min(64_000, total - start)
+        var interleaved = [Float](repeating: 0, count: count * tracks)
+        for frame in 0..<count { for track in 0..<tracks { interleaved[frame * tracks + track] = sample(track, start + frame) } }
+        try interleaved.withUnsafeBytes { try writer.write(contentsOf: Data($0)) }
+        start += count
+    }
+    try writer.close()
+    // The second read: the same samples, three frames later, made before the clock starts and handed on as
+    // readInStep hands them, so only the comparison is timed.
+    var stretches: [[[Float]]] = []
+    var at = 0
+    while at < total {
+        let count = min(4_096, total - at)
+        var stretch: [[Float]] = []
+        for track in 0..<tracks {
+            var lane = [Float](repeating: 0, count: count)
+            for k in 0..<count where at + k >= 3 { lane[k] = sample(track, at + k - 3) }
+            stretch.append(lane)
+        }
+        stretches.append(stretch)
+        at += count
+    }
+    let again: RecordingMixer.StretchRead = { body in
+        var start = 0
+        for stretch in stretches {
+            try body(start, stretch[0].count, stretch.map { [$0] })
+            start += stretch[0].count
+        }
+        return total
+    }
+    let begun = Date()
+    let reads = try RecordingMixer.readsCompared(lanes: lanes, trackChannels: [Int](repeating: 1, count: tracks), frames: total, again: again)
+    let seconds = Date().timeIntervalSince(begun)
+    print("F1080 MEASURE \(minutes) min × \(tracks) channels: readsCompared \(String(format: "%.1f", seconds)) s (debug), \(String(format: "%.2f", seconds / Double(minutes))) s per minute of audio; finding \(String(describing: RecordingMixPlan.firstReadDisagreement(kept: reads.kept, again: reads.again)))")
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: reads.kept, again: reads.again) == nil)
+}

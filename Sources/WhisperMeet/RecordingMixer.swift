@@ -381,8 +381,10 @@ enum RecordingMixer {
             let data = try handle.read(upToCount: held * frameBytes) ?? Data()
             guard data.count == held * frameBytes else { throw Failure.unreadable("the mix's kept read ends early") }
             data.withUnsafeBytes { raw in
-                let samples = raw.bindMemory(to: Float.self)
-                for channel in 0..<channelCount { for frame in 0..<held { channels[channel][frame] = samples[frame * channelCount + channel] } }
+                let samples = raw.bindMemory(to: Float.self).baseAddress!
+                for channel in 0..<channelCount {
+                    channels[channel].withUnsafeMutableBufferPointer { column(samples, channel: channel, of: channelCount, count: held, into: $0.baseAddress!) }
+                }
             }
             return channels
         }
@@ -434,12 +436,10 @@ enum RecordingMixer {
                         let padded = again(channel, from: from + place[track] - s, count: n + 2 * s)
                         var out = [Float](repeating: 0, count: lags)
                         vDSP_conv(padded, 1, keptChannels[channel], 1, &out, 1, vDSP_Length(lags), vDSP_Length(n))
-                        var running = 0.0
-                        var prefix = [Double](repeating: 0, count: padded.count + 1)
-                        for (k, value) in padded.enumerated() { running += Double(value) * Double(value); prefix[k + 1] = running }
+                        let energies = lagEnergies(padded, window: n, lags: lags)
                         for lag in 0..<lags {
                             correlation[lag] += Double(out[lag])
-                            againEnergy[lag] += prefix[lag + n] - prefix[lag]
+                            againEnergy[lag] += energies[lag]
                         }
                     }
                     for lag in 0..<lags where againEnergy[lag] > 0 {
@@ -511,6 +511,31 @@ enum RecordingMixer {
                 RecordingMixPlan.ChannelLevels(levels: againLevels, frames: measured, sampleRate: rate, blocks: againBlocks))
     }
 
+    /// Each lag's energy of `padded` over `n` frames — the sum of `padded[lag + k]²` for `k < n` — for every lag below
+    /// `lags`, the first summed by vDSP and each next one slid a frame on: one pass, not one per lag (F1080).
+    private static func lagEnergies(_ padded: [Float], window n: Int, lags: Int) -> [Double] {
+        var energies = [Double](repeating: 0, count: Swift.max(0, lags))
+        guard lags > 0, n > 0, padded.count >= n + lags - 1 else { return energies }
+        var first: Float = 0
+        padded.withUnsafeBufferPointer { vDSP_svesq($0.baseAddress!, 1, &first, vDSP_Length(n)) }
+        var energy = Double(first)
+        energies[0] = Swift.max(0, energy)
+        for lag in 1..<lags {
+            let leaving = Double(padded[lag - 1]), entering = Double(padded[lag - 1 + n])
+            energy += entering * entering - leaving * leaving
+            energies[lag] = Swift.max(0, energy)
+        }
+        return energies
+    }
+
+    /// Copies channel `channel` of `count` frames, interleaved `channels` to a frame from `samples`, into `out`:
+    /// one strided vDSP copy (F1080).
+    private static func column(_ samples: UnsafePointer<Float>, channel: Int, of channels: Int, count: Int,
+                               into out: UnsafeMutablePointer<Float>) {
+        guard count > 0 else { return }
+        vDSP_mmov(samples + channel, out, 1, vDSP_Length(count), vDSP_Length(channels), 1)
+    }
+
     /// The widest a track's lag between two reads is searched in one window (F1076): `alignmentReach`, reached
     /// after about five minutes of windows the track was not found in, at `alignmentFrames` more each.
     static let readsWidest = RecordingMixPlan.alignmentReach
@@ -534,16 +559,20 @@ enum RecordingMixer {
             guard let data = try handle.read(upToCount: longestStretch * frameBytes), !data.isEmpty else { break }
             guard data.count % frameBytes == 0 else { throw Failure.unreadable("the mix's kept read ends mid-frame") }
             let count = data.count / frameBytes
-            let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
-            var column = 0
             var stretch: [[[Float]]] = []
-            for channels in trackChannels {
-                var track: [[Float]] = []
-                for _ in 0..<channels {
-                    track.append((0..<count).map { samples[$0 * channelCount + column] })
-                    column += 1
+            data.withUnsafeBytes { raw in
+                let samples = raw.bindMemory(to: Float.self).baseAddress!
+                var channel = 0
+                for channels in trackChannels {
+                    var track: [[Float]] = []
+                    for _ in 0..<channels {
+                        var lane = [Float](repeating: 0, count: count)
+                        lane.withUnsafeMutableBufferPointer { column(samples, channel: channel, of: channelCount, count: count, into: $0.baseAddress!) }
+                        track.append(lane)
+                        channel += 1
+                    }
+                    stretch.append(track)
                 }
-                stretch.append(track)
             }
             try body(handed, count, stretch)
             handed += count
@@ -635,10 +664,7 @@ enum RecordingMixer {
                 var out = [Float](repeating: 0, count: count)
                 vDSP_conv(padded[channel], 1, c, 1, &out, 1, vDSP_Length(count), vDSP_Length(n))
                 projectionsByLag.append(out.map(Double.init))
-                var running = 0.0
-                var prefix = [Double](repeating: 0, count: padded[channel].count + 1)
-                for (k, value) in padded[channel].enumerated() { running += Double(value) * Double(value); prefix[k + 1] = running }
-                energiesByLag.append((0..<count).map { prefix[$0 + n] - prefix[$0] })
+                energiesByLag.append(lagEnergies(padded[channel], window: n, lags: count))
             }
             var copySquares: Float = 0
             vDSP_dotpr(c, 1, c, 1, &copySquares, vDSP_Length(n))
@@ -661,11 +687,7 @@ enum RecordingMixer {
                 }
                 var out = [Float](repeating: 0, count: count)
                 vDSP_conv(mix, 1, c, 1, &out, 1, vDSP_Length(count), vDSP_Length(n))
-                var running = 0.0
-                var prefix = [Double](repeating: 0, count: mix.count + 1)
-                for (k, value) in mix.enumerated() { running += Double(value) * Double(value); prefix[k + 1] = running }
-                let energies = (0..<count).map { prefix[$0 + n] - prefix[$0] }
-                let found = align([out.map(Double.init)], [energies], [1])[0]
+                let found = align([out.map(Double.init)], [lagEnergies(mix, window: n, lags: count)], [1])[0]
                 steps = [Int?](repeating: found, count: channels.count)
             } else {
                 steps = align(projectionsByLag, energiesByLag, channels)
