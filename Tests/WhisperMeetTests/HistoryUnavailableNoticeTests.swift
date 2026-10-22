@@ -132,7 +132,7 @@ func historyNoticeChannelIsReachable() throws {
     #expect(model.contains("store.$storageErrorMessage"), "the windowless channel no longer observes storage messages")
     let store = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/MeetingStore.swift")
     #expect(
-        store.contains("storageErrorMessage = historyNotice(after: outcome.repairs, of: .meetings)"),
+        store.contains("storageErrorMessage = historyNotice(after: outcome.repairs, setAside: outcome.quarantined, of: .meetings)"),
         "persistMeetings no longer reads the save's repairs"
     )
 }

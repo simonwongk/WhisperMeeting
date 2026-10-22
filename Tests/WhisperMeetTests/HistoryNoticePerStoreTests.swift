@@ -142,8 +142,8 @@ func theDictationLogNoticeIsRendered() throws {
     let view = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/DictationView.swift")
     #expect(view.contains("if let message = log.historyNotice"), "DictationView no longer shows the history notice")
     let store = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/MeetingStore.swift")
-    #expect(store.contains("historyNotice(after: outcome.repairs, of: .vocabulary)"))
-    #expect(store.contains("historyNotice(after: outcome.repairs, of: .replacementRules)"))
+    #expect(store.contains("historyNotice(after: outcome.repairs, setAside: outcome.quarantined, of: .vocabulary)"))
+    #expect(store.contains("historyNotice(after: outcome.repairs, setAside: outcome.quarantined, of: .replacementRules)"))
 }
 
 // MARK: - F679

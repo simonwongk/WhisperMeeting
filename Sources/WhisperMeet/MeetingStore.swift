@@ -3650,11 +3650,11 @@ final class MeetingStore: ObservableObject {
                 let outcome = try vocabularyFiles.save(vocabulary, expecting: vocabularyToken)
                 vocabularyToken = outcome.token
                 // The list's own history, said as the index's is (F678).
-                storageErrorMessage = historyNotice(after: outcome.repairs, of: .vocabulary)
+                storageErrorMessage = historyNotice(after: outcome.repairs, setAside: outcome.quarantined, of: .vocabulary)
             case .replacementRules:
                 let outcome = try replacementRulesFiles.save(replacementRules, expecting: replacementRulesToken)
                 replacementRulesToken = outcome.token
-                storageErrorMessage = historyNotice(after: outcome.repairs, of: .replacementRules)
+                storageErrorMessage = historyNotice(after: outcome.repairs, setAside: outcome.quarantined, of: .replacementRules)
             }
             return .saved
         } catch {
@@ -3829,6 +3829,24 @@ final class MeetingStore: ObservableObject {
         }
     }
 
+    /// The copies a save set aside this session, by name, so each is said once (F1036).
+    private var noticedSetAsideNames: Set<String> = []
+
+    /// The user-facing words for files a save set aside (F1036). The file it was about to replace, or
+    /// its backup, did not decode — damaged, or written since by something this build cannot read —
+    /// so its bytes were kept first, as every save does (F187), and the save went on. It used to go
+    /// on without a word, though the load says the same finding. A stale copy of the app writing the
+    /// index is how a library was lost before (`docs/LIBRARY_INDEX_WIPE_POSTMORTEM_2026-08-14.md`),
+    /// so the notice names that cause as a possibility.
+    static func setAsideNotice(_ names: [String], for store: HistoryStore) -> String {
+        let file = historyNoticeNames(store).file
+        let backupPrefix = "\((file as NSString).deletingPathExtension).backup."
+        let backups = names.filter { $0.hasPrefix(backupPrefix) }.count
+        let what = backups == names.count ? "The backup of \(file)" : backups == 0 ? file : "\(file) and its backup"
+        let one = names.count == 1
+        return "\(what) could not be read when your changes were saved. \(one ? "It" : "They") may have been damaged, or written by another copy of WhisperMeet. \(one ? "Its" : "Their") unreadable bytes were copied aside as \(names.joined(separator: " and ")) before anything replaced \(one ? "it" : "them"), and your changes are saved."
+    }
+
     /// The user-facing words for `.historyTrimmedByBudget` (F679): an hour, day or week undo point
     /// went for space alone. Says what is still kept, and names no control: it follows a successful
     /// save, so the library is writable, and Recover Library appears only while it is not.
@@ -3855,12 +3873,15 @@ final class MeetingStore: ObservableObject {
     private static let historyLog = Logger(subsystem: "com.whispermeet.app", category: "library-history")
 
     /// What `storageErrorMessage` should read after a successful save of `store`: nil, unless this
-    /// save — or an earlier one this session, of any store — found something about its history the
-    /// user has not yet dismissed. Generic over the store's value, because each `BackupJSONStore`
-    /// has its own `StoreRepair` type.
+    /// save — or an earlier one this session, of any store — found something about its history, or
+    /// set a copy aside, that the user has not yet dismissed. Generic over the store's value, because
+    /// each `BackupJSONStore` has its own `StoreRepair` type.
     private func historyNotice<Value>(
-        after repairs: [BackupJSONStore<Value>.StoreRepair], of store: HistoryStore
+        after repairs: [BackupJSONStore<Value>.StoreRepair], setAside quarantined: [String], of store: HistoryStore
     ) -> String? {
+        // Each copy once (F1036): the save that set it aside is the only one that knows its name.
+        let unsaid = quarantined.filter { noticedSetAsideNames.insert($0).inserted }
+        if !unsaid.isEmpty { historyNoticesAwaitingDismissal.append(Self.setAsideNotice(unsaid, for: store)) }
         for repair in repairs {
             switch repair {
             case let .historyUnavailable(reason):
@@ -3913,7 +3934,7 @@ final class MeetingStore: ObservableObject {
             persistCommitCount += 1
             unsavedChanges = false
             writeConflict = nil
-            storageErrorMessage = historyNotice(after: outcome.repairs, of: .meetings)   // nil unless a history notice is up
+            storageErrorMessage = historyNotice(after: outcome.repairs, setAside: outcome.quarantined, of: .meetings)   // nil unless a history notice is up
             // What actually reached disk (F433 follow-up) — a lost race's delta is diffed against
             // this, not against whatever any other writer happens to hold.
             lastPersistedMeetings = meetings
