@@ -320,3 +320,39 @@ func comparisonWithholdsReplaceForAStraddlerOverADroppedLine() {
     #expect(spans[1].secondaryText == "Yeah.")
     #expect(!spans[1].offersReplacement)
 }
+
+// F1053 — `normalize` keeps only letters and digits, so a minus sign, a currency symbol and a percent
+// sign went with the punctuation: "-5" and "5", "$40" and "€40", "50%" and "50" read as the engines
+// agreeing. Each changes what was said. Case and other punctuation still do not.
+@Test("A sign, a currency or a percent the engines disagree on is a difference (F1053)")
+func comparisonSeesSignCurrencyAndPercent() {
+    let pairs: [(String, String)] = [
+        ("The balance was -5 degrees.", "The balance was 5 degrees."),
+        ("It fell to −5 overnight.", "It fell to 5 overnight."),
+        ("The license costs $40 a seat.", "The license costs €40 a seat."),
+        ("The license costs $40 a seat.", "The license costs 40 a seat."),
+        ("预算是￥300。", "预算是300。"),
+        ("Churn is down 50% this quarter.", "Churn is down 50 this quarter."),
+    ]
+    for (whisper, qwen) in pairs {
+        let spans = TranscriptComparison.compare([seg(0, 3, whisper)], [seg(0, 3, qwen)])
+        #expect(spans.map(\.kind) == [.diverge], "\(whisper) | \(qwen)")
+    }
+}
+
+@Test("Case, punctuation, and a hyphen inside a word or range still never make two engines differ (F1053 control)")
+func comparisonStillIgnoresCaseAndHyphens() {
+    let pairs: [(String, String)] = [
+        ("The License costs $40, per seat.", "the license costs $ 40 per seat"),
+        ("We tracked COVID-19 cases.", "We tracked COVID 19 cases."),
+        ("Pages 5-10 are missing.", "Pages 5 10 are missing."),
+        ("A twenty-five minute call.", "A twenty five minute call."),
+        ("It fell to -5 overnight.", "It fell to −5 overnight."),
+        ("Down 50 % now.", "Down 50% now."),
+        ("预算是¥300。", "预算是￥300"),
+    ]
+    for (whisper, qwen) in pairs {
+        let spans = TranscriptComparison.compare([seg(0, 3, whisper)], [seg(0, 3, qwen)])
+        #expect(spans.map(\.kind) == [.agree], "\(whisper) | \(qwen)")
+    }
+}

@@ -542,10 +542,28 @@ public enum TranscriptComparison {
     /// Lowercased letters and digits, with a space kept only where it separates two words of a
     /// spaced script (F570). Chinese has no word spaces, so a space kept beside an ideograph — where
     /// one engine wrote '，' and the other wrote nothing — made identical words compare unequal.
+    ///
+    /// Three marks are kept, each as a piece of its own, because they change what was said (F1053): a
+    /// minus sign before a number ("-5" is not "5"; a hyphen after a letter or digit, as in "COVID-19"
+    /// or "5-10", is still a separator), a currency symbol ("$40" is not "€40" or "40"), and a percent
+    /// sign. Their full-width forms read as the ordinary ones. Case and other punctuation still do not
+    /// count: the engines punctuate differently all the time.
     static func normalize(_ text: String) -> String {
-        let pieces = text.lowercased()
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty }
+        var pieces: [String] = []
+        var word = ""
+        let scalars = Array(text.lowercased().unicodeScalars)
+        for (position, scalar) in scalars.enumerated() {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                word.unicodeScalars.append(scalar)
+                continue
+            }
+            if !word.isEmpty { pieces.append(word); word = "" }
+            if let mark = keptMark(scalar, after: position > 0 ? scalars[position - 1] : nil,
+                                   before: position + 1 < scalars.count ? scalars[position + 1] : nil) {
+                pieces.append(mark)
+            }
+        }
+        if !word.isEmpty { pieces.append(word) }
         var result = ""
         for piece in pieces {
             if let last = result.unicodeScalars.last, let first = piece.unicodeScalars.first,
@@ -555,6 +573,25 @@ public enum TranscriptComparison {
             result.append(piece)
         }
         return result
+    }
+
+    /// The mark `scalar` keeps in `normalize`, or nil when it is punctuation (F1053).
+    private static func keptMark(_ scalar: Unicode.Scalar, after previous: Unicode.Scalar?, before next: Unicode.Scalar?) -> String? {
+        switch scalar {
+        case "-", "\u{2212}", "\u{FF0D}":
+            // A sign only where it starts a number: not after a letter or digit, and before a digit.
+            let startsNumber = next.map { CharacterSet.decimalDigits.contains($0) } ?? false
+            let joinsWords = previous.map { CharacterSet.alphanumerics.contains($0) } ?? false
+            return startsNumber && !joinsWords ? "-" : nil
+        case "%", "\u{FF05}", "\u{066A}": return "%"
+        case "\u{FF04}": return "$"
+        case "\u{FFE0}": return "\u{00A2}"
+        case "\u{FFE1}": return "\u{00A3}"
+        case "\u{FFE5}": return "\u{00A5}"
+        case "\u{FFE6}": return "\u{20A9}"
+        default:
+            return scalar.properties.generalCategory == .currencySymbol ? String(scalar) : nil
+        }
     }
 }
 
