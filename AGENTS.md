@@ -533,6 +533,11 @@ does not:
   comparison, and fails under 6.1.0, which types it `[Int]`. A *scalar* literal adopts the contextual
   type in both — it is specifically the array literal's element type that is the weaker inference, so
   the same file's other `Int64` comparisons were fine. Annotate the type instead of casting inline.
+- **An expression the runner's Swift 6.1 cannot type-check in time.** `(0..<n).map { … reduce(0.0) { sum, k in
+  sum + 0.03 * sin(…) * (0.55 + 0.45 * sin(…)) } }` compiled on the developer's Mac and failed CI on `e45d69ab` with
+  "the compiler is unable to type-check this expression in reasonable time" — before a single test ran (F1085). The
+  newer compiler solves the overloads of a long arithmetic chain inside a closure that 6.1 gives up on. Write fixture
+  math as loops with typed `let`s (`let tone: Double = …`), not one inferred expression.
 - Anything depending on an installed model, venv, or Python package.
 - **A queued run being displaced.** `cancel-in-progress: false` stops a *running* gate being
   cancelled; it does nothing for a *queued* one, and GitHub keeps at most one pending run per
