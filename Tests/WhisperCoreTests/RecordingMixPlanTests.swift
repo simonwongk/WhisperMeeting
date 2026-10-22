@@ -522,5 +522,15 @@ func readDisagreementJudgesEachChannelsLevel() {
             == .readsDisagree(window: 1, channel: 1))
     let padding = levels([[0.2, 0.2], [0.1, 0.1]], frames: [16_000, 3_200])
     #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.2], [0.1, 0.05]], frames: [16_000, 3_200]), again: padding) == nil)
-    #expect(RecordingMixPlan.shortestReadWindow == 0.25 && RecordingMixPlan.readAlignmentFloor == 0.5)
+    #expect(RecordingMixPlan.leastSoundToJudge == 0.25 && RecordingMixPlan.readAlignmentFloor == 0.5)
+    // F1076: with blocks, a window is judged by the sound either read holds in it, channel by channel: 0.15 s of
+    // sound (an encoder's padding where a track ends) is not judged however long the window; 0.3 s is.
+    func blocked(_ level: Double, sounding: Int) -> RecordingMixPlan.ChannelLevels {
+        let blocks: [Float] = (0..<20).map { $0 < sounding ? 0.2 : 0 }
+        return RecordingMixPlan.ChannelLevels(levels: [[0.2, level]], frames: [16_000, 16_000], sampleRate: 16_000,
+                                              blocks: [[[Float](repeating: 0.2, count: 20), blocks]])
+    }
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: blocked(0.03, sounding: 3), again: blocked(0.07, sounding: 3)) == nil)
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: blocked(0.03, sounding: 6), again: blocked(0.07, sounding: 6))
+            == .readsDisagree(window: 1, channel: 0))
 }

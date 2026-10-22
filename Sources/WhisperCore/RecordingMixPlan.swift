@@ -366,25 +366,30 @@ public enum RecordingMixPlan {
     /// sum it is heard in, by the fit of the whole mix (`copyUnlikeMix`).
     public static let minimumDistinctShare = 0.25
 
-    /// Each channel's level — its RMS — per `auditWindowSeconds` window of the timeline, and the frames each
-    /// window's level was measured over, at `sampleRate` (F1072).
+    /// Each channel's level — its RMS — per `auditWindowSeconds` window of the timeline, the frames each window's
+    /// level was measured over, at `sampleRate` (F1072); and, per channel and window, the level of each
+    /// `readBlockSeconds` block in it (F1076), which `firstReadDisagreement` counts the sound in. Without blocks,
+    /// every frame of a window counts as sound.
     public struct ChannelLevels: Sendable, Equatable {
         public var levels: [[Double]]
         public var frames: [Double]
         public var sampleRate: Double
+        public var blocks: [[[Float]]]?
 
-        public init(levels: [[Double]], frames: [Double], sampleRate: Double) {
+        public init(levels: [[Double]], frames: [Double], sampleRate: Double, blocks: [[[Float]]]? = nil) {
             self.levels = levels
             self.frames = frames
             self.sampleRate = sampleRate
+            self.blocks = blocks
         }
     }
 
     /// How far the mix's kept read may stand from a second read of the recording, as the ratio of one
     /// channel's level in one window, before the copy is refused (F1072): within 10 %, 0.9 dB. The second
     /// read is lined up with the kept one track by track first (F1073), so what is left between them is a
-    /// fraction of a frame — measured under 0.1 % of a level — while a fifth of a second of steady sound lost
-    /// from a second moves it 10 %, and a quarter of a second 13 %.
+    /// fraction of a frame: under 0.02 % of a level on the AVAssetWriter fixtures, and on a 30-minute
+    /// ffmpeg-made file under 1 % but for its last whole second (2.3 % in one run of three). A fifth of a second
+    /// of steady sound lost from a second moves a level 10 %, and a quarter of a second 13 %.
     public static let readAgreementBand: ClosedRange<Double> = 0.9...(1 / 0.9)
 
     /// How well two reads of a track must correlate at a lag for `RecordingMixer.readsCompared` to line them
@@ -393,32 +398,43 @@ public enum RecordingMixPlan {
     /// judged on its level.
     public static let readAlignmentFloor = 0.5
 
-    /// The shortest window `firstReadDisagreement` judges: a quarter of a second (F1073). Past a recording's
-    /// audio, an encoder's padding — an AAC frame and its priming, about 65 ms at 48 kHz — decodes differently
-    /// from one read to the next: on a 30-minute ffmpeg-made file every whole window of two reads agreed within
-    /// 1 % lined up, and the last 80 ms, all padding, read 2.4 times apart. So a last window that short is not
-    /// judged; one of 0.4 s, which F1072 skipped as under half a second, is.
-    public static let shortestReadWindow: TimeInterval = 0.25
+    /// The blocks `RecordingMixer.readsCompared` measures each window's sound in: 50 ms (F1076).
+    public static let readBlockSeconds: TimeInterval = 0.05
+
+    /// The least sound — blocks at or above the channel's floor — either read must hold of a channel in a
+    /// window for `firstReadDisagreement` to judge it: a quarter of a second (F1076). An encoder's padding past
+    /// a track's audio, an AAC frame and its priming of about 65 ms at 48 kHz, decodes differently from one read
+    /// to the next (the last 80 ms of a 30-minute ffmpeg-made file read 2.4 times apart); a window holding that
+    /// and little else, at the end of the file or where a track ends mid-file, is not judged. Counted per
+    /// channel, so one track's short overlap at the end skips no other's (review 3, finding 2), and by sound,
+    /// not by the window's length, so a 0.4 s last window of sound is judged and a long one of padding is not.
+    public static let leastSoundToJudge: TimeInterval = 0.25
 
     /// The first window and channel where the mix's kept read (`kept`) and a second, independent read of
     /// the recording lined up with it (`again`) disagree on a channel's level beyond `readAgreementBand`
-    /// (F1072, F1073), or nil.
+    /// (F1072, F1073, F1076), or nil.
     ///
     /// The copy is fitted against the kept read (F998), so a fault in that read which a second read does not
     /// repeat — a stretch zero-filled, a track ending early — is in the read, the mix and the copy alike,
     /// and the fit cannot see it. The two reads must be lined up first: two reads of an ffmpeg-made file
     /// drift apart about 0.4 frames a second, and compared at the same window edges a sound starting near
     /// an edge moves between windows (review 2 of F998, finding 1). Judged where the channel sounds in
-    /// either read (`audibleShare` of its level in the second read, above `MeetingStoragePlan.silenceLevel`),
-    /// in every window either read measured `shortestReadWindow` or more of; a window one read lacks reads
-    /// as silence there. A read with a different number of channels disagrees at once.
+    /// either read — at least `leastSoundToJudge` of blocks at or above its floor, `audibleShare` of its level
+    /// in the second read and above `MeetingStoragePlan.silenceLevel` — and its window's level reaches that
+    /// floor in either. A read with a different number of channels disagrees at once.
     public static func firstReadDisagreement(kept: ChannelLevels, again: ChannelLevels) -> Finding? {
         guard kept.levels.count == again.levels.count else {
             return .readsDisagree(window: 0, channel: Swift.min(kept.levels.count, again.levels.count))
         }
-        let shortest = shortestReadWindow * again.sampleRate
         let windows = Swift.max(kept.frames.count, again.frames.count)
         func frames(_ side: ChannelLevels, _ window: Int) -> Double { window < side.frames.count ? side.frames[window] : 0 }
+        /// Seconds of `side`'s window holding sound at or above `floor`: its blocks that do, or, without blocks,
+        /// the whole window.
+        func sound(_ side: ChannelLevels, _ channel: Int, _ window: Int, _ floor: Double) -> Double {
+            guard let blocks = side.blocks else { return frames(side, window) / side.sampleRate }
+            guard channel < blocks.count, window < blocks[channel].count else { return 0 }
+            return Double(blocks[channel][window].filter { Double($0) >= floor }.count) * readBlockSeconds
+        }
         for channel in again.levels.indices {
             let a = again.levels[channel], k = kept.levels[channel]
             func level(_ values: [Double], _ window: Int) -> Double { window < values.count ? values[window] : 0 }
@@ -431,7 +447,8 @@ public enum RecordingMixPlan {
             for window in 0..<windows {
                 let av = level(a, window), kv = level(k, window)
                 guard av.isFinite, kv.isFinite else { return .notANumber(window: window, channel: channel) }
-                guard Swift.max(frames(kept, window), frames(again, window)) >= shortest else { continue }
+                guard Swift.max(sound(kept, channel, window, floor), sound(again, channel, window, floor)) >= leastSoundToJudge - 1e-9
+                else { continue }
                 guard Swift.max(av, kv) >= floor else { continue }
                 guard av > 0, readAgreementBand.contains(kv / av) else { return .readsDisagree(window: window, channel: channel) }
             }

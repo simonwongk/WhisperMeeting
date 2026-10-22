@@ -699,9 +699,10 @@ func shrinkAuditRefusesAMixWhoseOwnReadLostAStretch() async throws {
 @MainActor
 func shrinkAuditRefusesALossInAShortLastWindow() async throws {
     // Review 2 of F998, finding 2: F1072 skipped a last window under half a second. Track 2 sounds only from
-    // 10.0 s to 10.4 s of a 10.4 s recording, and the mixer's read of it ends at 10.2 s: the fit agrees with
-    // the copy made from that read, `channelNotRead` sees 0.71 of the level, and the original was moved to the
-    // Trash. The second read lined up with the kept one judges that window too.
+    // 10.0 s to 10.4 s of a 10.4 s recording, and in the mixer's read it goes silent at 10.2 s (the timeline
+    // still runs to 10.4 s; a read whose whole timeline stops short is `readsComparedJudgesPastTheKeptEnd…`):
+    // the fit agrees with the copy made from that read, `channelNotRead` sees 0.71 of the level, and the
+    // original was moved to the Trash. The second read lined up with the kept one judges that window too.
     let f = try await MixFixture(recordingExtension: "mov", duration: 10.4, mixing: true) { url in
         try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 10.4, audibleTo: 9),
                                                FixtureTrack(channels: [(800, 0.3)], seconds: 0.4, startSeconds: 10)])

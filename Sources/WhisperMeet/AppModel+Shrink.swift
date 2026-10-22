@@ -280,7 +280,8 @@ extension AppModel {
         }
         defer { store.folderWriters.end(id) }
         // F1074: a mix and a kept read an earlier run left when it was quit or crashed (F998: up to gigabytes) go
-        // now, whatever this run decides. The folder is held above, so no other Shrink of it is writing them.
+        // now, whatever this run decides. No other Shrink of this meeting is writing them: `shrinkReason` refuses
+        // while `shrinkRunningID` is set, and nothing between that check and the line below awaits (review 3).
         for entry in MeetingStoragePlan.staleMixScratch(in: disk.entries) {
             let staleScratch = folder.appendingPathComponent(entry.name)
             try? FileManager.default.removeItem(at: staleScratch)

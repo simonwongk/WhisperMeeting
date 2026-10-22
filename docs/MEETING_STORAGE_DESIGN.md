@@ -254,13 +254,17 @@ verified and the index saved.
      refused rather than measured as far as it goes. The fit cannot show a fault in the mixer's own read that a
      second read would not repeat — a stretch zero-filled, a track taken to end early — since the copy holds what
      that read held; so the kept read is held to a read of the recording of its own, each channel's level per
-     second within 10 % wherever the channel sounds (`RecordingMixPlan.firstReadDisagreement`, F1072), every
-     window both reads cover judged down to a quarter of a second, the short last one included (F1073) — shorter,
-     past the audio, it is an encoder's padding, which reads differently each time. Two reads of an
+     second within 10 % wherever the channel sounds (`RecordingMixPlan.firstReadDisagreement`, F1072): judged in
+     every window where either read holds a quarter of a second or more of the channel's sound, counted in 50 ms
+     blocks channel by channel (F1076) — less than that, at a track's end, is an encoder's padding, which reads
+     differently each time. The windows run to whichever read ends later, so a mix read whose whole timeline
+     stopped short (the mixer accepts up to half a second) is compared against the sound a read of its own holds
+     there. Two reads of an
      ffmpeg-made file drift apart about 0.4 frames a second, and compared at the same window edges a sound
      starting near an edge moves between windows; so the second read is lined up with the kept one first, track
      by track and window by window, at the lag where each track's own channels correlate best, as the copy is
-     followed (`RecordingMixer.readsCompared`, F1073). Lined up, two reads of the shared-sound layouts agree
+     followed (`RecordingMixer.readsCompared`, F1073), the search widening to 0.3 s while a track is silent or
+     unfound so it is found again after minutes of silence, and two reads lined up to two seconds apart (F1076). Lined up, two reads of the shared-sound layouts agree
      within 0.02 %, and every whole second of a 30-minute ffmpeg-made two-track file within the band — under 1 %
      but for its last whole second, 2.3 % in one run of three (compared at the same window edges, the same file was
      refused in every run, five to twenty-nine minutes in); a fifth of a second of steady sound lost from a second moves a level 10 %, and losses of 0.3 s,

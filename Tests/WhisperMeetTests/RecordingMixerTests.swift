@@ -413,6 +413,62 @@ func readsComparedFollowsADriftingSecondRead() throws {
     }
 }
 
+// F1076 — review 3, findings 1 and 4, in memory: a kept read whose whole timeline stopped 0.4 s early (the mixer
+// accepts a decode up to 0.5 s short) is compared past its end against the sound a read of its own holds there; and
+// a track silent for 40 s while the reads drift 10 frames a second, 400 frames by the time it sounds again, is
+// found again — the search used to stop widening at 256 frames and compare it at the stale lag.
+@Test("A kept read that stopped 0.4 s early is refused, and a track drifted past 256 frames in its silence is found again (F1076)")
+func readsComparedJudgesPastTheKeptEndAndAfterLongSilence() throws {
+    let dir = try scratch("F1076-reads"); defer { try? FileManager.default.removeItem(at: dir) }
+    let rate = 16_000, total = 60 * rate
+    var seed: UInt32 = 777
+    func noise() -> Float { seed = seed &* 1_664_525 &+ 1_013_904_223; return Float(Int32(bitPattern: seed)) / Float(Int32.max) }
+    // Track 1: steady noise throughout. Track 2: silent for 40 s, then a burst every other second starting
+    // 40 ms before a window's edge.
+    var steady = [Float](repeating: 0, count: total)
+    for n in steady.indices { steady[n] = 0.05 * noise() }
+    var late = [Float](repeating: 0, count: total)
+    for n in (40 * rate)..<total {
+        let into: Double = Double(n % (2 * rate)) / Double(rate)
+        if into >= 0.96 && into < 1.30 { late[n] = 0.2 * noise() }
+    }
+    func drifting(_ samples: [Float], framesPerSecond: Int) -> [Float] {
+        var out = [Float](repeating: 0, count: samples.count)
+        for n in samples.indices where n - n * framesPerSecond / rate >= 0 { out[n] = samples[n - n * framesPerSecond / rate] }
+        return out
+    }
+    func keptFile(_ tracks: [[Float]], frames: Int) throws -> URL {
+        var interleaved = [Float](repeating: 0, count: frames * tracks.count)
+        for (channel, samples) in tracks.enumerated() { for n in 0..<frames { interleaved[n * tracks.count + channel] = samples[n] } }
+        let url = dir.appendingPathComponent("\(UUID().uuidString).lanes")
+        try interleaved.withUnsafeBytes { Data($0) }.write(to: url)
+        return url
+    }
+    func reader(_ tracks: [[Float]]) -> RecordingMixer.StretchRead {
+        { body in
+            var start = 0
+            while start < total {
+                let count = min(4_096, total - start)
+                try body(start, count, tracks.map { [Array($0[start..<(start + count)])] })
+                start += count
+            }
+            return total
+        }
+    }
+    let drifted = [drifting(steady, framesPerSecond: 10), drifting(late, framesPerSecond: 10)]
+    let lined = try RecordingMixer.readsCompared(lanes: try keptFile([steady, late], frames: total), trackChannels: [1, 1],
+                                                 frames: total, again: reader(drifted))
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: lined.kept, again: lined.again) == nil,
+            "the late track, 400 frames off when it sounds, is lined up")
+
+    // The kept read's timeline stopped 0.4 s early, a read of its own did not.
+    let short = total - 6_400
+    let stopped = try RecordingMixer.readsCompared(lanes: try keptFile([steady, late], frames: short), trackChannels: [1, 1],
+                                                   frames: short, again: reader([steady, late]))
+    #expect(stopped.kept.frames.count == 60, "the windows run to the read of its own's end")
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: stopped.kept, again: stopped.again) == .readsDisagree(window: 59, channel: 0))
+}
+
 // F1073 — review 2 of F998 asked for this before mixing Shrink is switched on: a long ffmpeg-made multi-track
 // file, whose reads drift apart (F980's log), read twice through the mixer. Opt in (it needs ffmpeg, which
 // the CI runner does not have, and takes minutes): F1073_FFMPEG_DRIFT=1, and optionally F1073_MINUTES.
