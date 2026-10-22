@@ -7650,7 +7650,9 @@ final class AppModel: ObservableObject {
     /// build, stand-in embedder): 431 ms a query at 10,000 rows, all cached, and 879 ms at 20,000, of
     /// which the bound held 10,400 — the same ~44 µs a row read from disk as held in memory. The
     /// per-query time is not in the disk reads, so a bound sized to the library would spend memory
-    /// (1 GB at the 700,000-segment library F538 extrapolated) without making a query faster.
+    /// (1 GB at the 700,000-segment library F538 extrapolated) without making a query faster. Those
+    /// figures are a debug build's, whose unoptimised dot products dominate; in a release build the
+    /// cost was the ranking's sort, and since F1048 a query ranks 20,000 rows in about 6 ms.
     private static let askIndexCacheVectorLimit = 4_000_000
 
     /// Passages per helper run when meetings are embedded for search by meaning (F538). Whole

@@ -151,7 +151,16 @@ public enum SemanticRanker {
                 ))
             }
         }
-        return Array(hits.sorted { ($0.score, $1.id) > ($1.score, $0.id) }.prefix(limit))
+        // Higher score first, ties by id — the order it always had, now found by sorting positions
+        // (F1048). Sorting the results themselves moved values holding three strings each, and the
+        // comparator built two UUID-string ids per comparison whether or not the scores tied; nearly
+        // every row clears the floor, so that was most of a query: in a release build at 20,000 rows,
+        // ranking took 84–88 ms (about 4 µs a row), of which the dot products were under 4 ms; it now
+        // takes 6 ms when the scores differ, as real embeddings' do.
+        let order = hits.indices.sorted { a, b in
+            hits[a].score != hits[b].score ? hits[a].score > hits[b].score : hits[a].id < hits[b].id
+        }
+        return order.prefix(limit).map { hits[$0] }
     }
 }
 

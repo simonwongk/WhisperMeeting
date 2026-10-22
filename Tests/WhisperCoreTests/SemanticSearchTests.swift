@@ -124,3 +124,40 @@ func fusionBreaksExactTiesTowardKeyword() {
     #expect(Array(fused.prefix(5).map(\.snippet).filter { $0.hasPrefix("S") }).count == 2,
             "the answer model sees two meaning-only passages out of five")
 }
+
+// F1048 — `rank` sorted its results themselves, by a tuple that built two UUID-string ids per
+// comparison; in a release build that sort was most of a query (87 ms of ranking at 20,000 rows, the
+// dot products under 4 ms). It now sorts positions and looks up the top ones. The order must be the
+// one it always had, ties included, so this holds it to the old comparator on a library with both.
+@Test("Ranking by position returns exactly the old order, ties broken by id as before (F1048)")
+func rankKeepsItsOrderWithTies() {
+    var meetings: [(meeting: SearchableMeeting, index: SegmentEmbeddings)] = []
+    var expected: [(score: Double, id: String)] = []
+    let query: [Float] = [0.6, 0.8]
+    for meeting in 0..<12 {
+        let id = UUID()
+        var segments: [SearchableSegment] = []
+        var vectors: [Float] = []
+        for row in 0..<40 {
+            // Six distinct directions, so most scores tie with many others; a few rows fall below the floor.
+            let angle = Float((meeting * 7 + row * 3) % 6) * 0.1
+            let vector = [cos(angle + 0.3), sin(angle + 0.3)]
+            segments.append(SearchableSegment(index: row, start: Double(row), text: "m\(meeting) r\(row)"))
+            vectors += vector
+            let dot = query[0] * vector[0] + query[1] * vector[1]
+            if dot >= SemanticRanker.minimumSimilarity {
+                expected.append((Double(dot), "\(id.uuidString)-\(row)"))
+            }
+        }
+        meetings.append((SearchableMeeting(id: id, title: "M\(meeting)", segments: segments),
+                         SegmentEmbeddings(modelID: "m", fingerprint: "f", dimension: 2, vectors: vectors)))
+    }
+    let reference = expected.sorted { ($0.score, $1.id) > ($1.score, $0.id) }.map(\.id)
+    let distinctScores = Set(expected.map(\.score)).count
+    #expect(distinctScores < expected.count / 4, "the library was meant to be full of ties")
+
+    for limit in [1, 20, expected.count, expected.count + 5] {
+        let ranked = SemanticRanker.rank(query: query, in: meetings, limit: limit).map(\.id)
+        #expect(ranked == Array(reference.prefix(limit)), "limit \(limit)")
+    }
+}
