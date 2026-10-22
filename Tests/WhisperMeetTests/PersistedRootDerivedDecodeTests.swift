@@ -32,9 +32,11 @@ import Testing
 // Deliberately skipped, because they are strict for a reason and are not enums: strings that parse
 // as a UUID or an ISO-8601 date (ids and timestamps), and booleans.
 //
-// Not covered: an enum encoded as an OBJECT — a synthesized associated-value enum, such as
-// `DictationLogEntry.Outcome` (`{"pasted":{}}`) — whose unknown case is an unknown KEY, not an
-// unknown leaf. Outcome's own leniency is pinned in `DictationLogSchemaTests`.
+// An enum encoded as an OBJECT — a synthesized associated-value enum, such as
+// `DictationLogEntry.Outcome` (`{"pasted":{}}`) — has its unknown case as an unknown KEY, not an
+// unknown leaf (F777, from F775). So the value is walked beside its JSON with `Mirror`, and each
+// single-key object whose value is an enum has that key renamed to `"valueFromTheFuture"`, one at a
+// time, reported as `<path> (case <key>)`.
 //
 // The set of roots is not restated either: `everyPersistedRootIsCovered` scans Sources for
 // `BackupJSONStore<…>` and compares it with `coveredRoots`, so a fifth root fails until it has a
@@ -71,8 +73,21 @@ func decodeFailuresUnderUnknownValues<T: Codable>(_ value: T) throws -> UnknownV
     )
     var leaves: [(path: [JSONPathStep], replacement: Any)] = []
     collectLeaves(tree, path: [], into: &leaves)
+    var caseKeys: [(path: [JSONPathStep], key: String)] = []
+    collectEnumCaseKeys(value, encoded: tree, path: [], into: &caseKeys)
 
     var report = UnknownValueReport()
+    for caseKey in caseKeys {
+        let name = "\(describe(caseKey.path)) (case \(caseKey.key))"
+        report.substituted.append(name)
+        let mutated = renamingCaseKey(in: tree, at: caseKey.path[...], from: caseKey.key)
+        let data = try JSONSerialization.data(withJSONObject: mutated, options: [.fragmentsAllowed])
+        do {
+            _ = try decoder.decode(T.self, from: data)
+        } catch {
+            report.failures[name] = describe(error)
+        }
+    }
     for leaf in leaves {
         let name = describe(leaf.path)
         report.substituted.append(name)
@@ -113,6 +128,57 @@ private func collectLeaves(
         }
     }
     // NSNull: nothing to substitute (and substituting null would exercise nothing).
+}
+
+/// Every enum the value holds as a single-key JSON object, by the path of that object (F777, from
+/// F775). Walks `Mirror` and the JSON together, as `storedPropertiesMissingFromWire` does: into a
+/// struct's children by label, an array element by element, through an optional. A remapped key is
+/// not followed, so a child stored under another name is not descended into.
+private func collectEnumCaseKeys(
+    _ value: Any, encoded: Any, path: [JSONPathStep], into keys: inout [(path: [JSONPathStep], key: String)]
+) {
+    let mirror = Mirror(reflecting: value)
+    switch mirror.displayStyle {
+    case .optional:
+        if let wrapped = mirror.children.first { collectEnumCaseKeys(wrapped.value, encoded: encoded, path: path, into: &keys) }
+    case .struct, .class:
+        guard let object = encoded as? [String: Any] else { return }
+        for child in mirror.children {
+            guard let label = child.label, let encodedChild = object[label] else { continue }
+            collectEnumCaseKeys(child.value, encoded: encodedChild, path: path + [.key(label)], into: &keys)
+        }
+    case .collection:
+        guard let array = encoded as? [Any], array.count == mirror.children.count else { return }
+        for (index, (element, encodedElement)) in zip(mirror.children, array).enumerated() {
+            collectEnumCaseKeys(element.value, encoded: encodedElement, path: path + [.index(index)], into: &keys)
+        }
+    case .enum:
+        if let object = encoded as? [String: Any], object.count == 1, let key = object.keys.first {
+            keys.append((path, key))
+        }
+    default:
+        return
+    }
+}
+
+/// `node` with the single-key object at `path` holding its payload under `"valueFromTheFuture"` in
+/// place of `key`.
+private func renamingCaseKey(in node: Any, at path: ArraySlice<JSONPathStep>, from key: String) -> Any {
+    guard let step = path.first else {
+        guard let object = node as? [String: Any], let payload = object[key] else { return node }
+        return [unknownStringValue: payload]
+    }
+    let rest = path.dropFirst()
+    switch step {
+    case .key(let name):
+        guard var object = node as? [String: Any], let child = object[name] else { return node }
+        object[name] = renamingCaseKey(in: child, at: rest, from: key)
+        return object
+    case .index(let index):
+        guard var array = node as? [Any], array.indices.contains(index) else { return node }
+        array[index] = renamingCaseKey(in: array[index], at: rest, from: key)
+        return array
+    }
 }
 
 private func replacing(in node: Any, at path: ArraySlice<JSONPathStep>, with replacement: Any) -> Any {
@@ -216,10 +282,26 @@ struct PersistedRootDerivedDecodeTests {
         }
         let report = try decodeFailuresUnderUnknownValues(Probe())
         #expect(report.failures.keys.sorted() == ["items[0].level", "tone"])
+        #expect(report.substituted.allSatisfy { !$0.contains("(case") }, "no enum here is an object")
         #expect(report.substituted.contains("title"))
         #expect(report.substituted.contains("items[0].note"))
         #expect(!report.substituted.contains("id"), "a UUID is strict by design and must be skipped")
         #expect(!report.substituted.contains("flag"), "a Bool cannot be an enum")
+    }
+
+    @Test("The substitution helper names an associated-value enum whose case a newer build added (F777)")
+    func helperNamesAnObjectShapedEnum() throws {
+        // F775's shape, kept permanently: synthesized `Codable` writes `mode` as `{"a":{"_0":1}}`, so a
+        // newer build's case is an unknown KEY. The leaf pass alone tried `mode.a._0` and passed.
+        struct Probe: Codable {
+            enum Mode: Codable { case a(Int) }
+            var title: String = "t"
+            var mode: Mode? = .a(1)
+            var modes: [Mode] = [.a(2)]
+        }
+        let report = try decodeFailuresUnderUnknownValues(Probe())
+        #expect(report.failures.keys.sorted() == ["mode (case a)", "modes[0] (case a)"])
+        #expect(report.substituted.contains("mode.a._0"), "the payload's leaf is still tried")
     }
 
     @Test("Every leaf of a fully populated meeting index tolerates a value from a newer build (F382)")
@@ -248,6 +330,7 @@ struct PersistedRootDerivedDecodeTests {
             log,
             mustTry: [
                 "entries[0].refinement", "entries[0].outcomeKind", "entries[0].outcome.failed._0", "limit",
+                "entries[0].outcome (case failed)",
                 "entries[0].clipSeconds", "entries[0].transcribeSeconds", "entries[0].refineSeconds",
                 "entries[0].gpuBusyPercent",
             ]

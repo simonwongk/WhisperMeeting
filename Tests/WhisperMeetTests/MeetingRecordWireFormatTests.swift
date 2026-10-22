@@ -19,77 +19,31 @@ import Testing
 // computed over `transcriptionEngineRawValue` and correctly absent.
 
 /// Every field populated, because `JSONEncoder` omits a nil optional and a nil field would look
-/// identical to a missing key. Anything added to `MeetingRecord` has to be added here too, and the
+/// identical to a missing key. Anything added to `MeetingRecord` has to be added there too, and the
 /// test below is what says so.
 ///
-/// It said so within the hour. F305 added `recoveryInterruption` and this fixture did not set it;
-/// the test named the field — *"these stored fields never reach disk: recoveryInterruption"* — while
-/// `theWireKeySetIsPinned`, whose fixture also did not set it, passed. That is the whole difference
-/// between deriving the list and restating it, demonstrated on a field added after both were
-/// written.
+/// It said so within the hour. F305 added `recoveryInterruption` and this file's fixture did not set
+/// it; the test named the field — *"these stored fields never reach disk: recoveryInterruption"* —
+/// while `theWireKeySetIsPinned`, whose fixture also did not set it, passed. That is the whole
+/// difference between deriving the list and restating it, demonstrated on a field added after both
+/// were written.
+///
+/// One builder, shared with F382's derived decode test (F777, from F776). This file kept a second,
+/// hand-kept copy while F552 was editing it, and only the shared one is checked complete at every
+/// nested level — this copy had already drifted: its summary had no owners or quotes and its health
+/// report none of F346's frame counts.
 private func fullyPopulatedRecord() -> MeetingRecord {
-    MeetingRecord(
-        id: UUID(),
-        title: "Quarterly review",
-        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
-        duration: 1234.5,
-        recordingPath: "Recordings/x/meeting.wav",
-        status: .completed,
-        transcriptText: "hello",
-        languageCode: "en",
-        confidence: 0.92,
-        segments: [TranscriptSegment(speaker: "Speaker 1", start: 0, end: 1, text: "hello")],
-        errorMessage: "an error",
-        summary: MeetingSummary(
-            summary: "s",
-            keyPoints: ["k"],
-            actionItems: [ActionItem(text: "a", done: false)]
-        ),
-        transcriptNormalized: true,
-        markers: [RecordingMarker(offset: 5, label: "here")],
-        pinned: true,
-        notes: "notes",
-        tags: ["tag"],
-        healthReport: RecordingHealthReport(
-            warnings: [.microphoneClipping],
-            worstStatus: .caution,
-            microphoneStaleSeconds: 0,
-            systemAudioStaleSeconds: 0,
-            systemAudioEverDetected: true
-        ),
-        alignmentWarning: "alignment",
-        recoveryWarning: "recovery",
-        recoverySource: RecoveredRecording.Source.rebuiltSourceTracks.rawValue,
-        staleTranscriptWarning: "stale",
-        recoveryInterruption: RecoveryInterruption.systemSleep.rawValue,
-        languageWarning: "language",
-        summaryLanguageWarning: "summary language",
-        repeatsRemoved: 15,
-        transcriptionEngine: .qwenBalanced,
-        requestedLanguage: WhisperLanguage.chinese.rawValue,
-        source: MediaSource(
-            kind: MediaSource.webKind,
-            pageURL: "https://example.com/a",
-            host: "example.com",
-            fetchedAt: Date(timeIntervalSince1970: 1_700_000_000)
-        ),
-        referenceSegments: [TranscriptSegment(speaker: nil, start: 0, end: 1, text: "hello")],
-        createdTimeZone: "Asia/Shanghai",
-        summaryTranscriptDigest: MeetingRecord.transcriptDigest("hello")
-    )
+    PersistedRootDerivedDecodeTests.fullyPopulatedMeeting()
 }
 
-@Test("Every stored field of a MeetingRecord reaches the wire format (F304)")
+@Test("Every stored field of a MeetingRecord, at every depth, reaches the wire format and comes back (F304, F777)")
 func everyStoredFieldIsEncoded() throws {
     // The guard that makes the class impossible. A field absent from `CodingKeys` is dropped on the
     // next save with no error anywhere — the index still parses, the app still runs, and the fact is
-    // simply gone.
+    // simply gone. It reflected `MeetingRecord`'s own top level only (F777, from F773), so a field
+    // dropped by a nested type's `CodingKeys` — an action item's, a health report's — passed; it now
+    // walks the record through F544's recursive helper, and checks the decode side too.
     let record = fullyPopulatedRecord()
-    let data = try JSONEncoder().encode(record)
-    let object = try #require(
-        try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    )
-    let encodedKeys = Set(object.keys)
 
     // `Mirror` reports stored properties only, which is the right set: a computed property has
     // nothing to persist. `transcriptionEngine` is computed over the raw value and must NOT appear.
@@ -100,19 +54,27 @@ func everyStoredFieldIsEncoded() throws {
     // The documented remaps: the property is `transcriptionEngineRawValue`, the key is
     // `transcriptionEngine` (F250); the property is `schemaMarker`, the key is `schemaVersion`
     // (F552). For these two the property name is not the key name.
-    let remapped = [
-        "transcriptionEngineRawValue": "transcriptionEngine",
-        "schemaMarker": "schemaVersion",
+    let coverage = try storedPropertiesMissingFromWire(
+        record,
+        remapped: ["transcriptionEngineRawValue": "transcriptionEngine", "schemaMarker": "schemaVersion"]
+    )
+    #expect(coverage.usedRemaps == ["transcriptionEngineRawValue", "schemaMarker"], "a remap names no stored property")
+    // Anti-vacuity: the walk reached the nested paths it exists for.
+    let mustCheck = [
+        "summary.actionItems[0].owner", "summary.actionItems[0].quote", "healthReport.microphoneWorstSecond.framesMeasured",
+        "healthReport.systemAudioFramesAtFullScale", "source.videoID", "segments[0].avgLogprob", "markers[0].label",
+        "referenceSegments[0].text", "schemaMarker", "transcriptionEngineRawValue",
     ]
-
-    var missing: [String] = []
-    for property in stored {
-        let key = remapped[property] ?? property
-        if !encodedKeys.contains(key) { missing.append(property) }
-    }
+    let unvisited = mustCheck.filter { !coverage.checked.contains($0) }
+    #expect(unvisited.isEmpty, "the walk never reached \(unvisited.joined(separator: ", "))")
     #expect(
-        missing.isEmpty,
-        "these stored fields never reach disk, so they are lost on the next save: \(missing.sorted().joined(separator: ", "))"
+        coverage.missing.isEmpty,
+        "these stored fields never reach disk, so they are lost on the next save: \(coverage.missing.sorted().joined(separator: ", "))"
+    )
+    let lost = try storedPropertiesLostOnReload(record)
+    #expect(
+        lost.isEmpty,
+        "these stored fields reach disk and do not come back on load, so the next save drops them: \(lost.sorted().joined(separator: ", "))"
     )
 }
 
