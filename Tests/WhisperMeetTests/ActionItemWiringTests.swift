@@ -152,3 +152,39 @@ func aTickedItemOutlivesItsDisappearance() async throws {
     let kept = try #require(items.first { $0.text == "Send the Kestrel report" })
     #expect(kept.done)
 }
+
+// F1056 — an action item has no identity of its own, so the card kept its typed owner and due by position and wrote
+// them back by position: re-summarize while an owner was being typed, and the owner landed on whatever item then sat
+// in that slot. The card's write now names the item it was typed for, by its text, and finds it where it now is.
+@MainActor
+@Test("An owner typed on a card lands on that card's item after a re-summarize moves it, and on nothing if it is gone (F1056)")
+func anOwnerTypedBeforeAReSummarizeLandsOnItsOwnItem() throws {
+    let model = try makeModel()
+    let id = UUID()
+    model.store.upsert(MeetingRecord(
+        id: id, title: "M", status: .completed, transcriptText: "hello",
+        summary: MeetingSummary(summary: "s", keyPoints: [], actionItems: ["Email vendor", "Call Bob"])
+    ))
+    // The card for item 0 ("Email vendor") holds a typed owner; a re-summarize then puts a new item first.
+    model.store.update(id: id) { $0.summary = MeetingSummary(summary: "s2", keyPoints: [], actionItems: ["Book room", "Email vendor"]) }
+
+    model.updateActionItem(at: 0, expecting: "Email vendor", for: id) { $0.owner = "Priya" }
+
+    let items = try #require(model.store.meeting(id: id)?.summary?.actionItems)
+    #expect(items[0].owner == nil, "the owner landed on the item now in the card's old slot")
+    #expect(items[1].owner == "Priya", "the owner never reached the item it was typed for")
+
+    // An item the re-summarize dropped takes nothing, and nothing else does either.
+    model.updateActionItem(at: 0, expecting: "Call Bob", for: id) { $0.due = "Fri" }
+    let after = try #require(model.store.meeting(id: id)?.summary?.actionItems)
+    #expect(after.allSatisfy { $0.due == nil }, "\(after)")
+}
+
+@Test("The action item card names its item on every write, and keys the card by the item too (F1056)")
+func theCardNamesItsItemOnEveryWrite() throws {
+    let view = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    #expect(view.components(separatedBy: "model.updateActionItem(at: index, expecting: text, for: meetingID)").count - 1 == 3,
+            "a card's done, owner or due write goes by position alone again")
+    #expect(!view.contains("model.updateActionItem(at: index, for: meetingID)"))
+    #expect(view.contains("ActionItemSlot(index:"), "the card is keyed by position alone again")
+}

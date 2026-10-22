@@ -3552,24 +3552,29 @@ private struct TranscriptDetailView: View {
                             .controlSize(.small)
                             .help("Copy the action items only, with owner and due date")
                     }
-                    ForEach(summary.actionItems.indices, id: \.self) { index in
+                    // Identified by position and text (F1056), so an item a re-summarize replaced gets a fresh card
+                    // rather than inheriting the old one's typing; and each write names the item it was made for.
+                    ForEach(summary.actionItems.indices.map { ActionItemSlot(index: $0, text: summary.actionItems[$0].text) },
+                            id: \.self) { slot in
+                        let index = slot.index, text = slot.text, item = summary.actionItems[slot.index]
                         ActionItemCard(
-                            item: summary.actionItems[index],
+                            item: item,
                             onToggleDone: { done in
-                                model.updateActionItem(at: index, for: meetingID) { $0.done = done }
+                                model.updateActionItem(at: index, expecting: text, for: meetingID) { $0.done = done }
                             },
                             onCommitOwner: { owner in
-                                model.updateActionItem(at: index, for: meetingID) { $0.owner = owner }
+                                model.updateActionItem(at: index, expecting: text, for: meetingID) { $0.owner = owner }
                             },
                             onCommitDue: { due in
-                                model.updateActionItem(at: index, for: meetingID) { $0.due = due }
+                                model.updateActionItem(at: index, expecting: text, for: meetingID) { $0.due = due }
                             },
                             onPlaySource: summary.actionItems[index].timestamp.map { time in
                                 { transcriptMode = .read; seekRequest = time }
                             },
                             current: {
                                 let items = store.meeting(id: meetingID)?.summary?.actionItems ?? []
-                                return items.indices.contains(index) ? items[index] : nil
+                                return items.indices.contains(index) && items[index].text == text
+                                    ? items[index] : items.first { $0.text == text }
                             }
                         )
                     }
@@ -4658,6 +4663,13 @@ private struct VocabularySuggestionSheet: View {
         }
         .frame(width: 440, height: 540)
     }
+}
+
+/// Where an action item's card sits and which item it is for (F1056): an item has no identity of its own, so its
+/// position and text are the card's, and a re-summarize that replaces the item gives it a fresh card.
+private struct ActionItemSlot: Hashable {
+    let index: Int
+    let text: String
 }
 
 /// One evidence-linked action item as a reviewable local card (F177): a done checkbox, the task text,

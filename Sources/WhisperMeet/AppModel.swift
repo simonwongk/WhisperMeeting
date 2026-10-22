@@ -7062,11 +7062,22 @@ final class AppModel: ObservableObject {
 
     /// Edits one action item on a meeting's summary — its done state, owner, or due — and persists the
     /// change to the index (F177). An out-of-range index or a meeting without a summary is a safe no-op.
-    func updateActionItem(at index: Int, for id: UUID, _ mutation: @escaping (inout ActionItem) -> Void) {
+    /// Changes one action item. With `text`, the item the change was made for is the one with that text (F1056): an
+    /// item has no identity of its own, and a re-summarize while a card held typing moved or replaced the items, so a
+    /// write by position landed on whatever item then sat in the card's slot. The item at `index` when its text still
+    /// matches, else the first item with that text, else none — an item the re-summarize dropped takes nothing.
+    func updateActionItem(at index: Int, expecting text: String? = nil, for id: UUID, _ mutation: @escaping (inout ActionItem) -> Void) {
         store.update(id: id) { record in
-            guard record.summary != nil,
-                  record.summary!.actionItems.indices.contains(index) else { return }
-            mutation(&record.summary!.actionItems[index])
+            guard let items = record.summary?.actionItems else { return }
+            let target: Int?
+            if let text {
+                target = items.indices.contains(index) && items[index].text == text
+                    ? index : items.firstIndex { $0.text == text }
+            } else {
+                target = items.indices.contains(index) ? index : nil
+            }
+            guard let target else { return }
+            mutation(&record.summary!.actionItems[target])
         }
     }
 
