@@ -1893,10 +1893,11 @@ final class DictationController: ObservableObject {
     /// to at most `limit` characters. A menu item is one line as wide as its text, and a reason can
     /// be far wider than a menu should be: a helper's failure carries up to 2,000 characters of its
     /// stderr after the first line (`WarmWhisperDictationEngine`), and the helper's download errors
-    /// can quote a URL. 200 keeps the dictation path's longest fixed failure sentence whole: the
-    /// download stall's, 171 characters at 180 s. The whole reason stays in the Dictation tab's
-    /// history.
-    nonisolated static func lastFailureMenuLine(reason: String, limit: Int = 200) -> String {
+    /// can quote a URL. 60, the user's choice of 2026-10-17 (F924): "show a short line in the menu;
+    /// the full reason stays in the Dictation history". It was 200, which kept the download stall's
+    /// 171-character sentence whole and made the menu 1,212 pt wide — and a line at that cap wider
+    /// than a 1,440-pt screen (measured with AppKit's menu font).
+    nonisolated static func lastFailureMenuLine(reason: String, limit: Int = 60) -> String {
         let firstLine = reason.split(whereSeparator: \.isNewline).first
             .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
         guard !firstLine.isEmpty else { return "Last dictation failed" }

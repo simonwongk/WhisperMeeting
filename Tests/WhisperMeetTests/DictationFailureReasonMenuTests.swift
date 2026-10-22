@@ -97,7 +97,7 @@ func aFailuresReasonOutlivesItsPill() async throws {
     // The pill goes after 1.6 s, and the status with it: back to idle, not kept at `.error`.
     try await rig.waitUntil("the failure's pill to go") { rig.pill.hides > 0 && rig.controller.status == .idle }
     #expect(rig.controller.lastFailureReason == interrupted, "the reason went with the pill")
-    #expect(rig.controller.lastFailureMenuText == "Last dictation failed: \(interrupted)")
+    #expect(rig.controller.lastFailureMenuText == DictationController.lastFailureMenuLine(reason: interrupted))
 }
 
 @MainActor
@@ -166,13 +166,15 @@ func theReasonFollowsTheLastDictation() async throws {
 
 @Test("The menu line is the reason's first line, cut at a word when a menu could not hold it (F687)")
 func theMenuLineIsTheReasonsFirstLine() {
-    #expect(DictationController.lastFailureMenuLine(reason: interrupted) == "Last dictation failed: \(interrupted)")
+    let short = "Microphone permission is off."
+    #expect(DictationController.lastFailureMenuLine(reason: short) == "Last dictation failed: \(short)")
 
-    // A helper's failure carries its stderr after the first line (`WarmWhisperDictationEngine`).
+    // A helper's failure carries its stderr after the first line (`WarmWhisperDictationEngine`); only the
+    // first line is ever shown, cut at a word when it is longer than the menu's 60 characters (F924).
     let withStderr = "Local transcription failed: Dictation helper stopped unexpectedly.\nTraceback (most recent call last):\n  File \"helper.py\", line 1"
     #expect(
         DictationController.lastFailureMenuLine(reason: withStderr)
-            == "Last dictation failed: Local transcription failed: Dictation helper stopped unexpectedly."
+            == "Last dictation failed: Local transcription failed: Dictation helper stopped…"
     )
 
     let long = String(repeating: "word ", count: 80)
@@ -207,4 +209,25 @@ func theMenuBarShowsTheLastFailure() throws {
     #expect(toggle.upperBound <= shown.lowerBound, "the reason is not under the Quick Dictation toggle")
     #expect(shown.upperBound <= text.lowerBound)
     #expect(text.upperBound <= settings.lowerBound, "the reason is not in the dictation section")
+}
+
+// F924 — the user's decision of 2026-10-17: a short line in the menu, the full reason in the Dictation history.
+// The longest known reason is the download stall's, the likeliest first-run failure: 171 characters, 194 with the
+// prefix, which made a menu 1,212 pt wide.
+@Test("The download stall's reason, the longest known, is a short menu line cut at a word (F924)")
+func theLongestKnownReasonIsAShortMenuLine() {
+    let stall = "The dictation model download made no progress for 180 seconds and was stopped. "
+        + "Check your connection and try again; a download continues from where it stopped when it can."
+    try? #require(stall.count == 171)
+    let line = DictationController.lastFailureMenuLine(reason: stall)
+    #expect(line == "Last dictation failed: The dictation model download made no progress for 180…", "\(line)")
+    #expect(line.count <= "Last dictation failed: ".count + 60, "\(line.count) characters")
+    // The device-change sentence a dictation is cut short by, shortened the same way and never mid-word.
+    let device = DictationController.lastFailureMenuLine(reason: interrupted)
+    #expect(device.count <= "Last dictation failed: ".count + 60, "\(device)")
+    if interrupted.count > 60 {
+        #expect(device.hasSuffix("…"), "\(device)")
+        let shownWords = device.dropFirst("Last dictation failed: ".count).dropLast().split(separator: " ")
+        #expect(interrupted.split(separator: " ").starts(with: shownWords), "cut mid-word: \(device)")
+    }
 }
