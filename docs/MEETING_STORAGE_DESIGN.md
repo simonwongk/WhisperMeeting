@@ -254,10 +254,18 @@ verified and the index saved.
      refused rather than measured as far as it goes. The fit cannot show a fault in the mixer's own read that a
      second read would not repeat — a stretch zero-filled, a track taken to end early — since the copy holds what
      that read held; so the kept read is held to a read of the recording of its own, each channel's level per
-     second within 10 % wherever the channel sounds (`RecordingMixPlan.firstReadDisagreement`, F1072). Two reads
-     of the shared-sound layouts agree within 0.03 %; a quarter of a second of steady sound lost moves a level
-     13 %, and two seconds of one track lost, which `channelNotRead`'s five-second quarter-level band passes, is
-     refused.
+     second within 10 % wherever the channel sounds (`RecordingMixPlan.firstReadDisagreement`, F1072), every
+     window both reads cover judged down to a quarter of a second, the short last one included (F1073) — shorter,
+     past the audio, it is an encoder's padding, which reads differently each time. Two reads of an
+     ffmpeg-made file drift apart about 0.4 frames a second, and compared at the same window edges a sound
+     starting near an edge moves between windows; so the second read is lined up with the kept one first, track
+     by track and window by window, at the lag where each track's own channels correlate best, as the copy is
+     followed (`RecordingMixer.readsCompared`, F1073). Lined up, two reads of the shared-sound layouts agree
+     within 0.02 %, and every whole second of a 30-minute ffmpeg-made two-track file within the band — under 1 %
+     but for its last whole second, 2.3 % in one run of three (compared at the same window edges, the same file was
+     refused in every run, five to twenty-nine minutes in); a fifth of a second of steady sound lost from a second moves a level 10 %, and losses of 0.3 s,
+     of a last 0.2 s, and of two seconds of one track, which `channelNotRead`'s five-second quarter-level band
+     passes, are refused.
      Until F998 the audit read the recording a second time. AVAssetReader does not read an ffmpeg-made file the same
      way twice — its reads drift along a file, each track on its own, about 0.4 frames a second without bound — so
      each track was aligned on its own and re-aligned against the copy less the other tracks' fitted contributions;

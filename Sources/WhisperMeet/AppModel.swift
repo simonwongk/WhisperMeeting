@@ -702,11 +702,12 @@ final class AppModel: ObservableObject {
     var auditLanesForShrink: @Sendable (_ lanes: URL, _ trackChannels: [Int], _ frames: Int, _ copy: URL) throws -> RecordingMixPlan.Audit = {
         try RecordingMixer.audit(lanes: $0, trackChannels: $1, frames: $2, against: $3)
     }
-    /// Each channel's level per second from a read of the recording of its own (F1072,
-    /// `RecordingMixer.channelWindowLevels(of:)`), which the mix's kept read must agree with
-    /// (`RecordingMixPlan.firstReadDisagreement`).
-    var readLevelsForShrink: @Sendable (_ original: URL) async throws -> RecordingMixPlan.ChannelLevels = {
-        try await RecordingMixer.channelWindowLevels(of: $0)
+    /// The mix's kept read and a read of the recording of its own, lined up, each channel's level per
+    /// second (F1072, F1073, `RecordingMixer.readsCompared(of:lanes:trackChannels:frames:)`), for
+    /// `RecordingMixPlan.firstReadDisagreement` to hold the one to the other.
+    var compareReadsForShrink: @Sendable (_ original: URL, _ lanes: URL, _ trackChannels: [Int], _ frames: Int) async throws
+        -> (kept: RecordingMixPlan.ChannelLevels, again: RecordingMixPlan.ChannelLevels) = {
+        try await RecordingMixer.readsCompared(of: $0, lanes: $1, trackChannels: $2, frames: $3)
     }
     /// Measures a mono copy against every channel of every track of the recording it was made from, for
     /// `RecordingMixPlan.firstFinding` to judge before Shrink deletes anything (review of F942, R2). Where

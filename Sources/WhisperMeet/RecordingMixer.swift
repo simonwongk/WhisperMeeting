@@ -300,66 +300,180 @@ enum RecordingMixer {
         }
     }
 
-    /// How long a mix of `input` runs, every track's end included: what `mixEveryChannel` would write, for
-    /// Shrink to size its scratch files by before it mixes (review of F998). The recording is only read.
-    static func mixedSeconds(of input: URL) async throws -> TimeInterval {
-        try await open(input).3
+    /// How long a mix of `input` runs, every track's end included, and how many channels it reads: what
+    /// `mixEveryChannel` would write and keep, for Shrink to size its scratch files by before it mixes (reviews
+    /// 1 and 2 of F998). The recording is only read.
+    static func mixedLength(of input: URL) async throws -> (seconds: TimeInterval, channels: Int) {
+        let (_, _, facts, end) = try await open(input)
+        return (end, facts.reduce(0) { $0 + $1.channels })
     }
 
-    /// Each channel's level per `RecordingMixPlan.auditWindowSeconds` window, from a read of `input` of its
-    /// own, the way the mixer reads it (F1072): what `RecordingMixPlan.firstReadDisagreement` holds the mix's
-    /// kept read to, so a fault in the mixer's read that this read does not repeat is seen. The recording is
-    /// only read.
-    static func channelWindowLevels(of input: URL) async throws -> RecordingMixPlan.ChannelLevels {
+    /// A read of a recording's channels, handed on stretch by stretch in `readInStep`'s shape; returns the
+    /// frames handed on.
+    typealias StretchRead = ((_ start: Int, _ count: Int, _ lanes: [[[Float]]]) throws -> Void) throws -> Int
+
+    /// The mix's kept read at `lanes` and a read of `input` of its own (F1072), each channel's level per
+    /// `RecordingMixPlan.auditWindowSeconds` window, the second read lined up with the kept one first (F1073),
+    /// for `RecordingMixPlan.firstReadDisagreement` to hold the one to the other: so a fault in the mixer's read
+    /// that a read of its own does not repeat is seen. The recording is only read.
+    static func readsCompared(of input: URL, lanes: URL, trackChannels: [Int], frames: Int) async throws
+        -> (kept: RecordingMixPlan.ChannelLevels, again: RecordingMixPlan.ChannelLevels) {
         let (asset, tracks, facts, end) = try await open(input)
-        return try windowLevels(channelCount: facts.reduce(0) { $0 + $1.channels }) { body in
-            try readInStep(asset: asset, tracks: tracks, channels: facts.map(\.channels), audioEnd: end, body: body)
+        guard facts.map(\.channels) == trackChannels else { throw Failure.unreadable("the recording's channels are not the mix's") }
+        return try readsCompared(lanes: lanes, trackChannels: trackChannels, frames: frames) { body in
+            try readInStep(asset: asset, tracks: tracks, channels: trackChannels, audioEnd: end, body: body)
         }
     }
 
-    /// The same, of the read `mixEveryChannel` kept at `lanes` (F1072).
-    static func channelWindowLevels(lanes: URL, trackChannels: [Int]) throws -> RecordingMixPlan.ChannelLevels {
-        try windowLevels(channelCount: trackChannels.reduce(0, +)) { body in
-            try replay(lanes: lanes, trackChannels: trackChannels, body: body)
-        }
-    }
-
-    /// Sums each channel's squares per window over what `read` hands on, stretch by stretch.
-    private static func windowLevels(
-        channelCount: Int,
-        read: ((_ start: Int, _ count: Int, _ lanes: [[[Float]]]) throws -> Void) throws -> Int
-    ) throws -> RecordingMixPlan.ChannelLevels {
+    /// `readsCompared(of:lanes:trackChannels:frames:)` against any second read: a test hands one it shifted or
+    /// made drift.
+    ///
+    /// Two reads of an ffmpeg-made file drift apart about 0.4 frames a second without bound (F980's log), so
+    /// compared at the same window edges a sound starting near an edge moved between windows and a good
+    /// recording would be refused (review 2 of F998, finding 1). So, window by window, each track's second
+    /// read is lined up with its kept read first: at the lag within `RecordingMixPlan.alignmentFrames` of
+    /// where the track stood the window before (wider, up to `widestAlignment`, after windows it was not found
+    /// in, and never past `alignmentReach`) where the two reads of its channels correlate best, taken when
+    /// they correlate at `RecordingMixPlan.readAlignmentFloor` or more. A track's channels are compared only
+    /// with themselves, so another track sharing its sound cannot pull its lag aside. Each channel's level is
+    /// then measured over the frames both reads hold at that lag, the short last window included (a window's
+    /// `frames` are the fewest of any track's). A level that is not a number stays one.
+    static func readsCompared(lanes: URL, trackChannels: [Int], frames total: Int, again read: StretchRead) throws
+        -> (kept: RecordingMixPlan.ChannelLevels, again: RecordingMixPlan.ChannelLevels) {
+        let channelCount = trackChannels.reduce(0, +)
+        guard channelCount > 0, total > 0 else { throw Failure.unreadable("the mix kept no read to compare") }
+        let handle: FileHandle
+        do { handle = try FileHandle(forReadingFrom: lanes) } catch { throw Failure.unreadable(ErrorPresentation.readable(error)) }
+        defer { try? handle.close() }
+        let frameBytes = channelCount * MemoryLayout<Float>.size
         let perWindow = Swift.max(1, Int(saturating: RecordingMixPlan.auditWindowSeconds * Double(sampleRate)))
-        var squares = [[Double]](repeating: [], count: channelCount)
-        var frames: [Double] = []
-        _ = try read { start, count, stretch in
-            var offset = 0
-            while offset < count {
-                let window = (start + offset) / perWindow
-                let length = Swift.min(count - offset, (window + 1) * perWindow - (start + offset))
-                while frames.count <= window {
-                    frames.append(0)
-                    for channel in squares.indices { squares[channel].append(0) }
-                }
-                frames[window] += Double(length)
-                var channel = 0
-                for track in stretch {
-                    for samples in track where channel < channelCount {
-                        var sum: Float = 0
-                        samples.withUnsafeBufferPointer { pointer in
-                            vDSP_svesq(pointer.baseAddress! + offset, 1, &sum, vDSP_Length(length))
-                        }
-                        squares[channel][window] += Double(sum)
-                        channel += 1
+        let step = RecordingMixPlan.alignmentFrames, widest = RecordingMixPlan.widestAlignment, reach = RecordingMixPlan.alignmentReach
+        let lookaround = reach + widest
+        let windowCount = (total + perWindow - 1) / perWindow
+        var trackOf: [Int] = []
+        for (track, count) in trackChannels.enumerated() { trackOf += repeatElement(track, count: count) }
+        var place = [Int](repeating: 0, count: trackChannels.count)
+        var unfound = [Int](repeating: 0, count: trackChannels.count)
+        // The second read, each channel from timeline frame `bufferStart` on, kept `lookaround` frames behind
+        // the next window.
+        var buffer = [[Float]](repeating: [], count: channelCount)
+        var bufferStart = 0
+        // How far the second read reached, once it has ended: past it, the second read holds nothing to compare.
+        var againEnd = Int.max
+        var nextWindow = 0
+        var keptLevels = [[Double]](repeating: [], count: channelCount)
+        var againLevels = keptLevels
+        var measured: [Double] = []
+
+        /// The kept read's frames `[from, from + count)`, channel by channel.
+        func kept(from: Int, count: Int) throws -> [[Float]] {
+            try handle.seek(toOffset: UInt64(from) * UInt64(frameBytes))
+            let data = try handle.read(upToCount: count * frameBytes) ?? Data()
+            guard data.count == count * frameBytes else { throw Failure.unreadable("the mix's kept read ends early") }
+            let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+            return (0..<channelCount).map { channel in (0..<count).map { samples[$0 * channelCount + channel] } }
+        }
+        /// The second read's `channel` over `[from, from + count)` of the timeline, silence where it has none.
+        func again(_ channel: Int, from: Int, count: Int) -> [Float] {
+            var out = [Float](repeating: 0, count: count)
+            let lane = buffer[channel]
+            let low = Swift.max(0, bufferStart - from), high = Swift.min(count, bufferStart + lane.count - from)
+            if low < high { out.replaceSubrange(low..<high, with: lane[(from + low - bufferStart)..<(from + high - bufferStart)]) }
+            return out
+        }
+        func level(_ samples: [Float]) -> Double {
+            guard !samples.isEmpty else { return 0 }
+            var squares: Float = 0
+            vDSP_svesq(samples, 1, &squares, vDSP_Length(samples.count))
+            return squares.isFinite ? (Double(Swift.max(0, squares)) / Double(samples.count)).squareRoot() : .nan
+        }
+        func closeWindow(_ window: Int) throws {
+            let from = window * perWindow, n = Swift.min(perWindow, total - from)
+            guard n > 0 else { return }
+            let keptChannels = try kept(from: from, count: n)
+            var overlap = n
+            for track in trackChannels.indices {
+                let channels = (0..<channelCount).filter { trackOf[$0] == track }
+                let s = Swift.min(widest, step * (1 + unfound[track])), lags = 2 * s + 1
+                var correlation = [Double](repeating: 0, count: lags)
+                var againEnergy = [Double](repeating: 0, count: lags)
+                var keptEnergy = 0.0
+                for channel in channels {
+                    let padded = again(channel, from: from + place[track] - s, count: n + 2 * s)
+                    var out = [Float](repeating: 0, count: lags)
+                    vDSP_conv(padded, 1, keptChannels[channel], 1, &out, 1, vDSP_Length(lags), vDSP_Length(n))
+                    var squares: Float = 0
+                    vDSP_svesq(keptChannels[channel], 1, &squares, vDSP_Length(n))
+                    keptEnergy += Double(squares)
+                    var running = 0.0
+                    var prefix = [Double](repeating: 0, count: padded.count + 1)
+                    for (k, value) in padded.enumerated() { running += Double(value) * Double(value); prefix[k + 1] = running }
+                    for lag in 0..<lags {
+                        correlation[lag] += Double(out[lag])
+                        againEnergy[lag] += prefix[lag + n] - prefix[lag]
                     }
                 }
-                offset += length
+                // The best lag; on a tie, the nearer to where the track stood.
+                var best: (lag: Int, r: Double)?
+                if keptEnergy > 0 && keptEnergy.isFinite {
+                    for lag in 0..<lags where againEnergy[lag] > 0 {
+                        let r = correlation[lag] / (keptEnergy * againEnergy[lag]).squareRoot()
+                        guard r.isFinite else { continue }
+                        if let current = best, r < current.r || (r == current.r && abs(lag - s) >= abs(current.lag - s)) { continue }
+                        best = (lag, r)
+                    }
+                }
+                if let best, best.r >= RecordingMixPlan.readAlignmentFloor, abs(place[track] + best.lag - s) <= reach {
+                    place[track] += best.lag - s
+                    unfound[track] = 0
+                } else {
+                    unfound[track] += 1
+                }
+                // Over the frames both reads hold at that lag: a second read that drifted holds the last frames
+                // of the kept read's timeline past its own end (a 30-minute ffmpeg file, 45 ms), and the first
+                // ones before its start, and comparing those to silence refused a good recording.
+                let low = Swift.min(n, Swift.max(0, -(from + place[track])))
+                let high = Swift.max(low, againEnd == .max ? n : Swift.min(n, againEnd - (from + place[track])))
+                for channel in channels {
+                    keptLevels[channel].append(level(Array(keptChannels[channel][low..<high])))
+                    againLevels[channel].append(level(again(channel, from: from + place[track] + low, count: high - low)))
+                }
+                overlap = Swift.min(overlap, high - low)
+            }
+            measured.append(Double(overlap))
+            let keepFrom = from + perWindow - lookaround
+            if keepFrom > bufferStart {
+                for channel in buffer.indices { buffer[channel].removeFirst(Swift.min(buffer[channel].count, keepFrom - bufferStart)) }
+                bufferStart = keepFrom
             }
         }
-        let levels = squares.map { windows in
-            zip(windows, frames).map { $1 > 0 ? (Swift.max(0, $0) / $1).squareRoot() : 0 }
+
+        _ = try read { start, count, stretch in
+            // Stretches arrive in order and without gaps, as `readInStep` and `replay` hand them on.
+            var channel = 0
+            for track in stretch {
+                for samples in track where channel < channelCount {
+                    buffer[channel].append(contentsOf: samples.prefix(count))
+                    channel += 1
+                }
+            }
+            while nextWindow < windowCount, start + count >= (nextWindow + 1) * perWindow + lookaround {
+                try closeWindow(nextWindow)
+                nextWindow += 1
+            }
         }
-        return RecordingMixPlan.ChannelLevels(levels: levels, frames: frames, sampleRate: Double(sampleRate))
+        againEnd = bufferStart + (buffer.first?.count ?? 0)
+        // Frames past the second read's end are not compared, so a second read that stopped short would leave
+        // the kept read's end unjudged: further short than a drift can explain, it is not a read to hold the
+        // kept one to.
+        guard againEnd >= total - reach else { throw Failure.unreadable("the second read of the recording ended early") }
+        while nextWindow < windowCount {
+            try closeWindow(nextWindow)
+            nextWindow += 1
+        }
+        let rate = Double(sampleRate)
+        return (RecordingMixPlan.ChannelLevels(levels: keptLevels, frames: measured, sampleRate: rate),
+                RecordingMixPlan.ChannelLevels(levels: againLevels, frames: measured, sampleRate: rate))
     }
 
     /// Hands `body` the channels `mixEveryChannel` kept at `lanes`, in the shape `readInStep` hands them, at

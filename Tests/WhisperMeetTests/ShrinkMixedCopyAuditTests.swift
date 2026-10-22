@@ -689,8 +689,62 @@ func shrinkAuditRefusesAMixWhoseOwnReadLostAStretch() async throws {
 
     let alert = f.model.alertMessage ?? "nil"
     #expect(audits.count == 1, "judged against the kept read")
-    #expect(alert.contains("nothing was removed") && alert.lowercased().contains("channel 2") && alert.contains("at about 0:02"),
-            "\(alert)")
+    #expect(alert.contains("nothing was removed") && alert.lowercased().contains("channel 2 of the recording read differently a second time")
+            && alert.contains("at about 0:02"), "\(alert)")
     #expect(try Data(contentsOf: f.recording) == original)
     #expect(!f.exists("recording.m4a"))
+}
+
+@Test("A mix whose own read lost a track's last 0.2 s, in a last window under half a second, is refused (F1073)")
+@MainActor
+func shrinkAuditRefusesALossInAShortLastWindow() async throws {
+    // Review 2 of F998, finding 2: F1072 skipped a last window under half a second. Track 2 sounds only from
+    // 10.0 s to 10.4 s of a 10.4 s recording, and the mixer's read of it ends at 10.2 s: the fit agrees with
+    // the copy made from that read, `channelNotRead` sees 0.71 of the level, and the original was moved to the
+    // Trash. The second read lined up with the kept one judges that window too.
+    let f = try await MixFixture(recordingExtension: "mov", duration: 10.4, mixing: true) { url in
+        try await writeFixtureTracks(to: url, [FixtureTrack(channels: [(300, 0.2)], seconds: 10.4, audibleTo: 9),
+                                               FixtureTrack(channels: [(800, 0.3)], seconds: 0.4, startSeconds: 10)])
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    let standIn = f.root.appendingPathComponent("ended-early.mov")
+    try await writeFixtureTracks(to: standIn, [FixtureTrack(channels: [(300, 0.2)], seconds: 10.4, audibleTo: 9),
+                                               FixtureTrack(channels: [(800, 0.3)], seconds: 0.4, startSeconds: 10, audibleTo: 0.2)])
+    f.model.mixForShrink = { _, output in
+        try await RecordingMixer.mixEveryChannel(of: standIn, to: output, lanes: RecordingMixer.lanes(beside: output))
+    }
+    let original = try Data(contentsOf: f.recording)
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("nothing was removed") && alert.lowercased().contains("channel 2 of the recording read differently a second time")
+            && alert.contains("at about 0:10"), "\(alert)")
+    #expect(try Data(contentsOf: f.recording) == original)
+}
+
+@Test("A mix whose own read lost 0.3 s of one track is refused: the band's edge, end to end (F1073)")
+@MainActor
+func shrinkAuditRefusesAThreeTenthsLossInTheMixersRead() async throws {
+    // A fifth of a second of steady sound lost from a second is the band's edge (0.9 of the level); 0.3 s is past it.
+    let a = fixtureVoice(voiceA, seconds: 8), b = fixtureVoice(voiceB, seconds: 8)
+    let f = try await MixFixture(recordingExtension: "mov", duration: 8, mixing: true) { url in
+        try await writeFixtureRawTracks(to: url, [[a], [b]])
+    }
+    defer { try? FileManager.default.removeItem(at: f.root) }
+    var lost = b
+    for n in 192_000..<206_400 { lost[n] = 0 }
+    let standIn = f.root.appendingPathComponent("lost-three-tenths.mov")
+    try await writeFixtureRawTracks(to: standIn, [[a], [lost]])
+    f.model.mixForShrink = { _, output in
+        try await RecordingMixer.mixEveryChannel(of: standIn, to: output, lanes: RecordingMixer.lanes(beside: output))
+    }
+    let original = try Data(contentsOf: f.recording)
+
+    await f.shrink()
+
+    let alert = f.model.alertMessage ?? "nil"
+    #expect(alert.contains("nothing was removed") && alert.lowercased().contains("channel 2 of the recording read differently a second time")
+            && alert.contains("at about 0:04"), "\(alert)")
+    #expect(try Data(contentsOf: f.recording) == original)
 }

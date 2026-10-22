@@ -266,10 +266,11 @@ func keptReadAuditRefusesAReadThatIsNotTheMixs() async throws {
     }
 }
 
-// F1072 — the premise of `RecordingMixPlan.readAgreementBand`: two reads of a file, the mixer's kept one and
-// one of its own, agree on every channel's level per second far inside 10 %, though AVAssetReader lines them
-// up a frame or two apart. Measured on the layouts whose reads F998 found out of step.
-@Test("Two reads of a recording agree on each channel's level per second within 2 %, far inside the 10 % band (F1072)")
+// F1072, F1073 — the premise of `RecordingMixPlan.readAgreementBand`: two reads of a file, the mixer's kept one
+// and one of its own lined up with it, agree on every channel's level per second far inside 10 %, though
+// AVAssetReader lines them up a frame or two apart. Measured on the layouts whose reads F998 found out of step;
+// these AVAssetWriter fixtures do not drift (`readsComparedFollowsADriftingSecondRead` does).
+@Test("Two reads of a recording, lined up, agree on each channel's level per second far inside the band (F1072, F1073)")
 func twoReadsAgreeOnEveryChannelsLevel() async throws {
     let dir = try scratch("F1072-reads"); defer { try? FileManager.default.removeItem(at: dir) }
     // Plain loops with typed parts: one expression summing these inside a closure was more than the runner's
@@ -301,14 +302,185 @@ func twoReadsAgreeOnEveryChannelsLevel() async throws {
         let output = dir.appendingPathComponent("\(UUID().uuidString).wav")
         let lanes = RecordingMixer.lanes(beside: output)
         let result = try await RecordingMixer.mixEveryChannel(of: input, to: output, lanes: lanes)
-        let kept = try RecordingMixer.channelWindowLevels(lanes: lanes, trackChannels: result.trackChannels)
-        let again = try await RecordingMixer.channelWindowLevels(of: input)
-        #expect(kept.levels.count == again.levels.count, "\(label)")
+        let reads = try await RecordingMixer.readsCompared(of: input, lanes: lanes, trackChannels: result.trackChannels, frames: result.frames)
+        #expect(reads.kept.levels.count == reads.again.levels.count && reads.kept.frames == reads.again.frames, "\(label)")
         var worst = 0.0
-        for (k, g) in zip(kept.levels, again.levels) {
+        for (k, g) in zip(reads.kept.levels, reads.again.levels) {
             for (kv, gv) in zip(k, g) where gv > 0.005 { worst = max(worst, abs(kv / gv - 1)) }
         }
         #expect(worst < 0.02, "\(label): the reads' levels differ by up to \(worst)")
-        #expect(RecordingMixPlan.firstReadDisagreement(kept: kept, again: again) == nil, "\(label)")
+        #expect(RecordingMixPlan.firstReadDisagreement(kept: reads.kept, again: reads.again) == nil, "\(label)")
     }
+}
+
+// F1073 — review 2 of F998, finding 1: two reads of an ffmpeg-made file drift apart about 0.4 frames a second
+// without bound, and F1072 compared their levels at the same window edges, where a sound starting near an edge
+// moves between windows. In memory, so the drift is exact: a minute of two tracks, the second read of track 1
+// drifting 4 frames a second and of track 2 10 frames a second (faster than any file measured, so a minute
+// shows what an hour would), track 2 a burst every other second starting 40 ms before a window's edge — so
+// that window holds the onset alone, and what drifts out of it is not made up by what drifts in.
+@Test("A second read that drifts from the kept one is lined up before levels are compared; a loss is still refused (F1073)")
+func readsComparedFollowsADriftingSecondRead() throws {
+    let dir = try scratch("F1073-drift"); defer { try? FileManager.default.removeItem(at: dir) }
+    let rate = 16_000, total = 60 * rate
+    var seed: UInt32 = 12_345
+    func noise() -> Float { seed = seed &* 1_664_525 &+ 1_013_904_223; return Float(Int32(bitPattern: seed)) / Float(Int32.max) }
+    var voice = [Float](repeating: 0, count: total)  // typed loops, for the runner's Swift 6.1 (see above)
+    for n in voice.indices {
+        let t: Double = Double(n) / Double(rate)
+        var sum: Double = 0
+        for k in 0..<8 {
+            let tone: Double = sin(2 * Double.pi * 311 * Double(k + 1) * 1.37 * t)
+            let swell: Double = 0.55 + 0.45 * sin(2 * Double.pi * (2 + Double(k)) * t)
+            sum += 0.03 * tone * swell
+        }
+        voice[n] = Float(sum)
+    }
+    var bursts = [Float](repeating: 0, count: total)
+    for n in bursts.indices {
+        let into: Double = Double(n % (2 * rate)) / Double(rate)
+        if into >= 0.96 && into < 1.30 { bursts[n] = 0.2 * noise() }
+    }
+    func drifting(_ samples: [Float], framesPerSecond: Int) -> [Float] {
+        var out = [Float](repeating: 0, count: samples.count)
+        for n in samples.indices where n - n * framesPerSecond / rate >= 0 { out[n] = samples[n - n * framesPerSecond / rate] }
+        return out
+    }
+    let again = [drifting(voice, framesPerSecond: 4), drifting(bursts, framesPerSecond: 10)]
+    func keptFile(_ tracks: [[Float]]) throws -> URL {
+        var interleaved = [Float](repeating: 0, count: total * tracks.count)
+        for (channel, samples) in tracks.enumerated() { for n in 0..<total { interleaved[n * tracks.count + channel] = samples[n] } }
+        let url = dir.appendingPathComponent("\(UUID().uuidString).lanes")
+        try interleaved.withUnsafeBytes { Data($0) }.write(to: url)
+        return url
+    }
+    let readAgain: RecordingMixer.StretchRead = { body in
+        var start = 0
+        while start < total {
+            let count = min(4_096, total - start)
+            try body(start, count, again.map { [Array($0[start..<(start + count)])] })
+            start += count
+        }
+        return total
+    }
+    // F1072's comparison, the windows' levels at the same edges: the drift reads as a disagreement.
+    func unaligned(_ tracks: [[Float]]) -> RecordingMixPlan.ChannelLevels {
+        let windows = (total + rate - 1) / rate
+        var levels: [[Double]] = []
+        for samples in tracks {
+            var row: [Double] = []
+            for w in 0..<windows {
+                var squares: Double = 0
+                for n in (w * rate)..<min(total, (w + 1) * rate) { squares += Double(samples[n]) * Double(samples[n]) }
+                row.append((squares / Double(min(total, (w + 1) * rate) - w * rate)).squareRoot())
+            }
+            levels.append(row)
+        }
+        return RecordingMixPlan.ChannelLevels(levels: levels, frames: [Double](repeating: Double(rate), count: windows), sampleRate: Double(rate))
+    }
+    let atTheSameEdges = RecordingMixPlan.firstReadDisagreement(kept: unaligned([voice, bursts]), again: unaligned(again))
+    #expect(atTheSameEdges != nil, "the drift is large enough to show the problem")
+
+    let lined = try RecordingMixer.readsCompared(lanes: try keptFile([voice, bursts]), trackChannels: [1, 1], frames: total, again: readAgain)
+    #expect(lined.kept.frames.count == 60)
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: lined.kept, again: lined.again) == nil, "lined up, the two reads agree")
+    var worst = 0.0
+    for (k, g) in zip(lined.kept.levels, lined.again.levels) { for (kv, gv) in zip(k, g) where gv > 0.005 { worst = max(worst, abs(kv / gv - 1)) } }
+    // One lag serves a window, and at 10 frames a second the lag moves that much inside one: measured 1.4 %
+    // (real reads drift 0.4 frames a second, 25 times less), well inside the band's 10 %.
+    #expect(worst < 0.05, "lined up, levels differ by up to \(worst)")
+
+    // The kept read lost the 300 ms of the burst at 31.0–31.3 s: refused in window 31, on channel 2.
+    var lost = bursts
+    for n in (31 * rate)..<(31 * rate + 4_800) { lost[n] = 0 }
+    let losing = try RecordingMixer.readsCompared(lanes: try keptFile([voice, lost]), trackChannels: [1, 1], frames: total, again: readAgain)
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: losing.kept, again: losing.again) == .readsDisagree(window: 31, channel: 1))
+
+    // A second read that stopped half a second short, more than a drift explains, is not one to hold the kept
+    // read to: past its end nothing would be compared.
+    let shortRead: RecordingMixer.StretchRead = { body in
+        let end = total - 8_000
+        var start = 0
+        while start < end {
+            let count = min(4_096, end - start)
+            try body(start, count, again.map { [Array($0[start..<(start + count)])] })
+            start += count
+        }
+        return end
+    }
+    #expect(throws: RecordingMixer.Failure.self) {
+        _ = try RecordingMixer.readsCompared(lanes: try keptFile([voice, bursts]), trackChannels: [1, 1], frames: total, again: shortRead)
+    }
+}
+
+// F1073 — review 2 of F998 asked for this before mixing Shrink is switched on: a long ffmpeg-made multi-track
+// file, whose reads drift apart (F980's log), read twice through the mixer. Opt in (it needs ffmpeg, which
+// the CI runner does not have, and takes minutes): F1073_FFMPEG_DRIFT=1, and optionally F1073_MINUTES.
+// Two tracks of gated pink noise whose onsets fall at every phase of the one-second windows (periods 1.7 s
+// and 2.3 s), encoded by ffmpeg to AAC in one .mov.
+@Test("A long ffmpeg-made two-track file: its two reads, lined up, agree on every level; at the same window edges they need not (F1073)",
+      .enabled(if: ProcessInfo.processInfo.environment["F1073_FFMPEG_DRIFT"] == "1"))
+func longFFmpegFileReadsAgreeLinedUp() async throws {
+    let dir = try scratch("F1073-ffmpeg"); defer { try? FileManager.default.removeItem(at: dir) }
+    let minutes = Int(ProcessInfo.processInfo.environment["F1073_MINUTES"] ?? "") ?? 30
+    let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"].first { FileManager.default.isExecutableFile(atPath: $0) }
+    let tool = try #require(ffmpeg, "ffmpeg is not installed")
+    let input = dir.appendingPathComponent("two-track.mov")
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: tool)
+    process.arguments = ["-v", "error", "-y",
+                         "-f", "lavfi", "-i", "anoisesrc=color=pink:sample_rate=48000:amplitude=0.3:seed=7:duration=\(minutes * 60)",
+                         "-f", "lavfi", "-i", "anoisesrc=color=pink:sample_rate=48000:amplitude=0.2:seed=11:duration=\(minutes * 60)",
+                         "-filter_complex", "[0]volume='if(gt(mod(t,1.7),0.9),1,0)':eval=frame[a];[1]volume='if(gt(mod(t,2.3),1.1),1,0)':eval=frame[b]",
+                         "-map", "[a]", "-map", "[b]", "-c:a", "aac", "-b:a", "128k", input.path]
+    try process.run()
+    process.waitUntilExit()
+    try #require(process.terminationStatus == 0, "ffmpeg failed")
+
+    // Two reads, each the mixer's own, each kept beside its mix.
+    var kept: [(lanes: URL, result: RecordingMixer.Result)] = []
+    for _ in 0..<2 {
+        let output = dir.appendingPathComponent("\(UUID().uuidString).wav")
+        let lanes = RecordingMixer.lanes(beside: output)
+        kept.append((lanes, try await RecordingMixer.mixEveryChannel(of: input, to: output, lanes: lanes)))
+    }
+    let first = kept[0], second = kept[1]
+    #expect(first.result.trackChannels == second.result.trackChannels)
+    let frames = min(first.result.frames, second.result.frames)
+    let secondRead: RecordingMixer.StretchRead = { body in
+        try RecordingMixer.replay(lanes: second.lanes, trackChannels: second.result.trackChannels, body: body)
+    }
+    let lined = try RecordingMixer.readsCompared(lanes: first.lanes, trackChannels: first.result.trackChannels, frames: frames, again: secondRead)
+    var linedWorst = 0.0
+    var linedOff: [String] = []
+    for (c, (k, g)) in zip(lined.kept.levels, lined.again.levels).enumerated() {
+        for (w, (kv, gv)) in zip(k, g).enumerated() where gv > 0.01 {
+            linedWorst = max(linedWorst, abs(kv / gv - 1))
+            if abs(kv / gv - 1) > 0.01 { linedOff.append("ch\(c) w\(w) \(kv / gv) over \(lined.kept.frames[w]) frames") }
+        }
+    }
+    print("F1073 ffmpeg windows lined up more than 1 % apart: \(linedOff.count) — \(linedOff.prefix(8))")
+    // At the same window edges, as F1072 compared them: each read's own levels, unshifted.
+    func unshifted(_ read: (lanes: URL, result: RecordingMixer.Result)) throws -> RecordingMixPlan.ChannelLevels {
+        let channels = read.result.trackChannels.reduce(0, +)
+        var squares = [[Double]](repeating: [], count: channels)
+        var counts: [Double] = []
+        _ = try RecordingMixer.replay(lanes: read.lanes, trackChannels: read.result.trackChannels) { start, count, stretch in
+            let flat = stretch.flatMap { $0 }
+            for k in 0..<count where start + k < frames {
+                let window = (start + k) / 16_000
+                while counts.count <= window { counts.append(0); for c in 0..<channels { squares[c].append(0) } }
+                counts[window] += 1
+                for c in 0..<channels { squares[c][window] += Double(flat[c][k]) * Double(flat[c][k]) }
+            }
+        }
+        var levels: [[Double]] = []
+        for row in squares { levels.append(zip(row, counts).map { ($0 / $1).squareRoot() }) }
+        return RecordingMixPlan.ChannelLevels(levels: levels, frames: counts, sampleRate: 16_000)
+    }
+    let a = try unshifted(first), b = try unshifted(second)
+    var edgeWorst = 0.0
+    for (k, g) in zip(a.levels, b.levels) { for (kv, gv) in zip(k, g) where gv > 0.01 { edgeWorst = max(edgeWorst, abs(kv / gv - 1)) } }
+    print("F1073 ffmpeg \(minutes) min: lined up worst \(linedWorst), finding \(String(describing: RecordingMixPlan.firstReadDisagreement(kept: lined.kept, again: lined.again))); same edges worst \(edgeWorst), finding \(String(describing: RecordingMixPlan.firstReadDisagreement(kept: a, again: b)))")
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: lined.kept, again: lined.again) == nil)
 }

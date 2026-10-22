@@ -493,7 +493,8 @@ func readDisagreementJudgesEachChannelsLevel() {
     // Within the band: a frame or two of offset moves a level well under 1 %.
     #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.199, 0.2, 0.201], [0.1, 0.1, 0.0995, 0.1]]), again: again) == nil)
     // A quarter of a second of steady sound lost from window 2 of channel 2: 0.87 of its level.
-    #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.2, 0.2, 0.2], [0.1, 0.1, 0.1 * 0.75.squareRoot(), 0.1]]), again: again)
+    let quarterLost: Double = 0.1 * 0.75.squareRoot()
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.2, 0.2, 0.2], [0.1, 0.1, quarterLost, 0.1]]), again: again)
             == .readsDisagree(window: 2, channel: 1))
     // More in the kept read than in the recording is a disagreement too.
     #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.25, 0.2, 0.2], [0.1, 0.1, 0.1, 0.1]]), again: again)
@@ -514,4 +515,12 @@ func readDisagreementJudgesEachChannelsLevel() {
     #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, .nan, 0.2, 0.2], [0.1, 0.1, 0.1, 0.1]]), again: again)
             == .notANumber(window: 1, channel: 0))
     #expect(RecordingMixPlan.readAgreementBand.lowerBound == 0.9)
+    // F1073: a last window of 0.4 s both reads hold is judged (F1072 skipped one under half a second); one of
+    // 0.2 s, an encoder's padding and little else, is not.
+    let shortLast = levels([[0.2, 0.2], [0.1, 0.1]], frames: [16_000, 6_400])
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.2], [0.1, 0.05]], frames: [16_000, 6_400]), again: shortLast)
+            == .readsDisagree(window: 1, channel: 1))
+    let padding = levels([[0.2, 0.2], [0.1, 0.1]], frames: [16_000, 3_200])
+    #expect(RecordingMixPlan.firstReadDisagreement(kept: levels([[0.2, 0.2], [0.1, 0.05]], frames: [16_000, 3_200]), again: padding) == nil)
+    #expect(RecordingMixPlan.shortestReadWindow == 0.25 && RecordingMixPlan.readAlignmentFloor == 0.5)
 }
