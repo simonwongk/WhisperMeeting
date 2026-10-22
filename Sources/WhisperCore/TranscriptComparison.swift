@@ -203,9 +203,31 @@ public enum TranscriptComparison {
         return result
     }
 
-    /// The words of a `normalize`d text. A run of Chinese has no spaces, so it is one word here.
+    /// The words of a `normalize`d text, for F868's edge check: split at spaces, and each Chinese
+    /// character a word of its own (F1022). A run of Chinese has no spaces, so it used to be one word,
+    /// and a short sentence the other engine joined across lines ("好的。") was caught only when the
+    /// whole run matched — never, in the seeded Chinese meetings, where it stopped none of the 42 wrong
+    /// offers timing makes. By character it stops most of them (see `readingCrossesALine`).
     static func words(_ normalized: String) -> [Substring] {
-        normalized.split(separator: " ")
+        normalized.split(separator: " ").flatMap { word -> [Substring] in
+            guard word.unicodeScalars.contains(where: ActionItemEvidence.isCJKIdeograph) else { return [word] }
+            // Ideographs one by one; a non-Chinese stretch inside the run stays together.
+            var pieces: [Substring] = []
+            var latinStart: Substring.Index?
+            var index = word.startIndex
+            while index < word.endIndex {
+                let next = word.index(after: index)
+                if word[index].unicodeScalars.allSatisfy(ActionItemEvidence.isCJKIdeograph) {
+                    if let start = latinStart { pieces.append(word[start..<index]); latinStart = nil }
+                    pieces.append(word[index..<next])
+                } else if latinStart == nil {
+                    latinStart = index
+                }
+                index = next
+            }
+            if let start = latinStart { pieces.append(word[start...]) }
+            return pieces
+        }
     }
 
     /// The most words F868's edge check matches at a line's edge: longer than any short sentence it
@@ -242,9 +264,9 @@ public enum TranscriptComparison {
     /// happens to start with the same word.
     ///
     /// What it cannot see: a sentence the other engine heard differently ("v17" for "w17") matches
-    /// no one's words, and a Chinese run is one word here (`words`), so a joined Chinese sentence is
-    /// caught only when the whole run matches. Withholding is the safe direction: the row still shows
-    /// the reading.
+    /// no one's words. Chinese is compared by character (`words`, F1022), so a joined Chinese sentence
+    /// is caught as an English one is. Withholding is the safe direction: the row still shows the
+    /// reading.
     static func readingCrossesALine(
         line: Int, pieces: [Int], reading: [Substring], primary: [TranscriptSegment], lineWords: [[Substring]],
         secondary: [TranscriptSegment], segmentWords: [[Substring]],

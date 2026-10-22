@@ -370,8 +370,8 @@ private func wordCost(_ speech: Speech, sameSplit: Bool, shortest: Double, jitte
 // 35 of the 42 wrong offers timing alone makes (independent groupings, 0.25 s sentences). Requiring two
 // matching words would halve the cost (0.4–0.9 %) and give back most of that protection (28 wrong
 // offers): the one-word match is the point, because the sentences it is for are one word — "Yeah.",
-// "Okay.", "No." — so it stays. Chinese is F868's known gap (a run is one word) and changes nothing
-// either way. The bounds hold the English cost and protection near what was measured.
+// "Okay.", "No." — so it stays. Chinese was F868's known gap (a run was one word) until F1022 compared
+// it by character; its own test follows. The bounds hold the English cost and protection near what was measured.
 @Test("On real English, F868's edge check withholds under 2.5 % of correct Replaces and stops most wrong ones (F868)")
 func edgeWordsCostLittleOnRealEnglish() {
     let independent = wordCost(.english, sameSplit: false, shortest: 0.25)
@@ -379,6 +379,23 @@ func edgeWordsCostLittleOnRealEnglish() {
     #expect(Double(independent.withheldByCoincidence) <= 0.025 * Double(independent.correctOffers), "\(independent)")
     #expect(independent.wrongRealOffers <= 10, "timing alone makes 42 here: \(independent)")
     let same = wordCost(.english, sameSplit: true, shortest: 0.6)
+    #expect(Double(same.withheldByCoincidence) <= 0.025 * Double(same.correctOffers), "\(same)")
+    #expect(same.wrongRealOffers == 0, "\(same)")
+}
+
+
+// F1022: a run of Chinese was one word, so the edge check matched a joined Chinese sentence only when the whole
+// run did — and on these Chinese meetings it stopped none of the 42 wrong offers timing makes (independent
+// groupings, 0.25 s sentences; 0.14 % of correct Replaces withheld). Compared by character: 8 wrong offers left
+// at a cost of 1.23 %; same grouping 0 and 1.18 %; independent at 0.6 s, 10 → 2 at 1.47 %. That is English's
+// trade (above: 7 left, 1.74 %), for the same reason — the sentences it is for are a character or two, 好的、对.
+@Test("On real Chinese, the edge check compares characters: under 2.5 % of correct Replaces withheld, most wrong ones stopped (F1022)")
+func edgeCharactersCostLittleOnRealChinese() {
+    let independent = wordCost(.chinese, sameSplit: false, shortest: 0.25)
+    #expect(independent.correctOffers > 500, "\(independent)")
+    #expect(Double(independent.withheldByCoincidence) <= 0.025 * Double(independent.correctOffers), "\(independent)")
+    #expect(independent.wrongRealOffers <= 12, "timing alone makes 42 here: \(independent)")
+    let same = wordCost(.chinese, sameSplit: true, shortest: 0.6)
     #expect(Double(same.withheldByCoincidence) <= 0.025 * Double(same.correctOffers), "\(same)")
     #expect(same.wrongRealOffers == 0, "\(same)")
 }
