@@ -849,8 +849,6 @@ extension AppModel {
         /// Such a file, or the copy, could not be read to compare them (F1001, F2-1).
         case otherUnchecked(name: String)
 
-        /// What a channel finding says, of `owner`'s channels — "the recording's", or "its" for a leftover or a
-        /// download — and the copy, without a capital or a full stop.
         /// What failed, for `copyNotChecked` (F1078): a mixer read's own detail — "the mix's kept read holds … frames",
         /// "the second read of the recording ended early" — which its `errorDescription` does not carry, else the
         /// error's sentence, without its capital or full stop.
@@ -862,6 +860,8 @@ extension AppModel {
             return first.lowercased() + text.dropFirst()
         }
 
+        /// What a channel finding says, of `owner`'s channels — "the recording's", or "its" for a leftover or a
+        /// download — and the copy, without a capital or a full stop.
         static func sentence(_ finding: RecordingMixPlan.ChannelPresenceFinding, owner: String) -> String {
             let window = { (index: Int) in TranscriptFormatter.clock(Double(index) * MeetingStoragePlan.levelWindowSeconds) }
             switch finding {
