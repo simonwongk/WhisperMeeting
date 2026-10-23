@@ -9,12 +9,14 @@ recording is the source of truth; speaker labels only as explicit local anonymou
 identity claim; original language only) are preserved. Entries written before 2026-09-13 were made
 while the invariant read "no diarization"; see `PRODUCT_SPEC.md` for the amended boundary.
 
-## Maintenance cycle — one ticket at a time: 56 closed, 2026-10-21 to 2026-10-22
+## Maintenance cycle — one ticket at a time: 67 closed, 2026-10-21 to 2026-10-22
 
 One session (whisper-1f) worked the board after Wave 8 one ticket at a time, each test-first, gated in its own worktree, pushed and
 watched to a green CI run before it was closed. The user answered three questions in chat, each recorded on its ticket: first-name
 corrections start unticked (F1064); mixing Shrink stayed off until its check was rebuilt and reviewed (F998); then it was turned on
-(F1071). The full trail is in the ticket log under each ID.
+(F1071). A second session (whisper-code-review) then reviewed the F1071–F1076 closures and filed eleven tickets: five were shown
+by the code to be invalid or duplicates, one it closed itself, and five were fixed (F1078, F1080, F1085–F1087). The full trail is in
+the ticket log under each ID.
 
 **What changed for the user**
 - **Shrink of recordings with several audio tracks or more than two channels is on (F998, F1071–F1076).** OBS files, multi-microphone
@@ -22,7 +24,9 @@ corrections start unticked (F1064); mixing Shrink stayed off until its check was
   fitted against exactly that, and a second read of the recording, lined up with it, must agree channel by channel. False refusals of
   good copies went from 3 in 60 to none in 150, and a 30-minute ffmpeg-made file that the first version refused in every run now passes.
   Three independent reviews found what is fixed above; the known gaps the user accepted are named on F1071. Originals go to the Trash
-  (F1040). Left open: a resumed, interrupted Shrink of such a file often keeps its leftover and needs another try (F1075).
+  (F1040). When the copy cannot be checked, the alert now says why instead of calling the recording unreadable (F1078), and the
+  comparison of the two reads is about 18 times faster on 16 channels (F1080). Not fixed: a resumed, interrupted Shrink of such a
+  file often keeps its leftover and needs another try (F1075, wontfix).
 - **Shrink, otherwise (F1040, F1058, F1059, F1062, F1074).** Shrink moves the original to the Trash instead of deleting it. A download
   decode longer than measured is no longer trusted. Second Opinion and other per-meeting jobs wait for a Shrink of that meeting. An
   Opus MP4 import shrinks. Scratch an interrupted Shrink left is cleared by the next.
