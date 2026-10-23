@@ -21,6 +21,17 @@ if [[ -n "$developer_dir" && -d "$testing_frameworks" ]]; then
   [[ -d "$testing_libs" ]] && testing_flags+=(-Xlinker -rpath -Xlinker "$testing_libs")
 fi
 
+# F1091: every agent worktree builds its own `.build` (1–3 GB), and nothing removed them: 96 held 95 GB on 2026-10-23. A warning,
+# not a prune: the gate itself runs in a worktree, and what is idle is `Scripts/prune-worktrees.sh`'s to decide.
+worktrees="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+worktrees="${worktrees:h}/.claude/worktrees"
+if [[ -d "$worktrees" ]]; then
+  worktree_kb=$(du -sk "$worktrees" 2>/dev/null | cut -f1 || true)
+  if (( ${worktree_kb:-0} > 20 * 1048576 )); then
+    print -u2 "warning: agent worktrees use $(( worktree_kb / 1048576 )) GB ($worktrees); Scripts/prune-worktrees.sh removes the idle ones"
+  fi
+fi
+
 print "[1/5] Checking the candidate diff for whitespace errors"
 # In its own script so Scripts/tests/test_check_whitespace.py can run it over scratch repositories.
 # With DIFF_BASE (CI): the committed range AND the working tree (F191). Without it (the local gate):

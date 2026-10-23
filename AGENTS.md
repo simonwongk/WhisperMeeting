@@ -648,6 +648,12 @@ the stash — all three have bitten.
   memory file before rewriting it, append rather than replace when the existing text is someone
   else's, and keep `MEMORY.md` to one added line per memory.
 - **Prefer a worktree** for anything longer than a few edits.
+- **Remove your worktree when its work is merged; the hook removes what is left (F1091).** Each worktree builds its own
+  `.build`, 1–3 GB, and the harness removes a sub-agent's worktree only when it is unchanged, so on 2026-10-23, 96 left
+  behind held 95 GB. `Scripts/prune-worktrees.sh` removes a worktree under `.claude/worktrees` only when that loses nothing —
+  clean, HEAD on a branch, not locked, no process working in it, untouched for a day (`--dry-run` shows what it would do) —
+  and clears the build cache of an idle one it keeps. A SessionStart hook in `.claude/settings.local.json` runs it in the
+  background (log: `.claude/prune-worktrees.log`), and `Scripts/quality-check.sh` warns past 20 GB.
 - **The GPU is shared with the user's dictation, and nothing arbitrates it.** F890 measured it:
   the Qwen recognizer answers a 3 s clip in 0.3 s on an idle GPU and in 4.2–4.8 s beside one
   other MLX process, while memory pressure, paging, CPU load and the refiner's own churn left it
