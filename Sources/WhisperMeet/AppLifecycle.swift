@@ -343,9 +343,14 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         MainActor.assumeIsolated {
+            let processAge = ResponsivenessLog.processAgeAtLaunchMilliseconds().map { String(format: "%.0f", $0) } ?? "?"
+            ResponsivenessLog.launchMilestone("finished launching (the process was \(processAge) ms old at main);")
             guard let lifecycle = Self.lifecycle else { return }
             lifecycle.begin()
-            Task { await lifecycle.runStartupRecoveryOnce() }
+            Task {
+                await lifecycle.runStartupRecoveryOnce()
+                ResponsivenessLog.launchMilestone("startup recovery done")
+            }
         }
         // F181: publishes "Transcribe with WhisperMeet" (declared under NSServices in Info.plist).
         NSApp.servicesProvider = self

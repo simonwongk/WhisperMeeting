@@ -4,6 +4,14 @@ import CoreGraphics
 import WhisperCore
 import os
 
+/// When a trigger edge was heard (F1088), for `ResponsivenessLog`'s press and release timings.
+struct HotkeyEdgeTiming: Equatable, Sendable {
+    /// The key event's own time stamp (`CGEvent.timestamp`), 0 when the edge came from no event.
+    var eventStamp: UInt64
+    /// When the tap queued the edge for the main thread (`ResponsivenessLog.now()`).
+    var queuedAt: UInt64
+}
+
 /// Injection seam so `DictationController`'s hotkey-driven state machine is testable without a real
 /// CGEventTap (which requires Accessibility). `HotkeyMonitor` is the only production conformer.
 protocol HotkeyMonitoring: AnyObject {
@@ -11,6 +19,9 @@ protocol HotkeyMonitoring: AnyObject {
     var onPressEnd: (() -> Void)? { get set }
     /// The press that started a dictation turned out to be part of a shortcut (F448).
     var onPressCancel: (() -> Void)? { get set }
+    /// When the edge now being delivered was heard (F1088): its key event's time stamp, and when the tap handed
+    /// it to the main queue. Set just before `onPressStart` or `onPressEnd` runs; nil when no tap heard it.
+    var lastEdge: HotkeyEdgeTiming? { get }
     @discardableResult func start(hotkey: DictationHotkey) -> Bool
     func stop()
     /// Clear toggle mode's latched on-state so the next press is treated as a fresh start. The
@@ -38,6 +49,8 @@ protocol HotkeyMonitoring: AnyObject {
 }
 
 extension HotkeyMonitoring {
+    /// A monitor that times nothing — a test's — reports no edge timing (F1088).
+    var lastEdge: HotkeyEdgeTiming? { nil }
     var isArmedWithoutHoldingBack: Bool { false }
     var isHoldingTriggerBack: Bool { false }
     var mayHoldTriggerBack: Bool {
@@ -101,6 +114,9 @@ final class HotkeyMonitor: HotkeyMonitoring {
     var onTriggerTapLost: ((TriggerTapLoss) -> Void)?
     private var hotkey: DictationHotkey = .rightOption
     private var keyDown = false       // physical down-state of the configured hotkey key
+    private(set) var lastEdge: HotkeyEdgeTiming?
+    /// The trigger event being handled, for the edge it produces (F1088); 0 once the edge is queued.
+    private var pendingEventStamp: UInt64 = 0
     private var toggledOn = false     // (toggle mode) whether dictation is currently on
     /// Whether this hold of a modifier trigger can no longer cancel a dictation: it already has, so
     /// ⌘-Tab-Tab-Tab reports one cancel, not three — or it was already down, and not by a press this
@@ -448,6 +464,7 @@ final class HotkeyMonitor: HotkeyMonitoring {
             if type == .keyDown { noteChordInput() }
             return
         }
+        pendingEventStamp = event.timestamp
 
         let nowDown: Bool
         switch type {
@@ -523,9 +540,12 @@ final class HotkeyMonitor: HotkeyMonitoring {
     /// toggled it since: that press's edge is queued behind this one, and the on-state is its.
     private func dispatch(pressed: Bool) {
         let heardFor = hotkey
+        let edge = HotkeyEdgeTiming(eventStamp: pendingEventStamp, queuedAt: ResponsivenessLog.now())
+        pendingEventStamp = 0
         switch hotkey.mode {
         case .hold:
             DispatchQueue.main.async {
+                self.lastEdge = edge
                 guard pressed else { self.onPressEnd?(); return }
                 guard self.hotkey == heardFor else { return }
                 self.onPressStart?()
@@ -537,6 +557,7 @@ final class HotkeyMonitor: HotkeyMonitoring {
             let starting = toggledOn
             let press = togglePresses
             DispatchQueue.main.async {
+                self.lastEdge = edge
                 guard starting else { self.onPressEnd?(); return }
                 guard self.hotkey == heardFor else {
                     if self.togglePresses == press { self.toggledOn = false }

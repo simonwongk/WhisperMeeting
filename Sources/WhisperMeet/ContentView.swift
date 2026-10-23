@@ -124,6 +124,7 @@ struct ContentView: View {
                 Section {
                     Label("New Meeting", systemImage: "record.circle")
                         .tag(SidebarItem.record)
+                        .onAppear { ResponsivenessLog.launchMilestoneOnce("main window appeared") }   // F1089
                     Label("Business Vocabulary", systemImage: "text.book.closed")
                         .tag(SidebarItem.vocabulary)
                     Label("Ask Meetings", systemImage: "text.magnifyingglass")

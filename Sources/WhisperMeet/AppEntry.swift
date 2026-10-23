@@ -28,6 +28,9 @@ enum WhisperMeetLauncher {
                 logURL: log, since: DictationRefineReportCommand.since(in: CommandLine.arguments)
             )
         }
+        // F1089: the launch's timings, and the main thread watched for stalls in its first minutes.
+        ResponsivenessLog.launchBegan = ResponsivenessLog.now()
+        ResponsivenessLog.watchMainThread()
         WhisperMeetApp.main()
     }
 

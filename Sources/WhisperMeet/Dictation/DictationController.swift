@@ -1305,6 +1305,7 @@ final class DictationController: ObservableObject {
     // MARK: - Hotkey events
 
     func handlePressStart() {
+        pressBegan = (ResponsivenessLog.now(), hotkeyMonitor.lastEdge)
         // Every refusal below must clear toggle mode's latched state; otherwise the monitor keeps
         // believing dictation is "on" and the next press fires an end edge that silently no-ops (F38).
         // A press the paused trigger heard just before it was paused starts nothing (F683): no key
@@ -1359,8 +1360,46 @@ final class DictationController: ObservableObject {
     }
 
     private func handlePressEnd() {
+        let began = ResponsivenessLog.now(), edge = hotkeyMonitor.lastEdge
+        let wasRecording = recorder.isRecording
         _ = beginTranscriptionIfNeeded()
         pauseTriggerIfChoosing()
+        if wasRecording { logReleaseTiming(began: began, edge: edge) }
+    }
+
+    /// When the press now being handled began, and how its edge was heard (F1088).
+    private var pressBegan: (at: UInt64, edge: HotkeyEdgeTiming?)?
+
+    /// "From the key to the handler": the key event's age when the handler began, and the part of it spent
+    /// waiting on the main queue after the tap heard it (F1088).
+    private static func keyToHandler(began: UInt64, edge: HotkeyEdgeTiming?) -> String {
+        guard let edge else { return "no tap timing" }
+        let queued = String(format: "%.0f", ResponsivenessLog.milliseconds(since: edge.queuedAt, to: began))
+        let age = ResponsivenessLog.eventAgeMilliseconds(edge.eventStamp).map { String(format: "%.0f", Swift.max(0, $0 - ResponsivenessLog.milliseconds(since: began))) }
+        return "key to handler \(age ?? "?") ms (\(queued) ms on the main queue)"
+    }
+
+    /// F1088: how long this press took to reach the microphone, the field check and the pill on screen.
+    private func logPressTiming(microphone: Double, fieldCheck: Double) {
+        guard let pressed = pressBegan else { return }
+        pressBegan = nil
+        let began = pressed.at, edge = pressed.edge
+        let heard = Self.keyToHandler(began: began, edge: edge)
+        let handled = ResponsivenessLog.milliseconds(since: began)
+        ResponsivenessLog.afterThisTurnDraws {
+            let drawn = ResponsivenessLog.milliseconds(since: began)
+            ResponsivenessLog.log.notice("press timing: \(heard, privacy: .public); microphone \(microphone, format: .fixed(precision: 0)) ms, field check \(fieldCheck, format: .fixed(precision: 0)) ms, handled in \(handled, format: .fixed(precision: 0)) ms, pill drawn \(drawn, format: .fixed(precision: 0)) ms after the handler began")
+        }
+    }
+
+    /// F1088: how long a release took to stop the capture and show what follows.
+    private func logReleaseTiming(began: UInt64, edge: HotkeyEdgeTiming?) {
+        let heard = Self.keyToHandler(began: began, edge: edge)
+        let handled = ResponsivenessLog.milliseconds(since: began)
+        ResponsivenessLog.afterThisTurnDraws {
+            let drawn = ResponsivenessLog.milliseconds(since: began)
+            ResponsivenessLog.log.notice("release timing: \(heard, privacy: .public); stopped and handed on in \(handled, format: .fixed(precision: 0)) ms, pill drawn \(drawn, format: .fixed(precision: 0)) ms after the handler began")
+        }
     }
 
     /// The press that started this capture was half of a shortcut (F448): ⌘-Tab, ⌥-click, a
@@ -1393,17 +1432,22 @@ final class DictationController: ObservableObject {
             recorder.onCaptureInterrupted = { [weak self] reason in
                 Task { @MainActor [weak self] in self?.handleCaptureInterrupted(reason) }
             }
+            let microphoneBegan = ResponsivenessLog.now()
             try recorder.start { [weak self] level in
                 Task { @MainActor [weak self] in self?.overlay.update(level: level) }
             }
+            let microphone = ResponsivenessLog.milliseconds(since: microphoneBegan)
             status = .listening
             showPhase(.listening)
             captureWatchdog.arm()
             // Where the key was pressed, which the paste is checked against (F445). Taken after the
             // microphone started: it asks the focused app over Accessibility, and a slow app must
             // not clip the first word. It also starts the off-main copy of the clipboard (F601).
+            let fieldCheckBegan = ResponsivenessLog.now()
             pressTarget = textInjector.captureWillStart(autoPaste: autoPaste)
+            let fieldCheck = ResponsivenessLog.milliseconds(since: fieldCheckBegan)
             log.notice("listening")
+            logPressTiming(microphone: microphone, fieldCheck: fieldCheck)
             return true
         } catch {
             // F366: `error.localizedDescription` is the bridge's case-index sentence for anything
