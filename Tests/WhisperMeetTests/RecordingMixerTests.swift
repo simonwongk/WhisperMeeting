@@ -602,3 +602,28 @@ func readsComparedCostAtScale() throws {
     print("F1080 MEASURE \(minutes) min × \(tracks) channels: readsCompared \(String(format: "%.1f", seconds)) s (debug), \(String(format: "%.2f", seconds / Double(minutes))) s per minute of audio; finding \(String(describing: RecordingMixPlan.firstReadDisagreement(kept: reads.kept, again: reads.again)))")
     #expect(RecordingMixPlan.firstReadDisagreement(kept: reads.kept, again: reads.again) == nil)
 }
+
+// F1087 — `lagEnergies` slides each lag's energy on from the first; its seed must be summed as exactly as the
+// Double prefix sums it replaced, or after a loud stretch slides out the error left is a constant share of the
+// loud window's energy, beside lags whose own energy is far smaller.
+@Test("Each lag's energy matches the exact sum, even after a loud stretch slides out into digital silence (F1087)")
+func lagEnergiesMatchTheirSumsPastALoudEdge() {
+    var seed: UInt32 = 4_242
+    func noise() -> Float { seed = seed &* 1_664_525 &+ 1_013_904_223; return Float(Int32(bitPattern: seed)) / Float(Int32.max) }
+    let n = 4_000, lags = 8_001
+    var padded = [Float](repeating: 0, count: n + lags - 1)
+    for k in 0..<n { padded[k] = 0.9 * noise() }           // loud, then digital silence
+    for k in (n + 3_000)..<(n + 3_010) { padded[k] = 0.001 } // and a whisper deep in the silence
+    var exact = [Double](repeating: 0, count: lags)
+    for lag in 0..<lags {
+        var sum: Double = 0
+        for k in lag..<(lag + n) { sum += Double(padded[k]) * Double(padded[k]) }
+        exact[lag] = sum
+    }
+    let slid = RecordingMixer.lagEnergies(padded, window: n, lags: lags)
+    var worst: Double = 0
+    for lag in 0..<lags { worst = max(worst, abs(slid[lag] - exact[lag])) }
+    #expect(worst <= 1e-9 * exact[0], "worst error \(worst) against a first window of \(exact[0])")
+    // Lag 5,000's window holds the whisper and nothing loud: 1e-5 of energy, which the error must not swamp.
+    #expect(abs(slid[5_000] - exact[5_000]) <= 1e-3 * exact[5_000], "\(slid[5_000]) for \(exact[5_000])")
+}

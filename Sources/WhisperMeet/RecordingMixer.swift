@@ -512,13 +512,19 @@ enum RecordingMixer {
     }
 
     /// Each lag's energy of `padded` over `n` frames — the sum of `padded[lag + k]²` for `k < n` — for every lag below
-    /// `lags`, the first summed by vDSP and each next one slid a frame on: one pass, not one per lag (F1080).
-    private static func lagEnergies(_ padded: [Float], window n: Int, lags: Int) -> [Double] {
+    /// `lags`, the first summed by vDSP and each next one slid a frame on: one pass, not one per lag (F1080). All in
+    /// Double, as the prefix sums it replaced were: a seed summed in Float leaves an error of about 1e-7 of the first
+    /// window's energy in every later lag, which swamps a quiet lag after a loud stretch slides out (F1087).
+    static func lagEnergies(_ padded: [Float], window n: Int, lags: Int) -> [Double] {
         var energies = [Double](repeating: 0, count: Swift.max(0, lags))
         guard lags > 0, n > 0, padded.count >= n + lags - 1 else { return energies }
-        var first: Float = 0
-        padded.withUnsafeBufferPointer { vDSP_svesq($0.baseAddress!, 1, &first, vDSP_Length(n)) }
-        var energy = Double(first)
+        var wide = [Double](repeating: 0, count: n)
+        padded.withUnsafeBufferPointer { source in
+            wide.withUnsafeMutableBufferPointer { vDSP_vspdp(source.baseAddress!, 1, $0.baseAddress!, 1, vDSP_Length(n)) }
+        }
+        var first: Double = 0
+        vDSP_svesqD(wide, 1, &first, vDSP_Length(n))
+        var energy = first
         energies[0] = Swift.max(0, energy)
         for lag in 1..<lags {
             let leaving = Double(padded[lag - 1]), entering = Double(padded[lag - 1 + n])
