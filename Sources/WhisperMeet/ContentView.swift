@@ -35,7 +35,9 @@ struct SidebarFilterInput: Equatable {
 
 struct ContentView: View {
     @ObservedObject var model: AppModel
-    @ObservedObject var dictation: DictationController
+    /// Not observed (F1090): this view only hands it to the Dictation and Settings pages, which observe it themselves.
+    /// Observed here, every dictation state change re-ran this whole window's body in the turn before the pill drew.
+    let dictation: DictationController
     @ObservedObject private var store: MeetingStore
     // A set, not an optional: this is what gives the sidebar macOS's native shift-range and
     // ⌘-toggle selection. Navigation rows share the list with meetings, so a shift-range can
