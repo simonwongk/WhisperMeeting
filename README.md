@@ -1,323 +1,263 @@
 # WhisperMeet
 
-WhisperMeet is a native macOS app for people who need an *accurate* record of a meeting more than a
-live one. It captures your microphone and the Mac’s system audio as two separate tracks, mixes them
-into a clean WAV, and transcribes that finished file using a speech model running on this Mac.
+**Fast, safe meeting recording and dictation for the Mac — and everything runs on your Mac.**
 
-The design is deliberately **post-meeting rather than realtime**. Nothing is streamed or guessed at
-while you talk; the completed audio is transcribed once with a large model instead of continuously
-with a small one, which is what makes the result worth trusting. Transcripts stay in the language
-actually spoken — English or Mandarin — and are never translated.
+WhisperMeet records your meetings (your microphone and the other people coming through your Mac's
+speakers), turns them into an accurate, timestamped transcript, and helps you summarize, search and
+share them. It also lets you dictate into any app: hold a key, speak, let go, and the text appears
+where you were typing.
 
-**Your audio and transcripts stay on this Mac.** Recording, transcription, vocabulary, meeting
-summaries, AI transcript correction, and export are fully local, with no account and no per-minute
-fee. There is exactly one exception, and it is opt-in: if you save a Claude API key in Settings and
-choose the Claude summary engine, that transcript is sent to Anthropic’s API to produce a summary.
-Summaries otherwise run on a model on this Mac by default (Apple silicon; an Intel Mac cannot run
-that model, so its summary engine starts on Claude), and nothing leaves the machine without a saved
-key and an explicit, confirmed press — see [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
+There is no account, no subscription and no cloud service. Your recordings, transcripts and
+dictations stay on your Mac — unless you switch on one of the two opt-in features named below.
 
-OpenAI Whisper is the default transcription engine; Apple-silicon Macs can additionally install the
-opt-in open-source Qwen3-ASR engine. A separate local language model (installed once) powers the
-on-device summaries and the AI transcript-correction pass.
+## Why WhisperMeet
 
-Two things the app deliberately will not do: it never identifies **who** is speaking — an optional
-local analysis can mark parts of a transcript “Speaker 1” and “Speaker 2”, but never as a named
-person (see [Speaker limitation](#speaker-limitation)) — and it never modifies your recording, so a
-failed or cancelled transcription always leaves the audio intact and retryable.
+- **Everything runs on your Mac.** Recording, transcription, dictation, summaries, search and
+  corrections all use models running on this Mac. Nothing you record, say or type is uploaded. There
+  are exactly two exceptions, and both are off until you turn them on: Claude summaries (only with
+  your own saved Claude key and a confirmed press — see
+  [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md)) and *Import from a Link* (which downloads
+  audio from the site you paste). The speech and language models are downloaded once, when you
+  install them.
+- **Fast.** On Apple silicon, Qwen3-ASR runs on the Mac's graphics chip. On an Apple M3 Pro, a
+  dictation of a few seconds is recognized in about half a second, and a 30-second one in about two.
+- **Safe.** Your recording is never changed. If a transcription fails or you cancel it, the audio is
+  untouched and you can try again. The microphone and the Mac's sound are kept as separate tracks,
+  the app warns you while recording if either goes silent, an interrupted recording is found again
+  on the next launch, and no recording or meeting is deleted without asking you first.
+- **Accurate, in your language.** Meetings are transcribed after they end, with a full-size model,
+  from the finished recording. English and Mandarin are both supported, and a transcript always
+  stays in the language that was spoken — it is never translated.
 
-Beyond meetings, a **Quick Dictation** hotkey transcribes short clips and pastes them into any app.
+## What you can do
 
-## Documentation
+### Record a meeting
 
-Start with the [documentation map](docs/README.md) to find the right guide by task.
+- **Start Recording** (⌘R) from the *New Meeting* page or the menu-bar icon. WhisperMeet records
+  your microphone and the Mac's system audio — the other people on the call — at the same time.
+- **Check before you start.** The *Before recording* panel shows your microphone, the permission to
+  record the Mac's audio, and free storage. **Test Recording…** makes an 8-second test and tells you
+  whether each side sounds *Good*, *Very quiet*, *Too loud* or has *No signal*.
+- **Watch it while it records.** Separate meters for *Microphone (you)* and *System audio (others)*,
+  the recording's size on disk, and plain warnings if a side stops, the sound clips, or storage runs
+  low.
+- **Mark key moments** with **Add Marker** (⇧⌘M). Markers show up on the recording's timeline and in
+  exported notes.
+- **Stop & Transcribe** when the meeting ends. If you quit while recording, the app asks first; if
+  the Mac goes to sleep or you close the lid, the recording is stopped and saved, and the app tells
+  you why.
 
-| Area | Key documents |
+### Bring in recordings you already have
+
+- **Import Recordings…** brings in audio or video files, several at a time, and transcribes them one
+  after another.
+- **From Finder or Shortcuts:** right-click a file → *Open With → WhisperMeet*, drop it on the Dock
+  icon, or choose *Services → Transcribe with WhisperMeet*. WhisperMeet never makes itself the
+  default app for your audio files.
+- **Watched Folder** (off until you turn it on in Settings): new recordings you put in a chosen
+  folder are imported automatically. Your original files are never moved or deleted.
+- **Import from a Link** (off until you turn it on in Settings): paste a link to a single video and
+  WhisperMeet downloads only its audio, then transcribes it on your Mac. The site you link to sees
+  that request, and many sites' terms prohibit downloading, so only use links you have the right to.
+
+### Read, fix and improve a transcript
+
+- **Choose the speech engine** in Settings: *Whisper Large* (the default, best established),
+  *Whisper Turbo* (faster), or *Qwen3-ASR 1.7B* (fast and accurate, Apple silicon). Set the meeting
+  language to *Detect automatically*, *English* or *Chinese (Mandarin)*.
+- **Read along with the audio.** Click any line to move the player there, let the transcript follow
+  the playback, and find words with *Find in transcript*.
+- **Edit** any line, or right-click it to copy it (with or without its timestamp), re-transcribe
+  just that line, or delete it. *Undo* works for removed lines and applied corrections.
+- **Spot the shaky parts.** A quality banner points you to lines the engine was unsure of, worst
+  first. It never changes anything by itself. See
+  [docs/TRANSCRIPT_QUALITY.md](docs/TRANSCRIPT_QUALITY.md).
+- **Improve menu** — corrections are shown to you for review before they are applied:
+  - *Transcribe Again…* makes a new transcript with the engine and language now chosen in Settings
+    (it asks first, and keeps the old one if the new run fails).
+  - *Suggest Vocabulary Terms…* finds names and terms in the transcript to add to your vocabulary.
+  - *Correct Toward Vocabulary…* and *Apply Replacement Rules…* fix words your vocabulary says were
+    misheard.
+  - *Correct with Local AI…* (Apple silicon) asks the on-device language model to fix misheard names
+    and jargon, optionally guided by a reference file such as a spec or glossary.
+  - *Second Opinion (Other Engine)…* transcribes again with the other engine and lets you swap in
+    individual lines.
+  - *Remove Lines in Another Language…* cleans up a common speech-model mistake, and a banner offers
+    *Remove Repeated Lines* when the engine repeated itself.
+  - *Analyze Speaker Turns…* (see [Speaker labels](#speaker-labels)).
+
+### Summaries and action items
+
+- **Summarize** a meeting into a summary, key points and action items. By default this runs on a
+  language model on your Mac (Apple silicon, installed once from Settings). Claude is an opt-in
+  alternative that needs your own API key and asks before sending anything.
+- **Pick a style:** *Balanced*, *Brief*, *Detailed* or *Action items*.
+- **Pick a template** for the kind of meeting: *General*, *Decision Log*, *1:1*, *Project Update*,
+  *Interview* or *Customer Call*.
+- **Work your action items:** tick them off, add an owner and a due date, and press the timestamp to
+  hear the moment in the recording each one came from, with the supporting quote.
+
+### Find anything you've discussed
+
+- **Search the library** from the toolbar. It searches titles, transcripts and notes, and
+  understands filters like `lang:zh`, `min:30m` or `before:2026-06-01`.
+- **Ask Meetings** answers a question across all your meetings, or just those with certain tags.
+  Each result shows the meeting, the time and the quote, and clicking it jumps to that moment.
+  - **Search by meaning** (an optional 490 MB download, Apple silicon) also finds passages worded
+    differently from your question — "how much runway do we have" finds "the cash lasts until
+    October".
+  - **Write an Answer from These Passages** asks the local model for a short answer built only from
+    the results on screen. It is shown only if it cites those passages; otherwise you keep the
+    passages themselves. Citation is checked per answer, not per sentence, so read the cited
+    passages for anything you would act on.
+
+### Organize and share
+
+- **Tags** (up to 12 per meeting), **notes**, and **Pin to Top**. Select several meetings to tag or
+  delete them together.
+- **Export** a transcript as plain text, timestamped text, Markdown, subtitles (SRT or WebVTT),
+  JSON, a chapter list, a chaptered transcript or a web page — or export **Meeting Notes** with the
+  summary, transcript and markers together.
+- A notification tells you when a transcript is ready, if you are in another app.
+
+### Quick Dictation — talk instead of type, in any app
+
+- Turn it on with *Enable push-to-talk dictation* in Settings or from the menu-bar icon.
+- **Hold Right Option, speak, let go.** The text is typed into whatever field you were in — or
+  copied to the clipboard if you prefer. You can choose a different key, and switch from
+  hold-to-talk to press-once-to-start, press-again-to-stop.
+- A small pop-up shows when it is *Listening…*, working, and done.
+- **Choose the engine:** *Whisper Turbo* (the default) or *Qwen3-ASR 1.7B* (Apple silicon). The
+  model is kept ready while you use it, and after a break it reloads while you are still speaking.
+- **Your words, your spelling:** dictation uses your Business Vocabulary and Replacement Rules, and
+  can write Chinese as *Simplified*, *Traditional* or *As heard*.
+- **Refine with local AI** (optional, Apple silicon) cleans up grammar on your Mac. If it takes too
+  long, you get the original text instead of a wait.
+- **History** on the *Dictation* page keeps your last 100 dictations, so nothing you said is lost if
+  a paste went to the wrong place.
+- Up to two minutes per dictation. See
+  [docs/QUICK_DICTATION_DESIGN.md](docs/QUICK_DICTATION_DESIGN.md).
+
+### Business Vocabulary
+
+- Add the names, products and jargon you use, or **Import Documents…** (PDF, Word, text, Markdown,
+  CSV) to pull terms from your own files.
+- **Star** the terms that matter most so they come first when the list is too long to use whole.
+- **Replacement Rules** fix a word that is always misheard the same way (`heard → preferred`).
+  Dictation applies them before pasting; in a meeting, you review them first.
+- Whisper uses your vocabulary as a hint while transcribing. Qwen3-ASR does not take hints, but the
+  corrections and rules above still use your list.
+
+### Keep your library safe and small
+
+- **Show Storage…** lists your meetings by the space they use.
+- **Shrink…** replaces a meeting's audio with one compressed copy (about 15 MB per hour) and moves
+  the originals to the Trash, only when you press it and confirm. You can put them back until you
+  empty the Trash.
+- **Back up library…** makes dated, checked snapshots (keeping the last 5 by default), and
+  **Restore…** shows you exactly what it will do before it does it.
+- **Verify Library** checks every recording for missing or damaged audio and changes nothing.
+- **Show Recording in Finder** on any meeting takes you to its files. See
+  [docs/RECOVERY.md](docs/RECOVERY.md) for what the app does after a crash or a damaged file.
+
+## Privacy, in plain words
+
+| What | Where it goes |
 |---|---|
-| Product and recovery | [Product spec](docs/PRODUCT_SPEC.md) · [Recovery](docs/RECOVERY.md) · [Recording health](docs/RECORDING_HEALTH.md) · [Preflight test](docs/PREFLIGHT_TEST.md) |
-| Library-index safety | [Wipe postmortem](docs/LIBRARY_INDEX_WIPE_POSTMORTEM_2026-08-14.md) · [F187 safety plan](docs/LIBRARY_INDEX_SAFETY_PLAN.md) · [F190 transaction design](docs/LIBRARY_INDEX_TRANSACTION_DESIGN.md) · [F190 plan](docs/LIBRARY_INDEX_TRANSACTION_PLAN.md) |
-| Feature guides | [Quick Dictation](docs/QUICK_DICTATION_DESIGN.md) · [Recording markers](docs/RECORDING_MARKERS.md) · [Transcript quality](docs/TRANSCRIPT_QUALITY.md) · [Claude summaries](docs/CLAUDE_SUMMARIES.md) |
-| Project work | [Work dashboard](docs/tickets-dashboard.html) · [Tickets](docs/TICKETS.md) · [Needs human](docs/NEEDS_HUMAN.md) · [Ticket log](docs/TICKET_LOG.md) |
-| Direction and history | [Roadmap](docs/ROADMAP.md) · [Changelog](docs/CHANGELOG.md) |
+| Your recordings, transcripts, notes, summaries, vocabulary and dictations | Stay on your Mac, in `~/Library/Application Support/WhisperMeet` |
+| Speech recognition, dictation, local summaries, corrections, search, speaker analysis | Run on your Mac |
+| Models | Downloaded once, when you install each one |
+| Claude summaries (off by default) | Only the transcript you choose, only after you save a key and confirm |
+| Import from a Link (off by default) | The site you link to sees the download request |
+| Copy AI Prompt (Business Vocabulary) | Copies a prompt for you to paste elsewhere — the app sends nothing |
 
-Contributors and coding agents should start with [AGENTS.md](AGENTS.md).
+## Speaker labels
 
-## Requirements
+Transcripts are not labeled by speaker by default. On Apple silicon you can ask for **Analyze
+Speaker Turns…**, which groups the voices in one meeting into *Speaker 1*, *Speaker 2* and so on, on
+your Mac. You can rename a label for that meeting ("Me", "Project lead").
 
-- Apple silicon or Intel Mac running macOS 15 or later
-- Swift 6.1 command-line tools or Xcode to build the app
-- Homebrew for the one-time local Whisper installation
-- Enough free memory for the chosen model: the official repository lists about 10 GB for `large` and
-  6 GB for `turbo`
-- Qwen3-ASR is optional and requires Apple silicon plus about 4.2 GB of storage
-- Local summaries and AI transcript correction are optional and require Apple silicon plus a one-time
-  model download (about 4.7 GB for the default Qwen3-8B; a smaller 4B model on Macs under 16 GB of RAM)
-- See [Disk space](#disk-space) for the full footprint of each optional component
+It never identifies who someone is, never recognizes a voice across meetings, never guesses anything
+about a speaker, and never sends audio or names anywhere. Labels can be wrong — especially when
+people talk over each other — and the app says *Uncertain* or *Overlapping voices* rather than
+guess. Copies, exports and summaries stay unlabeled unless you choose the labeled export.
 
-## Build and run
+## Install
+
+**You need:** a Mac with macOS 15 or later, Homebrew, and the Swift 6.1 command-line tools or Xcode
+to build the app. Apple silicon is recommended: on an Intel Mac, Qwen3-ASR and the features that use
+the on-device language model are not available.
 
 ```bash
 Scripts/install-app.sh
 open /Applications/WhisperMeet.app
 ```
 
-`Scripts/install-app.sh` builds a signed release and installs it to `/Applications` — the bundle you
-actually run day to day — with a guarded, atomic replace of any previous install (it refuses to run
-while WhisperMeet is open, and restores the previous app if anything fails partway through). It signs
-with a local **WhisperMeet Dev** code-signing certificate when one exists in your keychain, and falls
-back to an ad-hoc signature otherwise. On first recording, macOS asks for Microphone and Screen &
-System Audio Recording permissions; to grant the second beforehand, press **Allow…** beside Mac
-system audio under Before recording, which adds WhisperMeet to that System Settings list and opens
-it. If system audio is silent after granting permission, quit and reopen the app.
+Then open **Settings** and install what you want — each is a one-time download:
 
-A stable signing identity keeps your permission grants across rebuilds. With only an ad-hoc
-signature, each rebuild changes the app’s code identity, so macOS may leave the old **Screen &
-System Audio Recording** switch visibly enabled even though it belongs to the previous binary; after
-such a rebuild, switch WhisperMeet **off and back on**, quit with **⌘Q**, and reopen it. To create
-the stable certificate once: Keychain Access → Certificate Assistant → Create a Certificate, name it
-`WhisperMeet Dev`, Identity Type Self-Signed Root, Certificate Type Code Signing — then rebuild, and
-`install-app.sh` (which calls `build-app.sh` internally) signs with it automatically.
+- **Install Local Whisper** — the default meeting engine (uses Homebrew for FFmpeg and Python).
+- **Install Qwen3-ASR** — the fast engine for Apple silicon.
+- **Install Local Model** — on-device summaries, *Correct with Local AI*, *Refine with local AI* and
+  answers in Ask Meetings (Apple silicon).
+- **Install Speaker Analysis** — for *Analyze Speaker Turns…* (Apple silicon).
 
-`Scripts/build-app.sh` alone only packages a release build into `.build/WhisperMeet.app`, for
-inspecting the bundle without installing it. **Never run that bundle while an installed copy
-exists** — two bundles built from different commits can hold incompatible library schemas against
-the same `~/Library/Application Support/WhisperMeet/` library, which is what caused the 2026-08-14
-library wipe (see `docs/LIBRARY_INDEX_WIPE_POSTMORTEM_2026-08-14.md`).
+On your first recording, macOS asks for Microphone and Screen & System Audio Recording permission.
+To grant the second in advance, press **Allow…** beside *Mac system audio* in the *Before recording*
+panel. If system audio stays silent after you grant it, quit and reopen the app.
 
-## First-time setup
-
-Open **Settings** and choose **Install Local Whisper**. The bundled installer uses Homebrew to
-install FFmpeg and Python 3.11, then creates an isolated Python environment under:
-
-```text
-~/Library/Application Support/WhisperMeet/Runtime
-```
-
-Whisper downloads the selected speech model once, on its first transcription, and stores it under
-`~/Library/Application Support/WhisperMeet/Models`.
-
-On Apple silicon, Settings also offers **Install Qwen3-ASR**. Its pinned, hash-verified runtime is
-stored under `~/Library/Application Support/WhisperMeet/Runtime/Qwen3ASR`. Qwen is opt-in; Whisper
-Large remains the default because Qwen still needs validation on long, real meetings.
-
-Settings also offers **Install Local Model** — a pinned, hash-verified language model (Qwen3, chosen
-by your Mac’s RAM) stored under `~/Library/Application Support/WhisperMeet/Runtime/Summarizer`. It
-powers on-device meeting summaries (the default) and AI transcript correction; both share this one
-runtime, so enabling correction after summaries needs no further download.
-
-### Use the installed local Qwen model in Terminal
-
-If you installed **Local Model**, this checkout also provides a private, offline Terminal chat using
-that same model — it does not download anything, write a chat log, or read WhisperMeet recordings:
-
-```bash
-Scripts/qwen-chat
-```
-
-Type `/exit` (or press Control-D) to leave. The last six exchanges are kept only in memory to make
-the conversation coherent; use `Scripts/qwen-chat --max-turns 1` for a stateless prompt-and-answer
-style. This is available on Apple-silicon Macs with the Local Model installed, and it may take a
-moment to load the model before the first prompt.
-
-For a manual installation from this checkout:
-
-```bash
-Scripts/setup-local-whisper.sh
-Scripts/setup-qwen-asr.sh
-Scripts/setup-local-summarizer.sh
-```
+`Scripts/install-app.sh` refuses to run while WhisperMeet is open, so an update can never interrupt
+a recording, and it puts the previous version back if anything fails. To keep macOS permissions
+across rebuilds, create a self-signed code-signing certificate named `WhisperMeet Dev` once
+(Keychain Access → Certificate Assistant → Create a Certificate, type *Code Signing*); the script
+uses it automatically. Without it, after a rebuild you may need to switch WhisperMeet off and on
+again under *Screen & System Audio Recording*. Never run the `.build/WhisperMeet.app` bundle
+alongside an installed copy — see
+[docs/LIBRARY_INDEX_WIPE_POSTMORTEM_2026-08-14.md](docs/LIBRARY_INDEX_WIPE_POSTMORTEM_2026-08-14.md).
 
 ## Disk space
 
-The app itself is a few MB; the speech and language models are the weight, and they download on
-first use into `~/Library/Application Support/WhisperMeet/`. Everything except the default Whisper
-engine is optional — install only what you use.
+The app itself is about 27 MB. The models are the big part, and you only download the ones you use.
 
-| Component | When it installs | Approx. disk |
-|---|---|---|
-| App bundle | always | a few MB |
-| Local Whisper (default engine) | first transcription | ~1.2 GB Python environment + a Whisper model (Turbo ≈ 1.5 GB or Large ≈ 2.9 GB); also uses Homebrew FFmpeg and Python 3.11 |
-| Qwen3-ASR (opt-in, Apple silicon) | Settings → Install Qwen3-ASR | ≈ 4.2 GB (ASR + forced-aligner models ≈ 2.3 GB, MLX Python environment ≈ 0.7 GB) |
-| Local summaries + AI correction (opt-in, Apple silicon) | Settings → Install Local Model | ≈ 4.7 GB (Qwen3-8B-4bit ≈ 4.3 GB + Python environment ≈ 0.4 GB; a smaller 4B model on Macs under 16 GB of RAM). Summaries and correction share this one runtime. |
-| Your recordings | grows with use | ≈ 1.7 GB per recorded hour: `meeting.wav` (48 kHz, 16-bit mono) ≈ 0.35 GB, plus the two raw microphone/system-audio source tracks (48 kHz, float32) ≈ 0.69 GB each, all kept — or ≈ 15 MB per hour for a meeting you shrink |
+| Component | Approx. size |
+|---|---|
+| Local Whisper (meetings) | ~1.2 GB runtime + Whisper Turbo ≈ 1.5 GB or Whisper Large ≈ 2.9 GB |
+| Whisper Turbo for dictation | ≈ 1.6 GB |
+| Qwen3-ASR (Apple silicon) | ≈ 4.5 GB |
+| Local Model for summaries and corrections (Apple silicon) | ≈ 4.7 GB (a smaller model on Macs with less than 16 GB of memory) |
+| Search by meaning (optional) | 490 MB |
+| Speaker Analysis (optional) | ≈ 22 MB |
+| Your recordings | ≈ 1.7 GB per recorded hour: `meeting.wav` (48 kHz, 16-bit mono) ≈ 0.35 GB, plus the separate microphone and system-audio tracks ≈ 0.69 GB each — or about 15 MB per hour once you shrink a meeting |
 
-Rules of thumb: a minimal setup (default Whisper only) is about **3–4 GB**; installing everything —
-both ASR engines plus local summaries and AI correction — is roughly **12–16 GB** of models and
-runtimes, on top of your recordings. Enabling AI correction adds no download once local summaries
-are installed. Recordings are never auto-deleted and dominate long-term use — an hour of meetings a
-day is roughly 50 GB a month. **Settings → Meeting library → Show Storage…** lists every meeting by
-the space it uses, and each meeting's page shows its size. **Shrink…** replaces a meeting's audio
-with one compressed recording (AAC, 16 kHz mono) and moves the original WAV and raw tracks to the
-Trash, named after the meeting, after a confirmation, and only when you press it. The space comes back
-when you empty the Trash; until then you can put the originals back. The copy is lossy, and Rebuild
-Audio and single-segment re-runs are no longer available for that meeting.
+Recordings are never deleted automatically. **Settings → Meeting library → Show Storage…** shows
+where the space goes. See [docs/MEETING_STORAGE_DESIGN.md](docs/MEETING_STORAGE_DESIGN.md).
 
-## Workflow
+## Keyboard shortcuts
 
-1. In **Settings**, choose Whisper Large for the best-established English/Mandarin path, Whisper
-   Turbo for speed, or the optional Qwen3-ASR trial on Apple silicon.
-2. Optionally import business documents under **Business Vocabulary**. Review the extracted terms;
-   only those terms become a local initial prompt for Whisper.
-3. Start a meeting recording. Headphones are recommended to prevent remote voices from leaking into
-   the microphone track.
-4. Watch the separate microphone and system-audio meters. WhisperMeet warns about a disconnected
-   capture channel, clipping, or low storage while keeping the source tracks on disk.
-5. Stop the recording. The selected local engine reads the finished WAV and preserves the original
-   language. A missing, failed, or cancelled engine never modifies the recording.
-6. Correct the timestamped transcript, copy it, or export it as UTF-8 text.
+| Keys | Action |
+|---|---|
+| ⌘R | Start / stop recording |
+| ⇧⌘M | Add a marker while recording |
+| ⌘, | Settings |
+| ⌘/ | Show all keyboard shortcuts |
+| Right Option (hold) | Quick Dictation — you can choose another key |
 
-Recordings, separate microphone/system source tracks, models, and transcripts are stored under
-`~/Library/Application Support/WhisperMeet`. Each recording folder includes `source-tracks.json`,
-which records the raw Float32 tracks’ sample rate, frame count, and common-timeline start offsets so
-the sources remain reusable.
+## More documentation
 
-## More features
+- [Documentation map](docs/README.md) — every guide, by task
+- [Product spec](docs/PRODUCT_SPEC.md) · [Recovery](docs/RECOVERY.md) · [Recording
+  health](docs/RECORDING_HEALTH.md) · [Test recording](docs/PREFLIGHT_TEST.md) · [Recording
+  markers](docs/RECORDING_MARKERS.md)
+- [Roadmap](docs/ROADMAP.md) · [Changelog](docs/CHANGELOG.md)
 
-Beyond the core record → transcribe flow:
-
-- **Quick Dictation** — a push-to-talk hotkey (default Right Option) transcribes a short clip and
-  pastes it into any app. On Apple Silicon it uses a Metal-accelerated `mlx-whisper` helper that
-  keeps the model warm; this path is independent of the meeting model selection. See
-  [docs/QUICK_DICTATION_DESIGN.md](docs/QUICK_DICTATION_DESIGN.md).
-- **Preflight test recording** — an ~8-second check that confirms your microphone (and system audio)
-  are actually capturing *sustained* signal before you rely on a real meeting. See
-  [docs/PREFLIGHT_TEST.md](docs/PREFLIGHT_TEST.md).
-- **Recording markers** — flag key moments live (⇧⌘M) or in playback; jump back to them and include
-  them in exported notes. See [docs/RECORDING_MARKERS.md](docs/RECORDING_MARKERS.md).
-- **Transcript quality review** — flags low-confidence, likely-silence, and repetitive segments
-  (using Whisper’s own metrics), ordered worst-first, so you can spot-check the shakiest parts. It
-  never changes your transcript. See [docs/TRANSCRIPT_QUALITY.md](docs/TRANSCRIPT_QUALITY.md).
-- **Meeting summaries (local by default on Apple silicon)** — Summarize produces a summary, key
-  points, and action items from a language model running on this Mac — no key, no upload. A
-  **Claude** cloud engine is available as an opt-in upgrade: save a Claude API key in Settings and
-  select it to send that transcript to Anthropic’s API instead — the one non-local feature, never
-  used without a saved key and an explicit, confirmed press. An Intel Mac cannot run the local
-  model, so there the engine starts on Claude, and still sends nothing until a key is saved and a
-  press confirmed. See [docs/CLAUDE_SUMMARIES.md](docs/CLAUDE_SUMMARIES.md).
-- **Meeting templates** — a **template** (Decision Log, 1:1, Project Update, Interview, Customer Call,
-  or General) reshapes how the summary is organized for that kind of meeting, alongside the length
-  “style”. Templates only guide the summary’s structure; they never change what leaves the Mac.
-- **Evidence-linked action items** — each action item is a reviewable card: mark it done, add an owner
-  or due date, and **Play source** to jump to the moment in the recording it came from. The supporting
-  quote and timestamp are found locally by matching the item against the transcript — no extra upload.
-- **AI transcript correction (local)** — on Apple silicon, the transcript’s **Correct with local
-  AI** action asks the on-device model to fix domain terms (names, products, jargon) that speech
-  recognition mis-heard, guided by your Business Vocabulary. You can also point it at a **reference
-  file** (a spec or glossary) to guide corrections toward spellings in that document. Corrections are
-  proposed for your review, not applied automatically; the recording is never modified, and a
-  transcript you have hand-edited is skipped. It reuses the same local model as summaries.
-- **Replacement rules** — in Business Vocabulary, add exact `heard → preferred` rules for a term that
-  is always misheard the same way. In a meeting, rules are proposed as corrections you review and
-  approve; nothing is applied automatically and the recording is never changed. Quick Dictation
-  applies them to its text before pasting.
-- **Ask Meetings** — ask a question across a chosen set of completed meetings (all of them, or scoped
-  by tag) and get ranked, **cited** results: each shows the meeting, the timestamp, and the supporting
-  quote, and clicking one jumps to that moment in the recording. Retrieval is local keyword search
-  (BM25) over the transcripts — nothing is uploaded, and it works in English and Mandarin.
-  With the local summary model installed you can also add **search by meaning** (one 490 MB
-  download, `intfloat/multilingual-e5-small`, MIT): a question worded differently from what was
-  said — "how much runway do we have" against "the cash lasts until October" — still finds the
-  passage. It runs on this Mac, keeps a small index beside each recording, and is merged with the
-  keyword results rather than replacing them.
-  With the local summary model installed, **Write an Answer from These Passages** asks that model
-  for a short answer built only from the top results. It is shown only if it cites the passages on
-  screen — at least one, and never one it was not given — adds none of your vocabulary terms the
-  passages lack, and keeps their Chinese script; otherwise you keep the passages, which are what was
-  said. Citation is checked per answer, not per sentence, so read the cited passages for anything
-  you would act on.
-- **Start from Finder or Shortcuts** — WhisperMeet opens audio and video files: right-click a
-  recording → *Open With → WhisperMeet*, drop it on the Dock icon, use Shortcuts' *Open File* action
-  with WhisperMeet, or choose *Services → Transcribe with WhisperMeet* in Finder. The file goes
-  through the same local import as the in-app importer. It never becomes the default app for your
-  audio files.
-- **Watched folder (opt-in, off by default)** — in Settings, choose a folder and WhisperMeet imports
-  each new recording you add to it once the file has finished copying, with a notification first.
-  Files already in the folder are left alone, originals are never moved or deleted, a file that
-  arrives during a recording waits until it ends, and one dropped while the app was closed is picked
-  up at the next launch — including a recording you already had, copied in with its original date.
-  Turning the feature off and on again, or choosing a different folder, starts fresh: whatever is in
-  the folder at that moment is left alone. If the folder cannot be read, Settings says so rather than
-  silently importing nothing, and waiting files stay queued until it can be read again. A file whose
-  copy fails anyway (a share that drops mid-copy, say) is tried up to three times; after the third,
-  WhisperMeet says so once and leaves it for you to import with **Import Recordings…**. It never
-  records on its own.
-- **Import from a link (opt-in, off by default)** — turn on *Import from a Link* in Settings and an
-  **Add from a Link…** button appears on the record screen. Paste a link to a single video and
-  WhisperMeet downloads **only its audio** into your library, then transcribes it locally like any
-  other meeting; the meeting keeps a record of where it came from and links back to the original page.
-  Two things to know, and the app cannot resolve either: the request goes to the site you linked, so
-  **that site sees it** (nothing about your meetings is uploaded), and **many sites' terms prohibit
-  downloading** — you are responsible for having the right to the content you paste. The publisher's
-  own captions, when available, are saved with the meeting but not shown in the app yet, and never
-  used as the transcript. The downloader ships with the local Whisper runtime; if a link fails with
-  "the downloader is out of date", update it from the same Settings section.
-
-## Recording safety and recovery
-
-The recording is the source of truth. Both local engines only read the finished WAV, so a failed or
-cancelled transcription leaves the audio untouched and can be retried. The app also keeps
-previous-readable copies of its meeting and vocabulary indexes, preserves partial source tracks when
-recording finalization fails, and scans for interrupted recording folders on its next launch.
-
-Deleting a meeting writes the index first and removes the audio only once nothing refers to it, so a
-failed save can never leave a record pointing at a recording that is already gone; if the files
-cannot be removed, the deletion is rolled back and the meeting is kept. An index copy that exists but
-cannot be decoded is copied aside rather than overwritten, and the library opens read-only until that
-is resolved.
-
-Select **Show Recording in Finder** on any meeting to reach its local files. See [Recording Safety
-and Recovery](docs/RECOVERY.md) for exact file locations, automatic recovery behavior, manual
-recovery steps, and the intentionally destructive **Cancel Recording**, **Delete Meeting** and
-**Shrink Meeting** actions.
-
-Before capture, the app checks permissions, the default microphone, and available storage. During
-capture, it monitors the exact microphone and system-audio samples being saved, warns about
-interruptions and clipping, and prevents idle system sleep. See [Recording Health
-Monitoring](docs/RECORDING_HEALTH.md) for thresholds and interpretation.
-
-## Speaker limitation
-
-Transcription itself does not tell speakers apart: Whisper and Qwen produce timestamped segments,
-not people. So a transcript is never labeled by default.
-
-For a finished meeting you can ask WhisperMeet to **Analyze Speaker Turns**. A model on your Mac
-groups the audio into anonymous voice clusters and labels parts of the transcript “Speaker 1”,
-“Speaker 2”, and so on. You can rename a label for that one meeting — “Me”, “Project lead” — and
-that name stays in that meeting, on this Mac.
-
-What it deliberately does not do:
-
-- It does not identify, enroll, or verify anyone. A cluster is a voice grouping, not a person.
-- It does not recognize the same voice in a different meeting. Labels are per-meeting, and they are
-  replaced whenever you analyze again.
-- It does not guess role, gender, or anything else about a speaker.
-- It does not send audio, voice data, or the names you type anywhere. Analysis runs entirely on your
-  Mac, and the model files are downloaded once, only when you ask for them.
-- It does not change your recording or your transcript, even when it fails or you cancel.
-
-Labels are inferred and can be wrong, especially when people talk over each other. Where the
-analysis is not confident it says **Uncertain** or **Overlapping voices** rather than guessing. Copy,
-ordinary exports, notes, search, and summaries stay unlabeled; including labels is a separate export
-you choose explicitly.
-
-## Verification
+## For developers
 
 ```bash
 Scripts/quality-check.sh
 ```
 
-Stage the candidate changes first so newly created files are included. The quality script checks the
-complete staged/unstaged diff, runs every test, treats production-build warnings as errors, and
-packages a signed app. GitHub Actions runs the same gate on every pull request and push to `main`.
-Tests exercise the local process interface, verified CLI options, original-language output,
-timestamp parsing, executable discovery, failure handling, index backup recovery, and rebuilding an
-interrupted recording without deleting its source tracks. They do not download a speech model.
-
-To build and replace the installed app after quitting WhisperMeet:
-
-```bash
-Scripts/install-app.sh
-```
-
-The installer refuses to continue while WhisperMeet is running, preventing an update from
-interrupting or corrupting an active recording.
+The quality check builds the app, runs every test (no speech model is downloaded), treats warnings
+as errors and packages a signed app; GitHub Actions runs the same check on every push to `main`.
+`Scripts/setup-local-whisper.sh`, `Scripts/setup-qwen-asr.sh` and
+`Scripts/setup-local-summarizer.sh` install the runtimes from the command line, and
+`Scripts/qwen-chat` opens an offline Terminal chat with the installed Local Model. Contributors and
+coding agents start with [AGENTS.md](AGENTS.md).
