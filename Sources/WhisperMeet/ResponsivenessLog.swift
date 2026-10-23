@@ -34,14 +34,23 @@ enum ResponsivenessLog {
         return nil
     }
 
-    /// Runs `body` once the main run loop next goes to sleep — after Core Animation has committed this turn's
-    /// drawing — so a log can say when what was just shown reached the screen.
+    /// Runs `body` once the main run loop next goes to sleep, with two readings of that moment (F1090): `settled`,
+    /// taken before any other observer runs — the turn's work is done, and the observers that lay out and commit its
+    /// drawing have not run — and `drawn`, taken after Core Animation has committed this turn's drawing. So a log
+    /// can tell work that held the main thread from drawing that was slow.
     @MainActor
-    static func afterThisTurnDraws(_ body: @escaping @MainActor () -> Void) {
-        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, CFIndex.max) { _, _ in
-            MainActor.assumeIsolated { body() }
+    static func whenThisTurnDraws(_ body: @escaping @MainActor (_ settled: UInt64, _ drawn: UInt64) -> Void) {
+        let settled = OSAllocatedUnfairLock<UInt64>(initialState: 0)
+        let first = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, CFIndex.min) { _, _ in
+            settled.withLock { $0 = now() }
         }
-        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+        let last = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, CFIndex.max) { _, _ in
+            let drawn = now()
+            let settledAt = settled.withLock { $0 }
+            MainActor.assumeIsolated { body(settledAt, drawn) }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), first, .commonModes)
+        CFRunLoopAddObserver(CFRunLoopGetMain(), last, .commonModes)
     }
 
     /// When `WhisperMeetLauncher.main` began, for the launch's timings.

@@ -1344,8 +1344,10 @@ final class DictationController: ObservableObject {
         switch session.handle(.startPressed) {
         case .startCapture:
             guard startCapture() else { return }
+            let warmUpBegan = ResponsivenessLog.now()
             prepareRefinerForCapture()
             prewarmEngineForCapture()
+            logPressTiming(warmUpCalls: ResponsivenessLog.milliseconds(since: warmUpBegan))
         case .busy:
             // A press arrived while a dictation is still in flight — leave the in-flight session
             // alone. Never reset it here; that would drop the pending transcript. Say so, though,
@@ -1370,6 +1372,10 @@ final class DictationController: ObservableObject {
     /// When the press now being handled began, and how its edge was heard (F1088).
     private var pressBegan: (at: UInt64, edge: HotkeyEdgeTiming?)?
 
+    /// How long this press's microphone start and field check took, kept by `startCapture` for the press's
+    /// timing line, which is logged once the warm-up calls after it have run too (F1090).
+    private var pressPhases: (microphone: Double, fieldCheck: Double)?
+
     /// "From the key to the handler": the key event's age when the handler began, and the part of it spent
     /// waiting on the main queue after the tap heard it (F1088).
     private static func keyToHandler(began: UInt64, edge: HotkeyEdgeTiming?) -> String {
@@ -1379,26 +1385,32 @@ final class DictationController: ObservableObject {
         return "key to handler \(age ?? "?") ms (\(queued) ms on the main queue)"
     }
 
-    /// F1088: how long this press took to reach the microphone, the field check and the pill on screen.
-    private func logPressTiming(microphone: Double, fieldCheck: Double) {
-        guard let pressed = pressBegan else { return }
+    /// F1088: how long this press took to reach the microphone, the field check and the pill on screen. F1090: and the
+    /// warm-up calls after them, and when the main thread was next free, so the gap before the pill is split into
+    /// work that held the main thread and the drawing itself.
+    private func logPressTiming(warmUpCalls: Double) {
+        guard let pressed = pressBegan, let phases = pressPhases else { return }
         pressBegan = nil
+        pressPhases = nil
         let began = pressed.at, edge = pressed.edge
         let heard = Self.keyToHandler(began: began, edge: edge)
         let handled = ResponsivenessLog.milliseconds(since: began)
-        ResponsivenessLog.afterThisTurnDraws {
-            let drawn = ResponsivenessLog.milliseconds(since: began)
-            ResponsivenessLog.log.notice("press timing: \(heard, privacy: .public); microphone \(microphone, format: .fixed(precision: 0)) ms, field check \(fieldCheck, format: .fixed(precision: 0)) ms, handled in \(handled, format: .fixed(precision: 0)) ms, pill drawn \(drawn, format: .fixed(precision: 0)) ms after the handler began")
+        ResponsivenessLog.whenThisTurnDraws { settled, drawn in
+            let free = ResponsivenessLog.milliseconds(since: began, to: settled)
+            let shown = ResponsivenessLog.milliseconds(since: began, to: drawn)
+            ResponsivenessLog.log.notice("press timing: \(heard, privacy: .public); microphone \(phases.microphone, format: .fixed(precision: 0)) ms, field check \(phases.fieldCheck, format: .fixed(precision: 0)) ms, warm-up calls \(warmUpCalls, format: .fixed(precision: 0)) ms, handled in \(handled, format: .fixed(precision: 0)) ms; main thread free at \(free, format: .fixed(precision: 0)) ms, pill drawn \(shown, format: .fixed(precision: 0)) ms after the handler began")
         }
     }
 
-    /// F1088: how long a release took to stop the capture and show what follows.
+    /// F1088: how long a release took to stop the capture and show what follows; F1090: and when the main thread was
+    /// next free.
     private func logReleaseTiming(began: UInt64, edge: HotkeyEdgeTiming?) {
         let heard = Self.keyToHandler(began: began, edge: edge)
         let handled = ResponsivenessLog.milliseconds(since: began)
-        ResponsivenessLog.afterThisTurnDraws {
-            let drawn = ResponsivenessLog.milliseconds(since: began)
-            ResponsivenessLog.log.notice("release timing: \(heard, privacy: .public); stopped and handed on in \(handled, format: .fixed(precision: 0)) ms, pill drawn \(drawn, format: .fixed(precision: 0)) ms after the handler began")
+        ResponsivenessLog.whenThisTurnDraws { settled, drawn in
+            let free = ResponsivenessLog.milliseconds(since: began, to: settled)
+            let shown = ResponsivenessLog.milliseconds(since: began, to: drawn)
+            ResponsivenessLog.log.notice("release timing: \(heard, privacy: .public); stopped and handed on in \(handled, format: .fixed(precision: 0)) ms; main thread free at \(free, format: .fixed(precision: 0)) ms, pill drawn \(shown, format: .fixed(precision: 0)) ms after the handler began")
         }
     }
 
@@ -1447,7 +1459,7 @@ final class DictationController: ObservableObject {
             pressTarget = textInjector.captureWillStart(autoPaste: autoPaste)
             let fieldCheck = ResponsivenessLog.milliseconds(since: fieldCheckBegan)
             log.notice("listening")
-            logPressTiming(microphone: microphone, fieldCheck: fieldCheck)
+            pressPhases = (microphone, fieldCheck)
             return true
         } catch {
             // F366: `error.localizedDescription` is the bridge's case-index sentence for anything
