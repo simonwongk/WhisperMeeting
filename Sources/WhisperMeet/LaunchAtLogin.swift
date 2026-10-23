@@ -5,7 +5,9 @@ import WhisperCore
 /// The app's login item (`SMAppService.mainApp`), as a seam so a test can switch it without
 /// registering the real app (F792).
 struct LoginItemControl {
-    var isEnabled: @MainActor () -> Bool
+    /// Whether the login item is on. An XPC round trip to smd — 0.3–0.5 s on the user's Mac (F1088) — so it
+    /// is never asked on the main thread while a view is being built: `AppModel.readLaunchAtLogin()`.
+    var isEnabled: @Sendable () -> Bool
     var setEnabled: @MainActor (Bool) throws -> Void
 
     /// The real login item. In a test process it reads as off and refuses to change, so a test that
@@ -23,6 +25,14 @@ struct LoginItemControl {
 }
 
 extension AppModel {
+    /// Whether the login item is on, read off the main thread (F1088): the read is an XPC round trip that
+    /// took 0.3–0.5 s on the user's Mac, and Settings used to make two of them each time its view was built,
+    /// which SwiftUI does on every change the app's scenes observe — so a dictation press waited behind them.
+    func readLaunchAtLogin() async -> Bool {
+        let read = loginItem.isEnabled
+        return await Task.detached(priority: .userInitiated) { read() }.value
+    }
+
     /// Settings' Launch at login switch (F792, F749). Returns the state the switch should show.
     ///
     /// A refusal goes through `report(_:)`, not `alertMessage` (F792): Settings is a window of its

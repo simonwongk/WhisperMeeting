@@ -1,7 +1,6 @@
 import AppKit
 import AVFoundation
 import AVKit
-import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
 import WhisperCore
@@ -1436,10 +1435,15 @@ struct SettingsView: View {
     @ObservedObject var dictation: DictationController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var apiKeyDraft = ""
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// F1088: read once Settings is on screen, off the main thread (`AppModel.readLaunchAtLogin()`). These used
+    /// to be the initial values, asked of the system each time this view was built — on every change the app's
+    /// scenes observe, Settings open or not — and each ask held the main thread 0.3–0.5 s on the user's Mac.
+    @State private var launchAtLogin = false
     /// What the login item was last set to, or read as (F792), so putting the switch back after a
     /// refusal is not taken for a new request.
-    @State private var launchAtLoginApplied = SMAppService.mainApp.status == .enabled
+    @State private var launchAtLoginApplied = false
+    /// Whether the switch has read the login item yet; it is off until then (F1088).
+    @State private var launchAtLoginKnown = false
     /// Change: choosing a new trigger key (F521, F653).
     @StateObject private var triggerChooser = DictationTriggerChooser()
 
@@ -1936,8 +1940,15 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
                 Toggle("Launch at login", isOn: $launchAtLogin)
-                    // F749: the login item is the app's, not this library's.
-                    .disabled(model.libraryIsMoved)
+                    // F749: the login item is the app's, not this library's. F1088: and not before it is read.
+                    .disabled(model.libraryIsMoved || !launchAtLoginKnown)
+                    .task {
+                        // The applied state first, so the switch's change below is the read, not a request.
+                        let enabled = await model.readLaunchAtLogin()
+                        launchAtLoginApplied = enabled
+                        launchAtLogin = enabled
+                        launchAtLoginKnown = true
+                    }
                     .onChange(of: launchAtLogin) { _, enabled in
                         // F792: through the model, which reports a refusal even with no library
                         // window open. Putting the switch back re-runs this; `launchAtLoginApplied`

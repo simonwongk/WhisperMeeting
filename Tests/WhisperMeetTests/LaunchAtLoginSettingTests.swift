@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import WhisperCore
 @testable import WhisperMeet
@@ -117,7 +118,8 @@ func launchAtLoginSwitchIsGatedOnTheMovedLibrary() throws {
     let settings = try settingsViewSource()
     let toggle = try #require(settings.range(of: "Toggle(\"Launch at login\""))
     let around = settings[toggle.lowerBound...].prefix(600)
-    #expect(around.contains(".disabled(model.libraryIsMoved)"), "\(around)")
+    // F1088 added "|| !launchAtLoginKnown" to the same expression: still gated on the moved library.
+    #expect(around.contains(".disabled(model.libraryIsMoved"), "\(around)")
 }
 
 @Test("Every @AppStorage in the app uses the library's own store, so a moved library keeps its own settings (F746)")
@@ -144,4 +146,29 @@ func everyAppStorageNamesItsStore() throws {
     }
     #expect(found >= 2, "the scan must find the summary style and template (\(found))")
     #expect(offenders.isEmpty, "these do not use libraryDefaults, so they read a shared domain under WHISPERMEET_LIBRARY:\n\(offenders.joined(separator: "\n"))")
+}
+
+// F1088, F1089 — `SettingsView` read `SMAppService.mainApp.status` in two `@State` initial values. SwiftUI
+// evaluates an initial value every time the view is constructed, and the Settings scene's view is constructed on
+// every re-evaluation of `WhisperMeetApp.body` — every dictation phase, every model change — whether Settings is
+// open or not. Each read is an XPC round trip to smd, measured at 0.3–0.5 s on the user's Mac (a 30 s sample on
+// 2026-10-23: 1,374 samples in `WhisperMeetApp.body`, 753 + 621 of them in `SMAppService.status` under
+// `SettingsView.init`), so the main thread stalled for about a second at a time: a press waited 982 ms to be
+// handled, and every pill frame came late. The status is now read once Settings is on screen, off the main thread.
+@Test("Settings constructs without asking the system for the login item; the model reads it off the main thread (F1088)")
+@MainActor
+func launchAtLoginIsReadOffTheMainThreadAndNotWhileConstructing() async throws {
+    let source = try SourceAssertion.uncommentedSource("Sources/WhisperMeet/ContentView.swift")
+    #expect(!source.contains("SMAppService"), "a view asks the system for the login item while it is constructed")
+    #expect(source.contains("readLaunchAtLogin()"), "Settings reads the login item through the model")
+
+    let (model, _, root) = try makeModel()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let readOnMain = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+    model.loginItem = LoginItemControl(
+        isEnabled: { readOnMain.withLock { $0 = Thread.isMainThread }; return true },
+        setEnabled: { _ in }
+    )
+    #expect(await model.readLaunchAtLogin() == true)
+    #expect(readOnMain.withLock { $0 } == false, "the read blocked the main thread")
 }
