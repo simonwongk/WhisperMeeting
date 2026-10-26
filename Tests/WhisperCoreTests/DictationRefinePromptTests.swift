@@ -18,6 +18,23 @@ func promptLanguagePin() {
         == DictationRefinePrompt.system(languageCode: nil))
 }
 
+// MARK: - F1094: name the Chinese fillers, because Gemma keeps them when only "um/uh" are named
+
+@Test("A Mandarin prompt names Chinese fillers and keeps words that carry meaning (F1094)")
+func promptNamesChineseFillers() {
+    let prompt = DictationRefinePrompt.system(languageCode: "zh")
+    #expect(prompt.contains("呃") && prompt.contains("嗯"))
+    #expect(prompt.contains("keep any word that carries meaning"))
+    // The sentence is appended after the language pin, so the resident server's cached prefix is kept.
+    #expect(prompt.hasPrefix(DictationRefinePrompt.system(languageCode: nil)))
+}
+
+@Test("An English or unknown-language prompt is unchanged by the Chinese filler sentence (F1094)")
+func promptChineseFillersOnlyForMandarin() {
+    #expect(!DictationRefinePrompt.system(languageCode: "en").contains("呃"))
+    #expect(!DictationRefinePrompt.system(languageCode: nil).contains("呃"))
+}
+
 // MARK: - F244: name the script, so a Traditional dictation is not converted in the first place
 
 @Test("A Traditional input names Traditional characters in the prompt, and forbids conversion (F244)")

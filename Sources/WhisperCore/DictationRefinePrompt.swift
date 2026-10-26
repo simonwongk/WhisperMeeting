@@ -38,7 +38,14 @@ public enum DictationRefinePrompt {
         Reply with ONLY the corrected text — no quotation marks around it, no explanation, no markdown.
         """
         switch languageCode {
-        case "zh": prompt += " The input is Mandarin Chinese; reply only in Mandarin Chinese."
+        // F1094: "um", "uh" and "you know" name English fillers only. Measured on Gemma 3 4B, a Chinese
+        // dictation kept 呃 (and, in Simplified, 那个) until the fillers were named; naming them removed
+        // every filler on three probes and kept 那個 in "那個方案", so the clause says to keep any word
+        // that carries meaning. Appended after the language pin so the cached prefix is unchanged.
+        case "zh":
+            prompt += " The input is Mandarin Chinese; reply only in Mandarin Chinese."
+                + " Remove Chinese filler words such as 呃, 嗯, 啊 and 那個 / 那个 when they are only"
+                + " hesitation fillers, but keep any word that carries meaning."
         case "en": prompt += " The input is English; reply only in English."
         default: break
         }

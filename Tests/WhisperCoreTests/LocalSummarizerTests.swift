@@ -372,13 +372,24 @@ func localSummarizerStopsASilentHelper() async throws {
     }
 }
 
-@Test("Summarizer model choice follows physical RAM: 8B at/above 16 GiB, 4B below")
-func summarizerModelPickByRAM() {
+@Test("Summarizer installs Gemma 3 4B on every Mac, whatever its RAM (F1094)")
+func summarizerModelIsGemmaOnEveryMac() {
     let gib: UInt64 = 1024 * 1024 * 1024
-    #expect(SummarizerRuntime.recommendedRepository(physicalMemory: 8 * gib) == SummarizerRuntime.fallbackRepository)
-    #expect(SummarizerRuntime.recommendedRepository(physicalMemory: 15 * gib) == SummarizerRuntime.fallbackRepository)
-    #expect(SummarizerRuntime.recommendedRepository(physicalMemory: 16 * gib) == SummarizerRuntime.defaultRepository)
-    #expect(SummarizerRuntime.recommendedRepository(physicalMemory: 18 * gib) == SummarizerRuntime.defaultRepository)
+    #expect(SummarizerRuntime.defaultRepository == "mlx-community/gemma-3-text-4b-it-4bit")
+    for memory in [4, 8, 15, 16, 18, 64] as [UInt64] {
+        #expect(SummarizerRuntime.recommendedRepository(physicalMemory: memory * gib) == SummarizerRuntime.defaultRepository)
+    }
+}
+
+@Test("The installer script pins the same repository the app asks it to install (F1094)")
+func summarizerInstallerPinsTheAppsRepository() throws {
+    let script = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Scripts/setup-local-summarizer.sh")
+    let text = try String(contentsOf: script, encoding: .utf8)
+    #expect(text.contains("default_repository=\"\(SummarizerRuntime.defaultRepository)\""))
+    // One model for every Mac: nothing in the installer may still offer the RAM-based fallback.
+    #expect(!text.contains("fallback_repository"))
 }
 
 @Test("Summarizer runtime is ready only when interpreter, helper, and model all exist")

@@ -7,12 +7,10 @@ import Foundation
 /// summarizer (F164), so they must not require the opt-in Qwen3-ASR runtime to be installed. This
 /// gives the summarizer its own `mlx_lm` venv, model, and helper, mirroring the Qwen layout.
 public struct SummarizerRuntime: Sendable {
-    /// Default on-device model on Macs with enough memory (Apache-2.0, ~4.5 GB, 4-bit, mlx_lm text).
-    public static let defaultRepository = "mlx-community/Qwen3-8B-4bit"
-    /// Fallback on memory-constrained Macs (Apache-2.0, ~2.3 GB, 4-bit).
-    public static let fallbackRepository = "mlx-community/Qwen3-4B-4bit"
-    /// Physical-RAM threshold for the larger default model: 16 GiB.
-    public static let defaultModelMinimumBytes: UInt64 = 16 * 1024 * 1024 * 1024
+    /// The on-device model for every Mac: Google's Gemma 3 4B instruct, text-only, 4-bit MLX (~2.4 GB,
+    /// Gemma Terms of Use). One model rather than a RAM-based pair (F1094): it replaced Qwen3-8B/4B so
+    /// no Chinese-origin model is in the app's LLM path, at roughly half the memory.
+    public static let defaultRepository = "mlx-community/gemma-3-text-4b-it-4bit"
 
     /// mlx runs only on Apple silicon, so on-device summaries are Apple-silicon only (like Qwen3-ASR).
     public static var isSupportedOnCurrentMac: Bool {
@@ -89,13 +87,12 @@ public struct SummarizerRuntime: Sendable {
             )
     }
 
-    /// The mlx-community repo to install, chosen by physical RAM: the 8B default on ≥16 GiB Macs, the
-    /// 4B fallback below that. `physicalMemory` is injected (default `ProcessInfo.physicalMemory`) so
-    /// the branch is unit-testable without specific hardware — the first RAM probe in the codebase.
+    /// The mlx-community repo to install. Kept as a function of physical RAM so the install call site
+    /// does not change, but every Mac gets the same model (F1094); `physicalMemory` is ignored.
     public static func recommendedRepository(
         physicalMemory: UInt64 = ProcessInfo.processInfo.physicalMemory
     ) -> String {
-        physicalMemory >= defaultModelMinimumBytes ? defaultRepository : fallbackRepository
+        defaultRepository
     }
 }
 

@@ -181,13 +181,34 @@ def model_unreadable_detail(model_dir: str, error: BaseException) -> str:
     )
 
 
+# F1094: Gemma 3 4B is the installed model, and the mlx-community conversion of it carries no
+# `max_position_embeddings` at all (config.json holds `text_config.sliding_window` and nothing about
+# length), so reading only a top-level key silently skipped the context pre-flight. Google's Gemma 3
+# model card gives "a total input context of 128K tokens for the 4B, 12B, and 27B sizes"
+# (ai.google.dev/gemma/docs/core/model_card_3), and the original config says
+# `text_config.max_position_embeddings: 131072` (unsloth/gemma-3-4b-it). Not the 1B, which is 32K and
+# which this app never installs. Kept beside refine_server.py's own use of the model rather than
+# imported: each helper is installed and run on its own.
+KNOWN_CONTEXT_LIMITS = {"gemma3": 131072, "gemma3_text": 131072}
+
+
+def context_limit_from_config(config: dict):
+    """The model's context window in tokens from its config.json, or None when it declares none: a
+    top-level `max_position_embeddings`, else the nested `text_config` one, else the documented
+    window for a model family whose conversions drop it."""
+    for source in (config, config.get("text_config")):
+        if isinstance(source, dict) and source.get("max_position_embeddings"):
+            return source["max_position_embeddings"]
+    return KNOWN_CONTEXT_LIMITS.get(config.get("model_type"))
+
+
 def load_counting_inputs(load_config, load_tokenizer, model_dir: str, messages: list):
     """(context_limit, prompt_tokens) for the pre-flight, reading only config.json and the
     tokenizer files. prompt_tokens is None when the config declares no context window."""
     config = load_config(Path(model_dir))
     if not isinstance(config, dict):
         raise ValueError(f"config.json holds a {type(config).__name__}, not an object")
-    context_limit = config.get("max_position_embeddings")
+    context_limit = context_limit_from_config(config)
     if not context_limit:
         return None, None
     counting_tokenizer = load_tokenizer(Path(model_dir))

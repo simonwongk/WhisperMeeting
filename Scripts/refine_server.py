@@ -101,7 +101,10 @@ class RefineSession:
     MAX_ANCHORS = 8
 
     def __init__(self, make_cache, can_trim, trim, offset_of, generate_fn,
-                 prefill=None, snapshot=None, restore=None):
+                 prefill=None, snapshot=None, restore=None, cache_token_limit=None):
+        # F1094: the most positions the persistent cache may be asked to hold, or None for no limit
+        # (see cache_token_limit()). A request that could reach it never touches the cache.
+        self.cache_token_limit = cache_token_limit
         self.make_cache = make_cache
         self.can_trim = can_trim
         self.trim = trim
@@ -158,6 +161,13 @@ class RefineSession:
         return self.restore(taken, prefix_length), prefix_length
 
     def run(self, tokens, max_tokens, prefix_length=None):
+        if self.cache_token_limit and (
+            len(tokens) + max_tokens + CACHE_HEADROOM_TOKENS >= self.cache_token_limit
+        ):
+            # A rotating layer (Gemma 3's sliding window) cannot be trimmed once it has wrapped, yet
+            # its trim still reports success. Plain decoding builds its own cache and never trims, so
+            # the persistent one is left exactly as it was for the next, shorter request.
+            return self.generate_fn(list(tokens), max_tokens, None)
         if self.cache is None:
             candidate = self.make_cache()
             if self.can_trim(candidate):
@@ -199,6 +209,27 @@ class RefineSession:
             raise
         self.cached_tokens = list(tokens)
         return text
+
+
+# F1094: positions a speculative step can hold beyond prompt + max_tokens: the token fed plus the
+# longest draft (`lookup_generate`'s max_draft is 8, CopyDrafter's maximum 6) before a rejected tail is
+# trimmed, rounded up so the bound stays conservative.
+CACHE_HEADROOM_TOKENS = 16
+
+
+def cache_token_limit(cache):
+    """The most positions every layer of `cache` can hold and still be trimmed, or None when none of
+    its layers is a window.
+
+    Gemma 3 keeps 5 of every 6 layers in a RotatingKVCache(max_size=sliding_window), 1024 for the 4B
+    model. mlx_lm 0.30.5 reports `is_trimmable()` as `offset < max_size` (models/cache.py:517) but its
+    `trim` clamps and decrements without ever refusing (:520-524), so past the window a trim would
+    drop positions the layer had already overwritten. A plain KVCache has no `max_size` and no limit.
+    Measured on the installed runtime with a 1,400-token prompt: the native rotating cache matched an
+    uncached forward pass exactly, plain KVCache layers did not (max logit difference 16.0)."""
+    sizes = [getattr(layer, "max_size", None) for layer in cache]
+    sizes = [size for size in sizes if size]
+    return min(sizes) if sizes else None
 
 
 def ngram_draft(sequence, max_draft, ngram_sizes=(3, 2)):
@@ -508,6 +539,7 @@ def main() -> int:
         prefill=prefill,
         snapshot=snapshot,
         restore=restore,
+        cache_token_limit=cache_token_limit(make_prompt_cache(model)),
     )
 
     def refine(system_prompt, text, max_tokens):

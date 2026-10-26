@@ -289,5 +289,39 @@ class UnreadableModelTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self._run(load=out_of_memory)
 
+
+class GemmaContextLimitTests(unittest.TestCase):
+    """F1094: the pre-flight read only a top-level `max_position_embeddings`. The Gemma 3 conversion
+    in mlx-community/gemma-3-text-4b-it-4bit has none at all (its config.json carries only
+    `text_config.sliding_window`), so the pre-flight was silently skipped for the model the app now
+    installs. Google's model card gives 128K input tokens for the 4B size; the unsloth copy of the
+    original config says `text_config.max_position_embeddings: 131072`."""
+
+    GEMMA_CONFIG = {"model_type": "gemma3", "text_config": {"model_type": "gemma3_text", "sliding_window": 1024}}
+
+    def test_a_top_level_limit_still_wins(self):
+        self.assertEqual(correct.context_limit_from_config({"max_position_embeddings": 40960}), 40960)
+
+    def test_a_nested_text_config_limit_is_read(self):
+        config = {"model_type": "gemma3", "text_config": {"max_position_embeddings": 131072}}
+        self.assertEqual(correct.context_limit_from_config(config), 131072)
+
+    def test_the_gemma_3_conversion_without_any_limit_gets_the_documented_128k(self):
+        self.assertEqual(correct.context_limit_from_config(self.GEMMA_CONFIG), 131072)
+
+    def test_an_unknown_model_without_a_limit_has_none(self):
+        self.assertIsNone(correct.context_limit_from_config({"model_type": "mystery"}))
+
+    def test_load_counting_inputs_runs_the_preflight_for_a_gemma_config(self):
+        class Tokenizer:
+            def apply_chat_template(self, messages, add_generation_prompt=True, **kwargs):
+                return [1, 2, 3, 4, 5]
+        limit, tokens = correct.load_counting_inputs(
+            lambda path: self.GEMMA_CONFIG, lambda path: Tokenizer(), "/model",
+            [{"role": "user", "content": "x"}],
+        )
+        self.assertEqual((limit, tokens), (131072, 5))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -682,5 +682,54 @@ class DamagedModelTests(unittest.TestCase):
             self.run_main_with_load_raising(RuntimeError("[metal::malloc] Attempting to allocate too much"))
 
 
+class RotatingWindowTests(unittest.TestCase):
+    """F1094: Gemma 3 keeps 5 of every 6 layers in a RotatingKVCache. In the pinned mlx_lm 0.30.5 it
+    reports `is_trimmable() == (offset < max_size)` (models/cache.py:517) but `trim` always "succeeds"
+    (:520-524), so once a request pushes a layer past its window the prefix trim and the speculative
+    decoder's rejected-token trim would silently corrupt the cache. A request that could reach the
+    window must therefore never touch the persistent cache."""
+
+    def session(self, rig, limit):
+        return refine.RefineSession(
+            make_cache=rig.make_cache, can_trim=rig.can_trim, trim=rig.trim,
+            offset_of=rig.offset_of, generate_fn=rig.generate_fn, cache_token_limit=limit,
+        )
+
+    def test_cache_token_limit_is_the_smallest_rotating_window(self):
+        class Plain: pass
+        class Rotating:
+            def __init__(self, size): self.max_size = size
+        self.assertEqual(refine.cache_token_limit([Plain(), Rotating(1024), Rotating(512)]), 512)
+
+    def test_cache_token_limit_is_none_for_plain_caches(self):
+        class Plain: pass
+        self.assertIsNone(refine.cache_token_limit([Plain(), Plain()]))
+
+    def test_a_request_that_could_reach_the_window_bypasses_the_cache(self):
+        rig = FakeRig()
+        session = self.session(rig, limit=100)
+        session.run([1, 2, 3, 10], 8)                       # small: cached as usual
+        long_prompt = [1, 2, 3] + list(range(100, 190))      # 93 tokens + 8 + margin >= 100
+        session.run(long_prompt, 8)
+        self.assertEqual(rig.fed[-1], long_prompt)           # the whole prompt, no cache reuse
+        self.assertEqual(session.cache.tokens, [1, 2, 3, 10, 7, 8])  # persistent cache untouched
+
+    def test_the_cache_still_works_after_a_bypassed_request(self):
+        rig = FakeRig()
+        session = self.session(rig, limit=100)
+        session.run([1, 2, 3, 10], 8)
+        session.run([1, 2, 3] + list(range(100, 190)), 8)
+        session.run([1, 2, 3, 20], 8)
+        self.assertEqual(rig.fed[-1], [20])                  # prefix reuse resumed
+        self.assertEqual(session.cache.tokens, [1, 2, 3, 20, 7, 8])
+
+    def test_a_request_well_inside_the_window_is_cached(self):
+        rig = FakeRig()
+        session = self.session(rig, limit=1024)
+        session.run([1, 2, 3, 10], 8)
+        session.run([1, 2, 3, 20], 8)
+        self.assertEqual(rig.fed[1], [20])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

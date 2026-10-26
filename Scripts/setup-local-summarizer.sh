@@ -1,11 +1,11 @@
 #!/bin/zsh
 set -euo pipefail
 
-# Installs the on-device summarization runtime (F164): a dedicated mlx_lm venv + a pinned Qwen3 model
+# Installs the on-device summarization runtime (F164): a dedicated mlx_lm venv + a pinned Gemma 3 model
 # + the summarize_local.py helper, under Runtime/Summarizer. It is deliberately separate from the
 # Qwen3-ASR runtime because local summaries are the DEFAULT summarizer and must not require the opt-in
 # ASR runtime. Mirrors setup-qwen-asr.sh: staging dir, cross-process lock, sha256 gate, atomic
-# activation with backup/restore. The caller (AppModel) exports SUMMARIZER_REPOSITORY to pick 8B vs 4B.
+# activation with backup/restore. The caller (AppModel) exports SUMMARIZER_REPOSITORY.
 
 target_directory="${1:-${HOME}/Library/Application Support/WhisperMeet/Runtime/Summarizer}"
 script_directory="${0:A:h}"
@@ -20,18 +20,16 @@ activation_complete=0
 lock_acquired=0
 
 mlx_lm_version="0.30.5"
-default_repository="mlx-community/Qwen3-8B-4bit"
-default_revision="545dc4251c05440727734bcd94334791f6ab0192"
-default_sha256="f2d29621aab300336ad645567ff38c42aac755513006ef4e8a579cf7ef5256d8"
-fallback_repository="mlx-community/Qwen3-4B-4bit"
-fallback_revision="4dcb3d101c2a062e5c1d4bb173588c54ea6c4d25"
-fallback_sha256="e240c0bdc0ebb0681bf0da0f98d9719fd6ebe269a3633f81542c13e81345651d"
+# F1094: Gemma 3 4B (text-only, 4-bit) for every Mac. Revision read from the Hugging Face API and the
+# SHA-256 of model.safetensors computed from a verified download on 2026-10-26.
+default_repository="mlx-community/gemma-3-text-4b-it-4bit"
+default_revision="4f665a4c50ecfe4ecdc34056ab52fe3e3c4abf9e"
+default_sha256="4992b5af91dcece8eb3911dd02c4196a7bb88c5379918f19a0b1e1be93f64ac6"
 
-# The Swift side chooses the model by physical RAM and exports it; default to the 8B model.
+# The Swift side exports the repository it wants installed; default to the same one.
 repository="${SUMMARIZER_REPOSITORY:-$default_repository}"
 case "$repository" in
   "$default_repository") revision="$default_revision"; model_sha256="$default_sha256" ;;
-  "$fallback_repository") revision="$fallback_revision"; model_sha256="$fallback_sha256" ;;
   *) print -u2 "Unknown summarizer model: $repository"; exit 1 ;;
 esac
 
